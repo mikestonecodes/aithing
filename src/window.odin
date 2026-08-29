@@ -118,6 +118,7 @@ keyboard_listener: wl.wl_keyboard_listener
 
 window_open :: proc(w: ^Window, title: string, width, height: int) -> bool {
 	g_win_ctx = context
+	g_log_keys = os.get_env("AITHING_KEYS", context.temp_allocator) != ""
 	w.width, w.height = width, height
 	w.scale = 1
 
@@ -449,6 +450,11 @@ on_keymap :: proc "c" (
 	defer linux.munmap(addr, uint(size))
 
 	text := strings.string_from_ptr(cast(^byte)addr, int(size - 1))
+	// AITHING_KEYMAP=<path> writes out exactly what arrived, which is what the
+	// parser's test is checked against.
+	if path := os.get_env("AITHING_KEYMAP", context.temp_allocator); path != "" {
+		_ = os.write_entire_file(path, transmute([]byte)text)
+	}
 	km, ok := keymap_parse(text)
 	if !ok do return
 	keymap_destroy(&w.keymap)
@@ -479,14 +485,25 @@ on_modifiers :: proc "c" (
 
 // Appends a key press and the text it types, if any.
 @(private = "file")
-emit_key :: proc(w: ^Window, k: Key) {
+emit_key :: proc(w: ^Window, k: Key, repeat := false) {
 	append(&w.input.keys, k)
-	if .Ctrl in k.mods || .Alt in k.mods || .Super in k.mods do return
-	if r := keymap_char(&w.keymap, k.code, .Shift in k.mods); r != 0 {
-		bytes, n := utf8.encode_rune(r)
-		append(&w.input.text, ..bytes[:n])
+	r: rune
+	if !(.Ctrl in k.mods || .Alt in k.mods || .Super in k.mods) {
+		r = keymap_char(&w.keymap, k.code, .Shift in k.mods)
+		if r != 0 {
+			bytes, n := utf8.encode_rune(r)
+			append(&w.input.text, ..bytes[:n])
+		}
+	}
+	// AITHING_KEYS=1 prints what arrived: the only way to tell a key the
+	// compositor never sent from one this program mistranslated.
+	if g_log_keys {
+		fmt.eprintfln("key code=%d mods=%v types=%q%s", k.code, k.mods, r, repeat ? " (repeat)" : "")
 	}
 }
+
+@(private = "file")
+g_log_keys: bool
 
 // Drains compositor events and clears the one-frame input. `timeout_ms` is how
 // long to wait for something to happen: 0 to return immediately, -1 to block
@@ -524,7 +541,7 @@ window_poll :: proc(w: ^Window, timeout_ms: i32 = 0) {
 		period := time.Duration(f64(time.Second) / w.repeat_rate)
 		fired := 0
 		for time.since(w.repeat_next) >= 0 && fired < 3 {
-			emit_key(w, w.repeat_key)
+			emit_key(w, w.repeat_key, true)
 			w.repeat_next = time.time_add(w.repeat_next, period)
 			fired += 1
 		}

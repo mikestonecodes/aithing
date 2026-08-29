@@ -162,6 +162,7 @@ main :: proc() {
 			needs_draw = true
 		}
 		app_input(app)
+		if app_apply_clicks(app) do needs_draw = true
 
 		if !needs_draw {
 			free_all(context.temp_allocator)

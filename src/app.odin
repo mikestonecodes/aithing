@@ -40,12 +40,21 @@ App :: struct {
 	ui:        UI,
 
 	sessions:  []Session,
-	visible:   [dynamic]int, // indices into sessions, after the search filter
+	visible:   [dynamic]int, // working sessions, after the search filter
+	archived:  [dynamic]int, // the rest, behind one row at the bottom
+	archive:   Archive,
+	show_archive: bool,
 	selected:  int, // index into sessions; -1 while composing a new chat
 	rescan:    bool,
 	scan:      Scan_Job, // the sidebar, read on a worker thread
 	load:      Load_Job, // the open transcript, parsed on a worker thread
 	scanned:   bool, // false until the first scan lands
+	// Clicks are recorded during the frame and acted on once it is over:
+	// opening or filing a session rebuilds the very lists the sidebar is in
+	// the middle of walking.
+	pending_open:    int,
+	pending_archive: int,
+	pending_state:   bool,
 
 	chat:      Chat,
 	runner:    Runner,
@@ -81,10 +90,13 @@ App :: struct {
 
 app_init :: proc(app: ^App) {
 	app.selected = -1
+	app.pending_open = -1
+	app.pending_archive = -1
 	app.stick = true
 	cwd, _ := os.get_working_directory(context.allocator)
 	app.cwd = cwd
 	app.status = strings.clone("ready")
+	archive_load(&app.archive)
 	app.profile = os.get_env("AITHING_PROFILE", context.temp_allocator) != ""
 	chat_new(app)
 	app_rescan(app)
@@ -97,8 +109,11 @@ app_destroy :: proc(app: ^App) {
 	chat_destroy(&app.chat)
 	editor_destroy(&app.editor)
 	editor_destroy(&app.search)
+	archive_save(&app.archive)
+	archive_destroy(&app.archive)
 	sessions_free(app.sessions)
 	delete(app.visible)
+	delete(app.archived)
 	for &a in app.attach do attachment_destroy(&a)
 	delete(app.attach)
 	delete(app.open)
@@ -115,6 +130,25 @@ app_rescan :: proc(app: ^App) {
 }
 
 // Called once a frame: takes whatever the workers have finished.
+// Applies whatever the last frame's clicks asked for.
+app_apply_clicks :: proc(app: ^App) -> bool {
+	acted := app.pending_archive >= 0 || app.pending_open >= 0
+	if app.pending_archive >= 0 {
+		index := app.pending_archive
+		app.pending_archive = -1
+		archive_set(&app.archive, app.sessions[index].id, app.pending_state)
+		archive_save(&app.archive)
+		app_filter(app)
+	}
+	if app.pending_open >= 0 {
+		index := app.pending_open
+		app.pending_open = -1
+		app_open(app, index)
+		app_filter(app) // an opened session belongs in the working list
+	}
+	return acted
+}
+
 app_poll_jobs :: proc(app: ^App) -> bool {
 	changed := false
 	scan_reap(&app.scan)
@@ -169,6 +203,7 @@ app_poll_jobs :: proc(app: ^App) -> bool {
 
 app_filter :: proc(app: ^App) {
 	clear(&app.visible)
+	clear(&app.archived)
 	query := strings.to_lower(strings.trim_space(editor_text(&app.search)), context.temp_allocator)
 	for s, i in app.sessions {
 		if query != "" {
@@ -181,8 +216,21 @@ app_filter :: proc(app: ^App) {
 				continue
 			}
 		}
-		append(&app.visible, i)
+		// The session being read stays in the working list even if it is
+		// filed away, so opening something from the archive does not make it
+		// vanish out from under the pointer.
+		if archive_is(&app.archive, s.id, i) && app.selected != i {
+			append(&app.archived, i)
+		} else {
+			append(&app.visible, i)
+		}
 	}
+}
+
+app_archive :: proc(app: ^App, index: int, archived: bool) {
+	if index < 0 || index >= len(app.sessions) do return
+	app.pending_archive = index
+	app.pending_state = archived
 }
 
 chat_new :: proc(app: ^App) {
@@ -411,39 +459,6 @@ relative_time :: proc(t: time.Time) -> string {
 		return fmt.tprintf("%dd", int(secs / 86400))
 	}
 	return fmt.tprintf("%dw", int(secs / (86400 * 7)))
-}
-
-// The mailbox's date buckets, the way every mail client and chat sidebar does
-// it: everything from today first, then yesterday, then the rest.
-Bucket :: enum {
-	Today,
-	Yesterday,
-	Week,
-	Month,
-	Older,
-}
-
-bucket_label := [Bucket]string {
-	.Today     = "Today",
-	.Yesterday = "Yesterday",
-	.Week      = "Previous 7 days",
-	.Month     = "Previous 30 days",
-	.Older     = "Older",
-}
-
-time_bucket :: proc(t: time.Time) -> Bucket {
-	secs := time.duration_seconds(time.since(t))
-	switch {
-	case secs < 86400:
-		return .Today
-	case secs < 86400 * 2:
-		return .Yesterday
-	case secs < 86400 * 7:
-		return .Week
-	case secs < 86400 * 30:
-		return .Month
-	}
-	return .Older
 }
 
 // `/home/mike/Source/aithing` reads as `~/Source/aithing`, and a project slug

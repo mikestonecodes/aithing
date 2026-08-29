@@ -60,41 +60,43 @@ draw_sidebar :: proc(app: ^App, r: Rect) {
 		draw_editor(app, &app.search, inner, &ui.regular, 16.5, focused)
 	}
 
-	// The list itself.
+	// The list: what you are working on, then everything filed away behind one
+	// row. No date headers — ten rows do not need to be sorted into days.
 	list := Rect{r.x, r.y + 60, r.w, r.h - 60}
-	content: f32
-	last_bucket := Bucket.Older
-	first := true
-	for idx in app.visible {
-		b := time_bucket(app.sessions[idx].mtime)
-		if first || b != last_bucket {
-			content += 32
-			last_bucket = b
-			first = false
-		}
+	content := f32(len(app.visible)) * ROW_H + 8
+	if len(app.archived) > 0 {
 		content += ROW_H
+		if app.show_archive do content += f32(len(app.archived)) * ROW_H
 	}
-	content += 12
 
 	ui_begin_scroll(ui, list, &app.sidebar, content)
-	y := list.y - app.sidebar.offset
-	last_bucket = .Older
-	first = true
-	for idx, row in app.visible {
-		s := &app.sessions[idx]
-		b := time_bucket(s.mtime)
-		if first || b != last_bucket {
-			if y + 32 > list.y && y < list.y + list.h {
-				ui_text(ui, &ui.bold, bucket_label[b], {list.x + PAD, y + 10}, 13, FAINT)
-			}
-			y += 32
-			last_bucket = b
-			first = false
-		}
+	y := list.y + 4 - app.sidebar.offset
+	for idx in app.visible {
 		if y + ROW_H > list.y && y < list.y + list.h {
-			draw_session_row(app, s, idx, {list.x + 8, y, list.w - 16, ROW_H - 4}, row)
+			draw_session_row(app, &app.sessions[idx], idx, {list.x + 8, y, list.w - 16, ROW_H - 4}, false)
 		}
 		y += ROW_H
+	}
+
+	if len(app.archived) > 0 {
+		head := Rect{list.x + 8, y, list.w - 16, ROW_H - 4}
+		if y + ROW_H > list.y && y < list.y + list.h {
+			clicked, hovered := ui_invisible_button(ui, ui_id("archive-head"), head)
+			if clicked do app.show_archive = !app.show_archive
+			chevron(ui, {head.x + 12, head.y + head.h / 2}, app.show_archive, hovered ? MUTED : FAINT)
+			label := fmt.tprintf("Archived  %d", len(app.archived))
+			ui_text(ui, &ui.bold, label, {head.x + 26, head.y + 8}, 13, hovered ? MUTED : FAINT)
+		}
+		y += ROW_H
+
+		if app.show_archive {
+			for idx in app.archived {
+				if y + ROW_H > list.y && y < list.y + list.h {
+					draw_session_row(app, &app.sessions[idx], idx, {list.x + 8, y, list.w - 16, ROW_H - 4}, true)
+				}
+				y += ROW_H
+			}
+		}
 	}
 	ui_end_scroll(ui, list, &app.sidebar)
 
@@ -108,12 +110,36 @@ draw_sidebar :: proc(app: ^App, r: Rect) {
 }
 
 @(private = "file")
-draw_session_row :: proc(app: ^App, s: ^Session, index: int, r: Rect, row: int) {
+draw_session_row :: proc(app: ^App, s: ^Session, index: int, r: Rect, archived: bool) {
 	ui := &app.ui
 	id := ui_id("session", index)
-	clicked, hovered := ui_invisible_button(ui, id, r)
 	active := app.selected == index
+	over := ui_hovered(ui, r) || ui.active == id
 
+	// The archive button is claimed before the row is, or the row would take
+	// the press first and the button would never see it.
+	right := r.x + r.w - 10
+	if over {
+		btn := Rect{right - 24, r.y + (r.h - 22) / 2, 24, 22}
+		btn_id := ui_id("archive", index)
+		clicked_btn, btn_hovered := ui_invisible_button(ui, btn_id, btn)
+		ui_rect(ui, btn, btn_hovered ? PANEL_HI : Color(0), 6)
+		mark := btn_hovered ? TEXT : MUTED
+		// A tray: lid on top, and either dropping in or coming back out.
+		ui_rect(ui, {btn.x + 6, btn.y + 5, 12, 2}, mark, 1)
+		if archived {
+			ui_tri(ui, {btn.x + 8, btn.y + 13}, {btn.x + 16, btn.y + 13}, {btn.x + 12, btn.y + 9}, mark)
+		} else {
+			ui_tri(ui, {btn.x + 8, btn.y + 10}, {btn.x + 16, btn.y + 10}, {btn.x + 12, btn.y + 15}, mark)
+		}
+		if clicked_btn {
+			app_archive(app, index, !archived)
+			return
+		}
+		right -= 28
+	}
+
+	clicked, hovered := ui_invisible_button(ui, id, r)
 	glow := ui_anim(ui, id, hovered || active ? 1 : 0, 26)
 	if glow > 0.01 {
 		ui_rect(ui, r, color_alpha(active ? PANEL_HI : PANEL, glow), 8)
@@ -123,15 +149,18 @@ draw_session_row :: proc(app: ^App, s: ^Session, index: int, r: Rect, row: int) 
 	}
 
 	text_x := r.x + 12
-	right := r.x + r.w - 10
 	stamp := relative_time(s.mtime)
 	stamp_w := font_width(&ui.regular, stamp, 13)
-	ui_text(ui, &ui.regular, stamp, {right - stamp_w, r.y + 12}, 13, FAINT)
+	if !over {
+		ui_text(ui, &ui.regular, stamp, {right - stamp_w, r.y + 12}, 13, FAINT)
+	}
 
-	title := font_ellipsize(&ui.bold, s.title, 16.5, right - stamp_w - text_x - 12)
-	ui_text(ui, &ui.bold, title, {text_x, r.y + 10}, 16.5, active ? TEXT : color_mix(TEXT, MUTED, 0.3))
+	title_w := right - text_x - (over ? 4 : stamp_w + 10)
+	title := font_ellipsize(&ui.bold, s.title, 16.5, title_w)
+	col := active ? TEXT : color_mix(TEXT, MUTED, archived ? 0.6 : 0.3)
+	ui_text(ui, &ui.bold, title, {text_x, r.y + 10}, 16.5, col)
 
-	if clicked do app_open(app, index)
+	if clicked do app.pending_open = index
 }
 
 // --- transcript -------------------------------------------------------------
@@ -458,7 +487,7 @@ draw_composer :: proc(app: ^App, r: Rect) {
 	// The only control in the window: which model answers. Permissions are
 	// whatever the harness is already configured to do.
 	chip_y := box.y + box.h - 26
-	cx := draw_chip(app, ui_id("model-chip"), box.x + box.w - 12, chip_y, model_label[app.model], FAINT)
+	cx := draw_chip(app, ui_id("model-chip"), box.x + box.w - 12, chip_y, model_label[app.model], MUTED)
 	if ui.pressed && ui.hot == ui_id("model-chip") {
 		app.model = Model((int(app.model) + 1) % len(Model))
 	}
@@ -477,11 +506,12 @@ draw_composer :: proc(app: ^App, r: Rect) {
 @(private = "file")
 draw_chip :: proc(app: ^App, id: u64, right, y: f32, label: string, col: Color) -> f32 {
 	ui := &app.ui
-	w := font_width(&ui.regular, label, 13) + 16
-	r := Rect{right - w, y - 3, w, 22}
+	w := font_width(&ui.regular, label, 14) + 30
+	r := Rect{right - w, y - 5, w, 26}
 	_, hovered := ui_invisible_button(ui, id, r)
-	if hovered do ui_rect(ui, r, PANEL_HI, 6)
-	ui_text(ui, &ui.regular, label, {r.x + 8, y}, 13, hovered ? TEXT : col)
+	ui_rect(ui, r, hovered ? PANEL_HI : color_alpha(PANEL_HI, 0.5), 13)
+	ui_circle(ui, {r.x + 12, r.y + 13}, 3.5, ACCENT)
+	ui_text(ui, &ui.regular, label, {r.x + 21, y}, 14, hovered ? TEXT : col)
 	return r.x
 }
 
