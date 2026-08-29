@@ -1,0 +1,155 @@
+package aithing
+
+import "core:sync"
+import "core:thread"
+
+// Reading ~/.claude/projects means touching every session file on disk, and
+// opening a transcript means parsing megabytes of JSONL. Both happen on worker
+// threads: a window that stops answering the pointer for a second is the
+// difference between a native app and a toy.
+
+Scan_Job :: struct {
+	mu:      sync.Mutex,
+	worker:  ^thread.Thread,
+	running: bool,
+	ready:   bool,
+	result:  []Session,
+}
+
+scan_start :: proc(j: ^Scan_Job) {
+	sync.mutex_lock(&j.mu)
+	already := j.running
+	sync.mutex_unlock(&j.mu)
+	if already do return
+
+	scan_reap(j)
+	sync.mutex_lock(&j.mu)
+	j.running = true
+	j.ready = false
+	sync.mutex_unlock(&j.mu)
+	j.worker = thread.create_and_start_with_poly_data(j, proc(j: ^Scan_Job) {
+		list := sessions_scan()
+		sync.mutex_lock(&j.mu)
+		j.result = list
+		j.ready = true
+		j.running = false
+		sync.mutex_unlock(&j.mu)
+	})
+}
+
+// Hands over the finished list, if there is one. The caller owns it.
+scan_take :: proc(j: ^Scan_Job) -> ([]Session, bool) {
+	sync.mutex_lock(&j.mu)
+	defer sync.mutex_unlock(&j.mu)
+	if !j.ready do return nil, false
+	j.ready = false
+	out := j.result
+	j.result = nil
+	return out, true
+}
+
+scan_reap :: proc(j: ^Scan_Job) {
+	if j.worker != nil && thread.is_done(j.worker) {
+		thread.destroy(j.worker)
+		j.worker = nil
+	}
+}
+
+scan_destroy :: proc(j: ^Scan_Job) {
+	if j.worker != nil {
+		thread.join(j.worker)
+		thread.destroy(j.worker)
+		j.worker = nil
+	}
+	if j.result != nil do sessions_free(j.result)
+}
+
+Load_Job :: struct {
+	mu:       sync.Mutex,
+	worker:   ^thread.Thread,
+	session:  Session, // a private copy, so a rescan can't pull it away
+	running:  bool,
+	ready:    bool,
+	ok:       bool,
+	chat:     Chat,
+	// Bumped on every request; a result whose token no longer matches is from
+	// a session the reader has already clicked away from.
+	token:    int,
+	want:     int,
+}
+
+load_start :: proc(j: ^Load_Job, s: Session) {
+	load_reap(j)
+	sync.mutex_lock(&j.mu)
+	if j.running {
+		// A load is already in flight. Let it finish and discard it; the token
+		// makes sure its result is dropped rather than shown.
+		sync.mutex_unlock(&j.mu)
+		j.want += 1
+		return
+	}
+	j.want += 1
+	j.token = j.want
+	session_free(&j.session)
+	j.session = session_clone(s)
+	j.running = true
+	j.ready = false
+	sync.mutex_unlock(&j.mu)
+
+	j.worker = thread.create_and_start_with_poly_data(j, proc(j: ^Load_Job) {
+		chat, ok := session_load(&j.session)
+		sync.mutex_lock(&j.mu)
+		j.chat = chat
+		j.ok = ok
+		j.ready = true
+		j.running = false
+		sync.mutex_unlock(&j.mu)
+	})
+}
+
+load_busy :: proc(j: ^Load_Job) -> bool {
+	sync.mutex_lock(&j.mu)
+	defer sync.mutex_unlock(&j.mu)
+	return j.running || j.want != j.token
+}
+
+// The finished transcript, if it is still the one being waited for.
+load_take :: proc(j: ^Load_Job) -> (Chat, bool) {
+	sync.mutex_lock(&j.mu)
+	if !j.ready {
+		sync.mutex_unlock(&j.mu)
+		return {}, false
+	}
+	j.ready = false
+	chat := j.chat
+	j.chat = {}
+	stale := j.token != j.want
+	ok := j.ok
+	sync.mutex_unlock(&j.mu)
+
+	if stale {
+		// The reader moved on while this was parsing; throw it away and start
+		// on whatever they are actually looking at.
+		chat_destroy(&chat)
+		return {}, false
+	}
+	if !ok do return {}, false
+	return chat, true
+}
+
+load_reap :: proc(j: ^Load_Job) {
+	if j.worker != nil && thread.is_done(j.worker) {
+		thread.destroy(j.worker)
+		j.worker = nil
+	}
+}
+
+load_destroy :: proc(j: ^Load_Job) {
+	if j.worker != nil {
+		thread.join(j.worker)
+		thread.destroy(j.worker)
+		j.worker = nil
+	}
+	session_free(&j.session)
+	chat_destroy(&j.chat)
+}

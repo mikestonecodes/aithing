@@ -1,0 +1,230 @@
+package aithing
+
+import "core:strings"
+import "core:unicode/utf8"
+
+// The composer's text box. There is no widget tree to hang state off, so the
+// editor is a plain struct the caller owns: a byte buffer, a cursor, a
+// selection anchor, and the line ranges the last layout produced.
+
+Editor :: struct {
+	buf:      strings.Builder,
+	cursor:   int, // byte offset
+	anchor:   int, // the other end of the selection; equal to cursor when none
+	lines:    [dynamic]Span, // byte ranges of the wrapped lines, rebuilt on draw
+	scroll:   f32,
+	last_edit: f32, // ui.time of the last change, so the caret stops blinking
+}
+
+Span :: struct {
+	start, end: int,
+}
+
+editor_text :: proc(e: ^Editor) -> string {
+	return strings.to_string(e.buf)
+}
+
+editor_destroy :: proc(e: ^Editor) {
+	strings.builder_destroy(&e.buf)
+	delete(e.lines)
+}
+
+editor_clear :: proc(e: ^Editor) {
+	strings.builder_reset(&e.buf)
+	e.cursor, e.anchor = 0, 0
+}
+
+editor_selection :: proc(e: ^Editor) -> (lo, hi: int) {
+	lo, hi = e.cursor, e.anchor
+	if lo > hi do lo, hi = hi, lo
+	return
+}
+
+editor_has_selection :: proc(e: ^Editor) -> bool {
+	return e.cursor != e.anchor
+}
+
+editor_set_text :: proc(e: ^Editor, text: string) {
+	strings.builder_reset(&e.buf)
+	strings.write_string(&e.buf, text)
+	e.cursor = len(text)
+	e.anchor = e.cursor
+}
+
+@(private = "file")
+delete_selection :: proc(e: ^Editor) -> bool {
+	if !editor_has_selection(e) do return false
+	lo, hi := editor_selection(e)
+	text := editor_text(e)
+	rest := strings.clone(text[hi:], context.temp_allocator)
+	strings.builder_reset(&e.buf)
+	strings.write_string(&e.buf, text[:lo])
+	strings.write_string(&e.buf, rest)
+	e.cursor, e.anchor = lo, lo
+	return true
+}
+
+editor_insert :: proc(e: ^Editor, s: string) {
+	delete_selection(e)
+	text := editor_text(e)
+	tail := strings.clone(text[e.cursor:], context.temp_allocator)
+	strings.builder_reset(&e.buf)
+	strings.write_string(&e.buf, text[:e.cursor])
+	strings.write_string(&e.buf, s)
+	strings.write_string(&e.buf, tail)
+	e.cursor += len(s)
+	e.anchor = e.cursor
+}
+
+// Byte offset one rune to the left/right of `at`.
+prev_rune :: proc(s: string, at: int) -> int {
+	if at <= 0 do return 0
+	i := at - 1
+	for i > 0 && (s[i] & 0xc0) == 0x80 do i -= 1
+	return i
+}
+
+next_rune :: proc(s: string, at: int) -> int {
+	if at >= len(s) do return len(s)
+	_, size := utf8.decode_rune_in_string(s[at:])
+	return min(at + max(size, 1), len(s))
+}
+
+@(private = "file")
+is_word :: proc(c: byte) -> bool {
+	return(
+		(c >= 'a' && c <= 'z') ||
+		(c >= 'A' && c <= 'Z') ||
+		(c >= '0' && c <= '9') ||
+		c == '_' ||
+		c >= 0x80 \
+	)
+}
+
+word_left :: proc(s: string, at: int) -> int {
+	i := at
+	for i > 0 && !is_word(s[i - 1]) do i -= 1
+	for i > 0 && is_word(s[i - 1]) do i -= 1
+	return i
+}
+
+word_right :: proc(s: string, at: int) -> int {
+	i := at
+	for i < len(s) && !is_word(s[i]) do i += 1
+	for i < len(s) && is_word(s[i]) do i += 1
+	return i
+}
+
+line_start :: proc(s: string, at: int) -> int {
+	i := at
+	for i > 0 && s[i - 1] != '\n' do i -= 1
+	return i
+}
+
+line_end :: proc(s: string, at: int) -> int {
+	i := at
+	for i < len(s) && s[i] != '\n' do i += 1
+	return i
+}
+
+// Which laid-out line a byte offset falls on, and how far into it.
+editor_locate :: proc(e: ^Editor, at: int) -> (line: int, offset: int) {
+	for span, i in e.lines {
+		if at >= span.start && at <= span.end do return i, at - span.start
+	}
+	return max(len(e.lines) - 1, 0), 0
+}
+
+// Moves the cursor by whole laid-out lines, keeping roughly the same column.
+editor_move_line :: proc(e: ^Editor, delta: int, select: bool) {
+	if len(e.lines) == 0 do return
+	line, offset := editor_locate(e, e.cursor)
+	target := clamp(line + delta, 0, len(e.lines) - 1)
+	if target == line do return
+	span := e.lines[target]
+	e.cursor = clamp(span.start + offset, span.start, span.end)
+	if !select do e.anchor = e.cursor
+}
+
+Editor_Action :: enum {
+	None,
+	Submit,
+	Cancel,
+	Copy,
+	Cut,
+	Paste,
+}
+
+// Applies one key press. Text itself arrives separately, as UTF-8, because the
+// compositor sends keycodes and the layout table turns those into characters.
+editor_key :: proc(e: ^Editor, k: Key, time_now: f32) -> Editor_Action {
+	text := editor_text(e)
+	select := .Shift in k.mods
+	ctrl := .Ctrl in k.mods
+	e.last_edit = time_now
+
+	switch k.code {
+	case KEY_ENTER, KEY_KPENTER:
+		// Enter sends; shift-enter is a newline, the way every chat client does it.
+		if .Shift in k.mods {
+			editor_insert(e, "\n")
+			return .None
+		}
+		return .Submit
+	case KEY_ESC:
+		return .Cancel
+	case KEY_BACKSPACE:
+		if delete_selection(e) do return .None
+		if e.cursor > 0 {
+			from := ctrl ? word_left(text, e.cursor) : prev_rune(text, e.cursor)
+			e.anchor = from
+			delete_selection(e)
+		}
+		return .None
+	case KEY_DELETE:
+		if delete_selection(e) do return .None
+		if e.cursor < len(text) {
+			e.anchor = ctrl ? word_right(text, e.cursor) : next_rune(text, e.cursor)
+			delete_selection(e)
+		}
+		return .None
+	case KEY_LEFT:
+		e.cursor = ctrl ? word_left(text, e.cursor) : prev_rune(text, e.cursor)
+		if !select do e.anchor = e.cursor
+		return .None
+	case KEY_RIGHT:
+		e.cursor = ctrl ? word_right(text, e.cursor) : next_rune(text, e.cursor)
+		if !select do e.anchor = e.cursor
+		return .None
+	case KEY_UP:
+		editor_move_line(e, -1, select)
+		return .None
+	case KEY_DOWN:
+		editor_move_line(e, 1, select)
+		return .None
+	case KEY_HOME:
+		e.cursor = ctrl ? 0 : line_start(text, e.cursor)
+		if !select do e.anchor = e.cursor
+		return .None
+	case KEY_END:
+		e.cursor = ctrl ? len(text) : line_end(text, e.cursor)
+		if !select do e.anchor = e.cursor
+		return .None
+	case KEY_A:
+		if ctrl {
+			e.anchor, e.cursor = 0, len(text)
+			return .None
+		}
+	case KEY_C:
+		if ctrl do return .Copy
+	case KEY_X:
+		if ctrl do return .Cut
+	case KEY_V:
+		if ctrl do return .Paste
+	}
+	return .None
+}
+
+editor_delete_selection :: proc(e: ^Editor) -> bool {
+	return delete_selection(e)
+}
