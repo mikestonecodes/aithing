@@ -18,7 +18,6 @@ layout(location = 3)      in vec2  v_pos;
 layout(location = 4) flat in vec4  v_rect;
 layout(location = 5) flat in float v_radius;
 layout(location = 6) flat in uint  v_effect;
-layout(location = 7) flat in float v_param;
 
 layout(location = 0) out vec4 out_col;
 

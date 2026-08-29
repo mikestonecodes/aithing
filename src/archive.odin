@@ -66,6 +66,28 @@ archive_set :: proc(a: ^Archive, id: string, archived: bool) {
 	a.dirty = true
 }
 
+// The model choice lives beside the archive: one word, so that picking a model
+// is remembered the way the sidebar is.
+model_path :: proc(allocator := context.temp_allocator) -> string {
+	home := os.get_env("HOME", context.temp_allocator)
+	dir, _ := filepath.join({home, ".config", "aithing"}, context.temp_allocator)
+	os.make_directory_all(dir)
+	path, _ := filepath.join({dir, "model"}, allocator)
+	return path
+}
+
+model_load :: proc() -> Model {
+	data, err := os.read_entire_file_from_path(model_path(), context.temp_allocator)
+	if err != nil do return .Sonnet
+	name := strings.trim_space(string(data))
+	for m in Model do if model_flag[m] == name do return m
+	return .Sonnet
+}
+
+model_save :: proc(m: Model) {
+	_ = os.write_entire_file(model_path(), transmute([]byte)model_flag[m])
+}
+
 archive_destroy :: proc(a: ^Archive) {
 	for id in a.filed do delete(id)
 	delete(a.filed)

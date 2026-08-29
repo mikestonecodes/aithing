@@ -22,13 +22,15 @@ main :: proc() {
 	redirect_log()
 
 	open_last := true // by default, pick up where the last session left off
-	model := Model.Default
+	model := Model.Sonnet
+	model_set := false
 	prompt_parts := make([dynamic]string, context.temp_allocator)
 	want_model := false
 	for arg in os.args[1:] {
 		if want_model {
 			want_model = false
-			for m in Model do if model_label[m] == arg do model = m
+			model_set = true
+			for m in Model do if model_flag[m] == arg do model = m
 			continue
 		}
 		switch arg {
@@ -80,7 +82,7 @@ main :: proc() {
 
 	app_init(app)
 	defer app_destroy(app)
-	app.model = model
+	if model_set do app.model = model
 
 	if open_last {
 		// The scan is on a worker thread; wait for it just this once.
@@ -256,6 +258,7 @@ app_input :: proc(app: ^App) {
 				continue
 			case KEY_M:
 				app.model = Model((int(app.model) + 1) % len(Model))
+				model_save(app.model)
 				continue
 			}
 		}
@@ -270,7 +273,9 @@ app_input :: proc(app: ^App) {
 				app_send(app)
 			}
 		case .Cancel:
-			if app.focus == .Search {
+			if app.model_open {
+				app.model_open = false
+			} else if app.focus == .Search {
 				editor_clear(&app.search)
 				app.focus = .Composer
 				search_changed = true

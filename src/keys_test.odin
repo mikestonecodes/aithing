@@ -33,4 +33,18 @@ keymap_reads_a_real_keymap :: proc(t: ^testing.T) {
 	testing.expect_value(t, keymap_char(&km, KEY_ESC, false), rune(0))
 	testing.expect_value(t, keymap_char(&km, KEY_TAB, false), rune(0))
 	testing.expect_value(t, keymap_char(&km, KEY_LEFT, false), rune(0))
+
+	// A keymap that parsed is the only authority: a keycode it does not
+	// mention types nothing, rather than falling through to the US table and
+	// typing whatever a US keyboard has in that position.
+	testing.expect_value(t, keymap_char(&km, 250, false), rune(0))
+	testing.expect(t, !keymap_repeats(&km, KEY_ESC), "escape should not repeat")
+	testing.expect(t, keymap_repeats(&km, KEY_BACKSPACE), "backspace should repeat")
+}
+
+@(test)
+keymap_without_a_keymap_falls_back :: proc(t: ^testing.T) {
+	km: Keymap // nothing parsed: the built-in US table is all there is
+	testing.expect_value(t, keymap_char(&km, KEY_A, false), 'a')
+	testing.expect_value(t, keymap_char(&km, KEY_BACKSPACE, false), rune(0))
 }

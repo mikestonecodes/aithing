@@ -422,7 +422,7 @@ on_key :: proc "c" (
 	}
 	k := Key{key, w.input.mods}
 	emit_key(w, k)
-	if key_repeats(key) || keymap_char(&w.keymap, key, false) != 0 {
+	if keymap_repeats(&w.keymap, key) {
 		if w.repeat_rate <= 0 do return
 		w.repeat_key = k
 		w.repeat_next = time.time_add(time.now(), time.Duration(w.repeat_delay * f64(time.Second)))

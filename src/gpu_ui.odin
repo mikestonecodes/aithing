@@ -98,7 +98,9 @@ create_ui_pipeline :: proc(g: ^Gpu) {
 	}
 
 	push_range := vk.PushConstantRange {
-		stageFlags = {.VERTEX},
+		// Both stages read it: the vertex shader for the screen size, the
+		// fragment shader for the clock the animated effects run on.
+		stageFlags = {.VERTEX, .FRAGMENT},
 		size       = size_of(Push),
 	}
 	layout_info := vk.PipelineLayoutCreateInfo {
@@ -197,6 +199,10 @@ gpu_draw :: proc(g: ^Gpu, ui: ^UI, clear_color: Color) -> bool {
 	}
 	vk.BeginCommandBuffer(cmd, &begin)
 
+	// Both attachments start undefined: the multisampled image is cleared and
+	// then thrown away every frame, and the swapchain image is fully covered
+	// by the resolve.
+	swap_barrier(cmd, g.msaa_image, .UNDEFINED, .COLOR_ATTACHMENT_OPTIMAL)
 	swap_barrier(cmd, g.images[image_index], .UNDEFINED, .COLOR_ATTACHMENT_OPTIMAL)
 
 	// Premultiplied, to match the composite mode the swapchain asked for.
@@ -247,7 +253,7 @@ gpu_draw :: proc(g: ^Gpu, ui: ^UI, clear_color: Color) -> bool {
 		inv_screen = {g.ui_scale / f32(g.extent.width), g.ui_scale / f32(g.extent.height)},
 		time = ui.time,
 	}
-	vk.CmdPushConstants(cmd, g.pipeline_layout, {.VERTEX}, 0, size_of(Push), &push)
+	vk.CmdPushConstants(cmd, g.pipeline_layout, {.VERTEX, .FRAGMENT}, 0, size_of(Push), &push)
 
 	if len(ui.indices) > 0 {
 		offset: vk.DeviceSize = 0

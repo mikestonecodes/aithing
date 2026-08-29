@@ -25,7 +25,6 @@ layout(location = 3)      out vec2  v_pos;
 layout(location = 4) flat out vec4  v_rect;
 layout(location = 5) flat out float v_radius;
 layout(location = 6) flat out uint  v_effect;
-layout(location = 7) flat out float v_param;
 
 void main() {
 	gl_Position = vec4(in_pos * pc.inv_screen * 2.0 - 1.0, 0.0, 1.0);
@@ -36,5 +35,4 @@ void main() {
 	v_rect   = in_rect;
 	v_radius = in_radius;
 	v_effect = in_effect;
-	v_param  = in_param;
 }

@@ -69,6 +69,8 @@ App :: struct {
 
 	status:    string,
 	model:     Model,
+	model_open: bool, // the picker, open over the composer
+	model_chip: Rect, // where it opens from
 	cwd:       string, // where a new chat runs
 	cur_msg:   int,
 	// The session a running turn belongs to. Switching away mid-turn is
@@ -97,6 +99,7 @@ app_init :: proc(app: ^App) {
 	app.cwd = cwd
 	app.status = strings.clone("ready")
 	archive_load(&app.archive)
+	app.model = model_load()
 	app.profile = os.get_env("AITHING_PROFILE", context.temp_allocator) != ""
 	chat_new(app)
 	app_rescan(app)

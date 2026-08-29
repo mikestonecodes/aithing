@@ -28,6 +28,9 @@ draw_app :: proc(app: ^App) {
 	composer_h := composer_height(app, main.w)
 	draw_transcript(app, {main.x, 0, main.w, main.h - composer_h})
 	draw_composer(app, {main.x, main.h - composer_h, main.w, composer_h})
+	// Drawn last so it sits over the composer: there is no z order here, only
+	// the order things are put in the list.
+	if app.model_open do draw_model_picker(app)
 }
 
 // --- sidebar ----------------------------------------------------------------
@@ -486,8 +489,10 @@ draw_composer :: proc(app: ^App, r: Rect) {
 
 	// The only control in the window: which model answers. Permissions are
 	// whatever the harness is already configured to do.
-	chip_y := box.y + box.h - 26
+	chip_y := box.y + box.h - 28
 	cx := draw_chip(app, ui_id("model-chip"), box.x + box.w - 12, chip_y, model_label[app.model], MUTED)
+	if ui.pressed && ui.hot == ui_id("model-chip") do app.model_open = !app.model_open
+	app.model_chip = Rect{cx, chip_y - 5, box.x + box.w - 12 - cx, 26}
 	if ui.pressed && ui.hot == ui_id("model-chip") {
 		app.model = Model((int(app.model) + 1) % len(Model))
 	}
@@ -499,6 +504,40 @@ draw_composer :: proc(app: ^App, r: Rect) {
 		ui_rect(ui, {stop.x + 8, stop.y + 7, 8, 8}, RED, 2)
 		ui_text(ui, &ui.regular, "stop", {stop.x + 22, stop.y + 3}, 13, hovered ? TEXT : MUTED)
 		if clicked do app_interrupt(app)
+	}
+}
+
+// The picker itself: the models, stacked above the chip that opened it.
+@(private = "file")
+draw_model_picker :: proc(app: ^App) {
+	ui := &app.ui
+	row_h := f32(34)
+	w := max(app.model_chip.w, 150)
+	h := row_h * f32(len(Model)) + 10
+	r := Rect{app.model_chip.x + app.model_chip.w - w, app.model_chip.y - h - 6, w, h}
+
+	// Anywhere else closes it.
+	if ui.pressed && !rect_contains(r, ui.mouse) && !rect_contains(app.model_chip, ui.mouse) {
+		app.model_open = false
+		return
+	}
+
+	ui_rect(ui, {r.x + 2, r.y + 3, r.w, r.h}, Color(0x50000000), 12)
+	ui_rect(ui, r, PANEL_HI, 12)
+
+	y := r.y + 5
+	for m in Model {
+		row := Rect{r.x + 5, y, r.w - 10, row_h}
+		clicked, hovered := ui_invisible_button(ui, ui_id("model", int(m)), row)
+		if hovered do ui_rect(ui, row, PANEL, 8)
+		if m == app.model do ui_circle(ui, {row.x + 14, row.y + row_h / 2}, 3.5, ACCENT)
+		ui_text(ui, &ui.regular, model_label[m], {row.x + 26, y + 8}, 15, m == app.model ? TEXT : MUTED)
+		if clicked {
+			app.model = m
+			model_save(m)
+			app.model_open = false
+		}
+		y += row_h
 	}
 }
 

@@ -42,24 +42,21 @@ Event :: struct {
 // Which model the next turn runs on. The CLI takes the short aliases, and an
 // empty string means "whatever the harness would have picked".
 Model :: enum {
-	Default,
 	Haiku,
 	Sonnet,
 	Opus,
 }
 
 model_flag := [Model]string {
-	.Default = "",
-	.Haiku   = "haiku",
-	.Sonnet  = "sonnet",
-	.Opus    = "opus",
+	.Haiku  = "haiku",
+	.Sonnet = "sonnet",
+	.Opus   = "opus",
 }
 
 model_label := [Model]string {
-	.Default = "auto",
-	.Haiku   = "haiku",
-	.Sonnet  = "sonnet",
-	.Opus    = "opus",
+	.Haiku  = "Haiku",
+	.Sonnet = "Sonnet",
+	.Opus   = "Opus",
 }
 
 Runner :: struct {

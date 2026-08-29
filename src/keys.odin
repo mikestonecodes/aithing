@@ -108,6 +108,7 @@ key_repeats :: proc "contextless" (code: u32) -> bool {
 
 Keymap :: struct {
 	levels: map[u32][2]rune, // evdev code -> unshifted, shifted
+	parsed: bool, // once this holds, the keymap is the only authority
 }
 
 keymap_parse :: proc(text: string) -> (km: Keymap, ok: bool) {
@@ -171,9 +172,14 @@ keymap_parse :: proc(text: string) -> (km: Keymap, ok: bool) {
 			pair[level] = keysym_rune(strings.trim_space(part))
 			level += 1
 		}
-		if pair[0] != 0 || pair[1] != 0 do km.levels[code] = pair
+		// Keys that type nothing are recorded too, as a pair of zeroes. That
+		// is the whole point: the keymap has to be able to say "this key types
+		// nothing", or a Delete sitting on a keycode that a US keyboard uses
+		// for a digit falls through and types the digit.
+		km.levels[code] = pair
 	}
-	return km, len(km.levels) > 0
+	km.parsed = len(km.levels) > 0
+	return km, km.parsed
 }
 
 keymap_destroy :: proc(km: ^Keymap) {
@@ -181,16 +187,27 @@ keymap_destroy :: proc(km: ^Keymap) {
 	km^ = {}
 }
 
-// The character a key types under this keymap, falling back to the US table
-// for anything the keymap did not name.
+// The character a key types. A keymap that parsed is the only authority —
+// including about which keys type nothing at all. The US table is used only
+// when there is no keymap to go on.
 keymap_char :: proc(km: ^Keymap, code: u32, shift: bool) -> rune {
-	if pair, has := km.levels[code]; has {
+	if km.parsed {
+		pair := km.levels[code] or_else [2]rune{}
 		r := shift ? pair[1] : pair[0]
-		if r == 0 do r = pair[0]
-		if r != 0 do return r
+		if r == 0 && shift do r = pair[0]
+		return r
 	}
-	if ch := key_char(code, shift); ch != 0 do return rune(ch)
-	return 0
+	return rune(key_char(code, shift))
+}
+
+// Whether a held key should repeat: anything that types, plus the editing keys.
+keymap_repeats :: proc(km: ^Keymap, code: u32) -> bool {
+	switch code {
+	case KEY_BACKSPACE, KEY_DELETE, KEY_LEFT, KEY_RIGHT, KEY_UP, KEY_DOWN,
+	     KEY_PAGEUP, KEY_PAGEDOWN:
+		return true
+	}
+	return keymap_char(km, code, false) != 0
 }
 
 // The body of `xkb_<name> "..." { ... }`.
