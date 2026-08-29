@@ -1,5 +1,8 @@
 package aithing
 
+import "core:strconv"
+import "core:strings"
+
 // The compositor hands us raw evdev keycodes and an xkb keymap on a file
 // descriptor. Parsing that keymap is what libxkbcommon exists for, and pulling
 // in a library for it would undo the point of the rest of this program, so the
@@ -88,4 +91,217 @@ key_repeats :: proc "contextless" (code: u32) -> bool {
 		return true
 	}
 	return key_char(code, false) != 0
+}
+
+// --- the compositor's own keymap --------------------------------------------
+//
+// The US table above is only the fallback. What the compositor actually sends
+// is an xkb keymap on a file descriptor: text, with a section naming every
+// key and a section giving the symbols on it. Translating it is what
+// libxkbcommon is for, and linking that would undo the point of the rest of
+// this program, so the two sections that matter are parsed here.
+//
+//   xkb_keycodes "..." {  <AD01> = 24;          ...  };
+//   xkb_symbols  "..." {  key <AD01> { [ q, Q ] };   };
+//
+// Keycodes in the keymap are the evdev code plus 8, the way X numbered them.
+
+Keymap :: struct {
+	levels: map[u32][2]rune, // evdev code -> unshifted, shifted
+}
+
+keymap_parse :: proc(text: string) -> (km: Keymap, ok: bool) {
+	names := make(map[string]u32, 256, context.temp_allocator)
+	defer delete(names)
+
+	// Section one: <NAME> = CODE;
+	codes := section(text, "xkb_keycodes")
+	rest := codes
+	for {
+		open := strings.index_byte(rest, '<')
+		if open < 0 do break
+		close := strings.index_byte(rest[open:], '>')
+		if close < 0 do break
+		name := rest[open + 1:open + close]
+		rest = rest[open + close + 1:]
+
+		eq := strings.index_byte(rest, '=')
+		semi := strings.index_byte(rest, ';')
+		if eq < 0 || semi < 0 || eq > semi do continue
+		value := strings.trim_space(rest[eq + 1:semi])
+		if code, parsed := strconv.parse_int(value); parsed && code >= 8 {
+			names[name] = u32(code - 8)
+		}
+		rest = rest[semi + 1:]
+	}
+	if len(names) == 0 do return {}, false
+
+	// Section two: key <NAME> { ... [ level1, level2, ... ] ... };
+	syms := section(text, "xkb_symbols")
+	rest = syms
+	for {
+		idx := strings.index(rest, "key <")
+		if idx < 0 do break
+		rest = rest[idx + 5:]
+		close := strings.index_byte(rest, '>')
+		if close < 0 do break
+		name := rest[:close]
+		rest = rest[close + 1:]
+
+		// The key's body ends at the first `};`; take the last bracketed list
+		// inside it, which for a multi-group key is the one for group 1.
+		end := strings.index(rest, "};")
+		if end < 0 do break
+		body := rest[:end]
+		rest = rest[end + 2:]
+
+		open := strings.index_byte(body, '[')
+		if open < 0 do continue
+		shut := strings.index_byte(body[open:], ']')
+		if shut < 0 do continue
+		list := body[open + 1:open + shut]
+
+		code, has := names[name]
+		if !has do continue
+
+		pair: [2]rune
+		level := 0
+		for part in strings.split_iterator(&list, ",") {
+			if level >= 2 do break
+			pair[level] = keysym_rune(strings.trim_space(part))
+			level += 1
+		}
+		if pair[0] != 0 || pair[1] != 0 do km.levels[code] = pair
+	}
+	return km, len(km.levels) > 0
+}
+
+keymap_destroy :: proc(km: ^Keymap) {
+	delete(km.levels)
+	km^ = {}
+}
+
+// The character a key types under this keymap, falling back to the US table
+// for anything the keymap did not name.
+keymap_char :: proc(km: ^Keymap, code: u32, shift: bool) -> rune {
+	if pair, has := km.levels[code]; has {
+		r := shift ? pair[1] : pair[0]
+		if r == 0 do r = pair[0]
+		if r != 0 do return r
+	}
+	if ch := key_char(code, shift); ch != 0 do return rune(ch)
+	return 0
+}
+
+// The body of `xkb_<name> "..." { ... }`.
+@(private = "file")
+section :: proc(text: string, name: string) -> string {
+	start := strings.index(text, name)
+	if start < 0 do return ""
+	body := text[start:]
+	open := strings.index_byte(body, '{')
+	if open < 0 do return ""
+	return body[open + 1:]
+}
+
+// Keysym names to characters. Single-character names are themselves; the rest
+// are the handful of names xkb gives to punctuation, plus the `UXXXX` form.
+@(private = "file")
+keysym_rune :: proc(sym: string) -> rune {
+	if sym == "" || sym == "NoSymbol" do return 0
+	if len(sym) == 1 do return rune(sym[0])
+
+	if sym[0] == 'U' && len(sym) >= 5 {
+		if v, ok := strconv.parse_u64_of_base(sym[1:], 16); ok do return rune(v)
+	}
+	if strings.has_prefix(sym, "0x") {
+		if v, ok := strconv.parse_u64_of_base(sym[2:], 16); ok {
+			// Unicode keysyms are 0x01000000 + codepoint.
+			if v > 0x0100_0000 do return rune(v - 0x0100_0000)
+			if v < 0x100 do return rune(v)
+		}
+	}
+
+	switch sym {
+	case "space":        return ' '
+	case "exclam":       return '!'
+	case "quotedbl":     return '"'
+	case "numbersign":   return '#'
+	case "dollar":       return '$'
+	case "percent":      return '%'
+	case "ampersand":    return '&'
+	case "apostrophe", "quoteright": return '\''
+	case "parenleft":    return '('
+	case "parenright":   return ')'
+	case "asterisk":     return '*'
+	case "plus":         return '+'
+	case "comma":        return ','
+	case "minus":        return '-'
+	case "period":       return '.'
+	case "slash":        return '/'
+	case "colon":        return ':'
+	case "semicolon":    return ';'
+	case "less":         return '<'
+	case "equal":        return '='
+	case "greater":      return '>'
+	case "question":     return '?'
+	case "at":           return '@'
+	case "bracketleft":  return '['
+	case "backslash":    return '\\'
+	case "bracketright": return ']'
+	case "asciicircum":  return '^'
+	case "underscore":   return '_'
+	case "grave", "quoteleft": return '`'
+	case "braceleft":    return '{'
+	case "bar":          return '|'
+	case "braceright":   return '}'
+	case "asciitilde":   return '~'
+	case "nobreakspace": return ' '
+	case "exclamdown":   return '¡'
+	case "cent":         return '¢'
+	case "sterling":     return '£'
+	case "yen":          return '¥'
+	case "section":      return '§'
+	case "diaeresis":    return '¨'
+	case "guillemotleft":  return '«'
+	case "guillemotright": return '»'
+	case "degree":       return '°'
+	case "plusminus":    return '±'
+	case "acute":        return '´'
+	case "mu":           return 'µ'
+	case "questiondown": return '¿'
+	case "multiply":     return '×'
+	case "division":     return '÷'
+	case "ssharp":       return 'ß'
+	case "adiaeresis":   return 'ä'
+	case "Adiaeresis":   return 'Ä'
+	case "odiaeresis":   return 'ö'
+	case "Odiaeresis":   return 'Ö'
+	case "udiaeresis":   return 'ü'
+	case "Udiaeresis":   return 'Ü'
+	case "aring":        return 'å'
+	case "Aring":        return 'Å'
+	case "ae":           return 'æ'
+	case "AE":           return 'Æ'
+	case "oslash":       return 'ø'
+	case "Oslash":       return 'Ø'
+	case "ccedilla":     return 'ç'
+	case "Ccedilla":     return 'Ç'
+	case "ntilde":       return 'ñ'
+	case "Ntilde":       return 'Ñ'
+	case "aacute":       return 'á'
+	case "eacute":       return 'é'
+	case "iacute":       return 'í'
+	case "oacute":       return 'ó'
+	case "uacute":       return 'ú'
+	case "agrave":       return 'à'
+	case "egrave":       return 'è'
+	case "ugrave":       return 'ù'
+	case "acircumflex":  return 'â'
+	case "ecircumflex":  return 'ê'
+	case "ocircumflex":  return 'ô'
+	case "EuroSign":     return '€'
+	}
+	// Dead keys, function keys, modifiers: nothing to type.
+	return 0
 }

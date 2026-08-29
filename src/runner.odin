@@ -39,20 +39,6 @@ Event :: struct {
 	parent:     string, // the Task tool id, when this came from a subagent
 }
 
-Permission_Mode :: enum {
-	Default,
-	Accept_Edits,
-	Plan,
-	Bypass,
-}
-
-permission_flag := [Permission_Mode]string {
-	.Default      = "default",
-	.Accept_Edits = "acceptEdits",
-	.Plan         = "plan",
-	.Bypass       = "bypassPermissions",
-}
-
 // Which model the next turn runs on. The CLI takes the short aliases, and an
 // empty string means "whatever the harness would have picked".
 Model :: enum {
@@ -100,7 +86,6 @@ runner_start :: proc(
 	cwd: string,
 	session_id: string,
 	prompt: string,
-	mode: Permission_Mode,
 	model: string = "",
 ) -> bool {
 	if runner_busy(r) do return false
@@ -108,7 +93,6 @@ runner_start :: proc(
 	args := make([dynamic]string, context.allocator)
 	append(&args, "claude", "-p", prompt)
 	append(&args, "--output-format", "stream-json", "--include-partial-messages", "--verbose")
-	append(&args, "--permission-mode", permission_flag[mode])
 	if model != "" do append(&args, "--model", model)
 	if session_id != "" do append(&args, "--resume", session_id)
 

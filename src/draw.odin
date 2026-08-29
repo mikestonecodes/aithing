@@ -443,22 +443,22 @@ draw_composer :: proc(app: ^App, r: Rect) {
 		inner_y += thumb + 14
 	}
 
-	text_r := Rect{box.x + 16, inner_y, box.w - 32, box.y + box.h - inner_y - 12}
+	// One line of text sits in the middle of the box; more lines grow upward
+	// from the same baseline, because the box grows with them.
+	lines := f32(max(len(app.editor.lines), 1))
+	text_h := lines * (COMPOSER_PX * 1.5)
+	avail := box.y + box.h - inner_y - 24
+	text_r := Rect{box.x + 18, inner_y + max((avail - text_h) / 2, 0), box.w - 36, text_h}
 	if editor_text(&app.editor) == "" && !focused {
 		ui_text(ui, &ui.regular, "Reply to Claude...", {text_r.x, text_r.y}, COMPOSER_PX, FAINT)
 	}
 	editor_layout_lines(ui, &app.editor, text_r.w, &ui.regular, COMPOSER_PX)
 	draw_editor(app, &app.editor, text_r, &ui.regular, COMPOSER_PX, focused)
 
-	// The only controls in the window: which model answers, and how freely it
-	// may act. Both cycle on click, and on Ctrl+M / Ctrl+P.
+	// The only control in the window: which model answers. Permissions are
+	// whatever the harness is already configured to do.
 	chip_y := box.y + box.h - 26
-	cx := box.x + box.w - 12
-	cx = draw_chip(app, ui_id("mode-chip"), cx, chip_y, permission_flag[app.mode], app.mode == .Bypass ? RED : FAINT)
-	if ui.pressed && ui.hot == ui_id("mode-chip") {
-		app.mode = Permission_Mode((int(app.mode) + 1) % len(Permission_Mode))
-	}
-	cx = draw_chip(app, ui_id("model-chip"), cx - 6, chip_y, model_label[app.model], FAINT)
+	cx := draw_chip(app, ui_id("model-chip"), box.x + box.w - 12, chip_y, model_label[app.model], FAINT)
 	if ui.pressed && ui.hot == ui_id("model-chip") {
 		app.model = Model((int(app.model) + 1) % len(Model))
 	}
@@ -597,17 +597,28 @@ draw_editor :: proc(app: ^App, e: ^Editor, r: Rect, font: ^Font, px: f32, focuse
 		span := e.lines[clamp(row, 0, len(e.lines) - 1)]
 		cx := r.x + font_width(font, text[span.start:span.start + off], px)
 
-		// A caret that is solid while typing and fades in and out when the
-		// typing stops — a hard on/off blink is what reads as cheap.
+		// A block caret, the width of the character it sits on, with that
+		// character redrawn dark on top of it — a terminal cursor, because a
+		// hairline is hard to find in a window this size.
 		idle := ui.time - e.last_edit
 		alpha := f32(1)
 		if idle > 0.6 {
 			phase := (idle - 0.6) * 2.6
-			alpha = 0.30 + 0.70 * (0.5 + 0.5 * math.cos(phase))
+			alpha = 0.45 + 0.55 * (0.5 + 0.5 * math.cos(phase))
 			ui.time_effects = true
 		}
-		caret := Rect{cx - 1, r.y + f32(row) * lh + 1, 2.5, lh - 2}
-		ui_rect(ui, caret, color_alpha(ACCENT, alpha), 1.25)
+
+		under: string
+		w := font_width(font, " ", px)
+		if e.cursor < span.end {
+			under = text[e.cursor:next_rune(text, e.cursor)]
+			w = font_width(font, under, px)
+		}
+		caret := Rect{cx, r.y + f32(row) * lh, max(w, 3), lh - 1}
+		ui_rect(ui, caret, color_alpha(ACCENT, alpha), 2)
+		if under != "" && alpha > 0.6 {
+			ui_text(ui, font, under, {cx, r.y + f32(row) * lh + 2}, px, BG)
+		}
 	}
 }
 

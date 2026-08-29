@@ -256,9 +256,6 @@ app_input :: proc(app: ^App) {
 			case KEY_M:
 				app.model = Model((int(app.model) + 1) % len(Model))
 				continue
-			case KEY_P:
-				app.mode = Permission_Mode((int(app.mode) + 1) % len(Permission_Mode))
-				continue
 			}
 		}
 

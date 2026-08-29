@@ -59,10 +59,14 @@ App :: struct {
 	stick:     bool, // keep the transcript pinned to the bottom
 
 	status:    string,
-	mode:      Permission_Mode,
 	model:     Model,
 	cwd:       string, // where a new chat runs
 	cur_msg:   int,
+	// The session a running turn belongs to. Switching away mid-turn is
+	// allowed: the harness keeps writing to its own session file, so the
+	// answer is not lost, it just stops being drawn.
+	run_session: string,
+	run_index:   int,
 	// Message heights, cached: measuring a long transcript every frame is what
 	// would make typing feel heavy. Rebuilt when the width or the chat change.
 	heights:   [dynamic]f32,
@@ -78,7 +82,6 @@ App :: struct {
 app_init :: proc(app: ^App) {
 	app.selected = -1
 	app.stick = true
-	app.mode = .Accept_Edits
 	cwd, _ := os.get_working_directory(context.allocator)
 	app.cwd = cwd
 	app.status = strings.clone("ready")
@@ -101,6 +104,7 @@ app_destroy :: proc(app: ^App) {
 	delete(app.open)
 	delete(app.heights)
 	delete(app.status)
+	delete(app.run_session)
 	delete(app.cwd)
 }
 
@@ -198,10 +202,6 @@ chat_new :: proc(app: ^App) {
 // lands instantly even on a session file that runs to tens of megabytes.
 app_open :: proc(app: ^App, index: int) {
 	if index < 0 || index >= len(app.sessions) do return
-	if runner_busy(&app.runner) {
-		app_status(app, "stop the current turn before switching session")
-		return
-	}
 	if app.selected == index && !load_busy(&app.load) do return
 
 	s := &app.sessions[index]
@@ -248,11 +248,14 @@ app_send :: proc(app: ^App) {
 	app.chat_ver += 1
 
 	cwd := app.chat.cwd != "" ? app.chat.cwd : app.cwd
-	if !runner_start(&app.runner, cwd, app.chat.session_id, prompt, app.mode, model_flag[app.model]) {
+	if !runner_start(&app.runner, cwd, app.chat.session_id, prompt, model_flag[app.model]) {
 		app_status(app, "could not start claude")
 		return
 	}
 	editor_clear(&app.editor)
+	delete(app.run_session)
+	app.run_session = strings.clone(app.chat.session_id)
+	app.run_index = app.selected
 	app.cur_msg = -1
 	app.stick = true
 	app_status(app, "thinking...")
@@ -279,6 +282,23 @@ app_apply_events :: proc(app: ^App) -> bool {
 @(private = "file")
 app_apply :: proc(app: ^App, e: ^Event) {
 	c := &app.chat
+
+	// A turn that belongs to a session the reader has left still has to be
+	// tracked — the id and the finish matter — but its text goes nowhere.
+	watching := app.run_session == "" || app.run_session == c.session_id
+	if !watching {
+		#partial switch e.kind {
+		case .Session:
+			delete(app.run_session)
+			app.run_session = strings.clone(e.id)
+		case .Done:
+			app.cur_msg = -1
+			app.cost = app.runner.cost
+			app_status(app, "ready")
+			app.rescan = true
+		}
+		return
+	}
 	app.chat_ver += 1
 
 	switch e.kind {
@@ -286,6 +306,8 @@ app_apply :: proc(app: ^App, e: ^Event) {
 		if e.id != "" && c.session_id != e.id {
 			delete(c.session_id)
 			c.session_id = strings.clone(e.id)
+			delete(app.run_session)
+			app.run_session = strings.clone(e.id)
 		}
 
 	case .Status:

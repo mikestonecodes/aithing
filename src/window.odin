@@ -5,6 +5,7 @@ import "core:fmt"
 import "core:os"
 import "core:strings"
 import "core:sys/linux"
+import "core:unicode/utf8"
 import "core:time"
 import wl "./wayland"
 
@@ -73,6 +74,7 @@ Window :: struct {
 
 	// Key repeat. The compositor tells us the rate it wants; we synthesise the
 	// repeats ourselves because nothing else is watching the key.
+	keymap:       Keymap, // what the compositor says the keys mean
 	repeat_key:   Key,
 	repeat_rate:  f64, // keys per second, 0 disables
 	repeat_delay: f64, // seconds before the first repeat
@@ -339,12 +341,7 @@ on_seat_capabilities :: proc "c" (data: rawptr, self: ^wl.wl_seat, capabilities:
 	if capabilities & wl.wl_seat_capability_keyboard != 0 && w.keyboard == nil {
 		w.keyboard = wl.wl_seat_get_keyboard(self)
 		keyboard_listener = {
-			keymap = proc "c" (data: rawptr, self: ^wl.wl_keyboard, format: u32, fd: i32, size: u32) {
-				context = g_win_ctx
-				// The keymap is xkb source text; translating it would mean
-				// linking libxkbcommon, so keys.odin carries its own table.
-				linux.close(linux.Fd(fd))
-			},
+			keymap = on_keymap,
 			enter = proc "c" (data: rawptr, self: ^wl.wl_keyboard, serial: u32, surface: ^wl.wl_surface, keys: ^wl.Array) {
 				(cast(^Window)data).serial = serial
 			},
@@ -424,10 +421,39 @@ on_key :: proc "c" (
 	}
 	k := Key{key, w.input.mods}
 	emit_key(w, k)
-	if key_repeats(key) && w.repeat_rate > 0 {
+	if key_repeats(key) || keymap_char(&w.keymap, key, false) != 0 {
+		if w.repeat_rate <= 0 do return
 		w.repeat_key = k
 		w.repeat_next = time.time_add(time.now(), time.Duration(w.repeat_delay * f64(time.Second)))
 	}
+}
+
+// The keymap arrives as xkb source text on a file descriptor. keys.odin picks
+// the two sections it needs out of it; a keymap it cannot make sense of just
+// leaves the built-in US table in place.
+@(private = "file")
+on_keymap :: proc "c" (
+	data: rawptr,
+	self: ^wl.wl_keyboard,
+	format: u32,
+	fd: i32,
+	size: u32,
+) {
+	context = g_win_ctx
+	defer linux.close(linux.Fd(fd))
+	w := cast(^Window)data
+	if format != wl.wl_keyboard_keymap_format_xkb_v1 || size == 0 do return
+
+	addr, err := linux.mmap(0, uint(size), {.READ}, {.PRIVATE}, linux.Fd(fd), 0)
+	if err != .NONE do return
+	defer linux.munmap(addr, uint(size))
+
+	text := strings.string_from_ptr(cast(^byte)addr, int(size - 1))
+	km, ok := keymap_parse(text)
+	if !ok do return
+	keymap_destroy(&w.keymap)
+	w.keymap = km
+	free_all(context.temp_allocator)
 }
 
 @(private = "file")
@@ -456,8 +482,9 @@ on_modifiers :: proc "c" (
 emit_key :: proc(w: ^Window, k: Key) {
 	append(&w.input.keys, k)
 	if .Ctrl in k.mods || .Alt in k.mods || .Super in k.mods do return
-	if ch := key_char(k.code, .Shift in k.mods); ch != 0 {
-		append(&w.input.text, ch)
+	if r := keymap_char(&w.keymap, k.code, .Shift in k.mods); r != 0 {
+		bytes, n := utf8.encode_rune(r)
+		append(&w.input.text, ..bytes[:n])
 	}
 }
 
@@ -490,12 +517,19 @@ window_poll :: proc(w: ^Window, timeout_ms: i32 = 0) {
 	wl.display_dispatch_pending(w.display)
 
 	// Held keys repeat on our own clock, so a held backspace empties the
-	// composer at the rate the compositor asked for.
+	// composer at the rate the compositor asked for. The catch-up is capped:
+	// after a stall — the window was hidden, or the GPU took its time — a
+	// held key must not suddenly fire fifty times at once.
 	if w.repeat_key.code != 0 && w.repeat_rate > 0 {
 		period := time.Duration(f64(time.Second) / w.repeat_rate)
-		for time.since(w.repeat_next) >= 0 {
+		fired := 0
+		for time.since(w.repeat_next) >= 0 && fired < 3 {
 			emit_key(w, w.repeat_key)
 			w.repeat_next = time.time_add(w.repeat_next, period)
+			fired += 1
+		}
+		if time.since(w.repeat_next) >= 0 {
+			w.repeat_next = time.time_add(time.now(), period)
 		}
 	}
 }
@@ -528,6 +562,7 @@ window_key_pressed :: proc(w: ^Window, key: u32, mods: Mods = {}) -> bool {
 }
 
 window_close :: proc(w: ^Window) {
+	keymap_destroy(&w.keymap)
 	delete(w.input.keys)
 	delete(w.input.text)
 	if w.blur_surface != nil do wl.ext_background_effect_surface_v1_destroy(w.blur_surface)
