@@ -9,9 +9,18 @@ import "core:testing"
 
 @(test)
 keymap_reads_a_real_keymap :: proc(t: ^testing.T) {
-	// `xkbcli compile-keymap > testdata/keymap.txt` regenerates this.
-	data, err := os.read_entire_file_from_path("src/testdata/keymap.txt", context.allocator)
-	if err != nil do return // no dump on this machine; nothing to check
+	// Two real keymaps: one written with keysym names (`xkbcli compile-keymap`)
+	// and one with hex keysyms and typed keys (what a compositor tends to
+	// send, dumped with AITHING_KEYMAP=<path>).
+	for path in ([?]string{"src/testdata/keymap.txt", "src/testdata/keymap-hex.txt"}) {
+		check_keymap(t, path)
+	}
+}
+
+@(private = "file")
+check_keymap :: proc(t: ^testing.T, path: string) {
+	data, err := os.read_entire_file_from_path(path, context.allocator)
+	if err != nil do return // not on this machine; nothing to check
 	defer delete(data)
 
 	km, ok := keymap_parse(string(data))

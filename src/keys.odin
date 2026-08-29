@@ -156,11 +156,8 @@ keymap_parse :: proc(text: string) -> (km: Keymap, ok: bool) {
 		body := rest[:end]
 		rest = rest[end + 2:]
 
-		open := strings.index_byte(body, '[')
-		if open < 0 do continue
-		shut := strings.index_byte(body[open:], ']')
-		if shut < 0 do continue
-		list := body[open + 1:open + shut]
+		list, found := symbol_list(body)
+		if !found do continue
 
 		code, has := names[name]
 		if !has do continue
@@ -208,6 +205,33 @@ keymap_repeats :: proc(km: ^Keymap, code: u32) -> bool {
 		return true
 	}
 	return keymap_char(km, code, false) != 0
+}
+
+// The bracketed symbol list out of a key's body. A key is written either as
+//
+//     key <AD01> { [ 0x71, 0x51 ] };
+//
+// or, when it needs a type, as
+//
+//     key <BKSP> { type= "CTRL+ALT", symbols[1]= [ 0xff08, ... ] };
+//
+// so the first `[` in the body is not necessarily the list: in the second form
+// it is the `[1]` of `symbols[1]`, whose contents read as the character `1` —
+// which is how a backspace ends up typing a digit. The list is the bracket
+// that follows a `=` or the opening `{`.
+@(private = "file")
+symbol_list :: proc(body: string) -> (list: string, ok: bool) {
+	for i in 0 ..< len(body) {
+		if body[i] != '[' do continue
+		j := i - 1
+		for j >= 0 && (body[j] == ' ' || body[j] == '\t' || body[j] == '\n') do j -= 1
+		if j < 0 do continue
+		if body[j] != '=' && body[j] != '{' do continue
+		shut := strings.index_byte(body[i:], ']')
+		if shut < 0 do return "", false
+		return body[i + 1:i + shut], true
+	}
+	return "", false
 }
 
 // The body of `xkb_<name> "..." { ... }`.
