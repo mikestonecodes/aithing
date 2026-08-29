@@ -38,8 +38,8 @@ md_layout :: proc(ui: ^UI, b: ^Block, width: f32) {
 	clear(&b.lines)
 
 	in_code := false
-	for raw in strings_lines(text) {
-		line := raw
+	it := each_line(text)
+	for line in iter_next(&it) {
 		if strings.has_prefix(strings.trim_left_space(line), "```") {
 			in_code = !in_code
 			continue

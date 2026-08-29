@@ -88,7 +88,10 @@ font_width :: proc(f: ^Font, text: string, size: f32) -> f32 {
 }
 
 // Trims text to fit `max_width`, appending an ellipsis when it has to cut.
-font_ellipsize :: proc(f: ^Font, text: string, size: f32, max_width: f32) -> string {
+// The result is written into `buf`, which the caller keeps on the stack: this
+// runs for every visible row of every frame, and none of it should reach the
+// allocator.
+font_ellipsize :: proc(f: ^Font, text: string, size: f32, max_width: f32, buf: []u8) -> string {
 	if font_width(f, text, size) <= max_width do return text
 
 	ell := font_width(f, "...", size)
@@ -97,7 +100,10 @@ font_ellipsize :: proc(f: ^Font, text: string, size: f32, max_width: f32) -> str
 	for ch, byte_index in text {
 		next := w + f.chars[glyph_index(ch)].xadvance * scale
 		if next + ell > max_width {
-			return fmt.tprintf("%s...", text[:byte_index])
+			cut := min(byte_index, max(len(buf) - 3, 0))
+			n := copy(buf, text[:cut])
+			n += copy(buf[n:], "...")
+			return string(buf[:n])
 		}
 		w = next
 	}

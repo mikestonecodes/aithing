@@ -99,6 +99,10 @@ UI :: struct {
 	// Set when something on screen is driven by the shader clock, which only
 	// advances on a redraw. Kept separate so it can be paced more loosely.
 	time_effects: bool,
+	// Seconds until the next frame something actually needs. A blinking caret
+	// wants two frames a second, not sixty, and an idle window should cost
+	// nothing in between.
+	wake_in:      f32,
 }
 
 // Eases `id`'s stored value toward `target`. `speed` is roughly "how much of
@@ -114,6 +118,12 @@ ui_anim :: proc(ui: ^UI, id: u64, target: f32, speed: f32 = 22) -> f32 {
 }
 
 NO_ROUND :: f32(-1)
+NEVER :: f32(1e9)
+
+// Asks for a redraw in `seconds`, if nothing sooner already did.
+ui_wake_in :: proc(ui: ^UI, seconds: f32) {
+	ui.wake_in = min(ui.wake_in, max(seconds, 0))
+}
 
 rect_contains :: proc "contextless" (r: Rect, p: [2]f32) -> bool {
 	return p.x >= r.x && p.x < r.x + r.w && p.y >= r.y && p.y < r.y + r.h
@@ -141,6 +151,18 @@ ui_id :: proc "contextless" (label: string, index: int = 0) -> u64 {
 	return h
 }
 
+// An id for something addressed by where it lives — a block in the transcript,
+// an editor. Hashing the address costs nothing and, unlike formatting it into
+// a string, allocates nothing.
+ui_id_ptr :: proc "contextless" (p: rawptr, salt: int = 0) -> u64 {
+	h: u64 = 0xcbf29ce484222325
+	v := u64(uintptr(p))
+	for i in 0 ..< 8 {
+		h = (h ~ ((v >> uint(i * 8)) & 0xff)) * 0x100000001b3
+	}
+	return (h ~ u64(salt)) * 0x100000001b3
+}
+
 ui_begin :: proc(ui: ^UI, width, height: int, input: ^Input, dt: f32 = 1.0 / 60) {
 	ui.dt = clamp(dt, 0, 0.1)
 	ui.time += ui.dt
@@ -162,6 +184,7 @@ ui_begin :: proc(ui: ^UI, width, height: int, input: ^Input, dt: f32 = 1.0 / 60)
 	ui.hot = 0
 	ui.animating = false
 	ui.time_effects = false
+	ui.wake_in = NEVER
 }
 
 ui_end :: proc(ui: ^UI) {

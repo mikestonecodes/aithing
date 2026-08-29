@@ -11,6 +11,9 @@ import "core:strings"
 // actually gets drawn.
 
 PAD :: f32(16)
+BLINK :: f32(0.55) // caret on/off, in seconds
+RESULT_BYTES :: 4000 // how much of a tool result is ever shown
+RESULT_LINES :: 40
 ROW_H :: f32(42)
 
 draw_app :: proc(app: ^App) {
@@ -87,7 +90,8 @@ draw_sidebar :: proc(app: ^App, r: Rect) {
 			clicked, hovered := ui_invisible_button(ui, ui_id("archive-head"), head)
 			if clicked do app.show_archive = !app.show_archive
 			chevron(ui, {head.x + 12, head.y + head.h / 2}, app.show_archive, hovered ? MUTED : FAINT)
-			label := fmt.tprintf("Archived  %d", len(app.archived))
+			label_buf: [32]u8
+			label := fmt.bprintf(label_buf[:], "Archived  %d", len(app.archived))
 			ui_text(ui, &ui.bold, label, {head.x + 26, head.y + 8}, 13, hovered ? MUTED : FAINT)
 		}
 		y += ROW_H
@@ -130,11 +134,7 @@ draw_session_row :: proc(app: ^App, s: ^Session, index: int, r: Rect, archived: 
 		mark := btn_hovered ? TEXT : MUTED
 		// A tray: lid on top, and either dropping in or coming back out.
 		ui_rect(ui, {btn.x + 6, btn.y + 5, 12, 2}, mark, 1)
-		if archived {
-			ui_tri(ui, {btn.x + 8, btn.y + 13}, {btn.x + 16, btn.y + 13}, {btn.x + 12, btn.y + 9}, mark)
-		} else {
-			ui_tri(ui, {btn.x + 8, btn.y + 10}, {btn.x + 16, btn.y + 10}, {btn.x + 12, btn.y + 15}, mark)
-		}
+		chevron_v(ui, {btn.x + 12, btn.y + 12}, !archived, mark)
 		if clicked_btn {
 			app_archive(app, index, !archived)
 			return
@@ -152,18 +152,33 @@ draw_session_row :: proc(app: ^App, s: ^Session, index: int, r: Rect, archived: 
 	}
 
 	text_x := r.x + 12
-	stamp := relative_time(s.mtime)
+	stamp_buf: [16]u8
+	stamp := relative_time(s.mtime, stamp_buf[:])
 	stamp_w := font_width(&ui.regular, stamp, 13)
 	if !over {
 		ui_text(ui, &ui.regular, stamp, {right - stamp_w, r.y + 12}, 13, FAINT)
 	}
 
+	title_buf: [256]u8
 	title_w := right - text_x - (over ? 4 : stamp_w + 10)
-	title := font_ellipsize(&ui.bold, s.title, 16.5, title_w)
+	title := font_ellipsize(&ui.bold, s.title, 16.5, title_w, title_buf[:])
 	col := active ? TEXT : color_mix(TEXT, MUTED, archived ? 0.6 : 0.3)
 	ui_text(ui, &ui.bold, title, {text_x, r.y + 10}, 16.5, col)
 
 	if clicked do app.pending_open = index
+}
+
+// A small up/down arrow, built the same way as the chevron.
+@(private = "file")
+chevron_v :: proc(ui: ^UI, at: [2]f32, down: bool, col: Color) {
+	rows :: 4
+	s := f32(3.5)
+	for i in 0 ..< rows {
+		t := f32(i) / f32(rows - 1)
+		w := s * 2 * (down ? 1 - t : t)
+		y := at.y - s + (down ? t * s * 2 : t * s * 2)
+		ui_rect(ui, {at.x - w / 2, y, w, 1.4}, col, 0.7)
+	}
 }
 
 // --- transcript -------------------------------------------------------------
@@ -219,9 +234,9 @@ draw_transcript :: proc(app: ^App, r: Rect) {
 	}
 
 	if runner_busy(&app.runner) && len(app.open) == 0 {
-		ellipsis := "..."
+		ellipsis := "working..."
 		dots := int(ui.time * 3) % 4
-		ui_text(ui, &ui.regular, fmt.tprintf("working%s", ellipsis[:dots]), {x, y}, 17, MUTED)
+		ui_text(ui, &ui.regular, ellipsis[:7 + dots], {x, y}, 17, MUTED)
 		ui.time_effects = true
 	}
 	ui_end_scroll(ui, r, &app.transcript)
@@ -302,7 +317,7 @@ layout_block :: proc(app: ^App, b: ^Block, x, y, width: f32, draw: bool, depth: 
 	case .Thinking:
 		// Folded away by default: the reasoning is there if you want it, but
 		// it is not what you came to read.
-		id := ui_id(fmt.tprintf("think%p", b))
+		id := ui_id_ptr(b, 1)
 		head := Rect{x, y, width, 29}
 		if draw {
 			clicked, hovered := ui_invisible_button(ui, id, head)
@@ -311,7 +326,9 @@ layout_block :: proc(app: ^App, b: ^Block, x, y, width: f32, draw: bool, depth: 
 				app.chat_ver += 1
 			}
 			chevron(ui, {x + 5, y + 11}, b.expanded, hovered ? MUTED : FAINT)
-			ui_text(ui, &ui.regular, b.expanded ? "Thinking" : thinking_teaser(b), {x + 22, y + 4}, 15, FAINT)
+			teaser_buf: [160]u8
+			label := b.expanded ? "Thinking" : thinking_teaser(b, teaser_buf[:])
+			ui_text(ui, &ui.regular, label, {x + 22, y + 4}, 15, FAINT)
 		}
 		if !b.expanded do return 33
 
@@ -332,16 +349,16 @@ layout_block :: proc(app: ^App, b: ^Block, x, y, width: f32, draw: bool, depth: 
 }
 
 @(private = "file")
-thinking_teaser :: proc(b: ^Block) -> string {
+thinking_teaser :: proc(b: ^Block, buf: []u8) -> string {
 	text := strings.trim_space(block_text(b))
 	if text == "" do return "Thinking..."
-	return fmt.tprintf("Thinking: %s", one_line(text, 90))
+	return fmt.bprintf(buf, "Thinking: %s", one_line(text, 90))
 }
 
 @(private = "file")
 layout_tool :: proc(app: ^App, b: ^Block, x, y, width: f32, draw: bool, depth: int) -> f32 {
 	ui := &app.ui
-	id := ui_id(fmt.tprintf("tool%p", b))
+	id := ui_id_ptr(b)
 	// The subagent tool is called Agent in current builds and Task in older
 	// ones; either way, anything with nested output is drawn as a subagent.
 	is_task := b.name == "Task" || b.name == "Agent" || len(b.sub) > 0
@@ -369,7 +386,8 @@ layout_tool :: proc(app: ^App, b: ^Block, x, y, width: f32, draw: bool, depth: i
 		nw := ui_text(ui, &ui.mono, b.name, {x + 20, y + 5}, 15.5, name_col)
 		arg_x := x + 18 + nw + 10
 		if b.arg != "" {
-			arg := font_ellipsize(&ui.mono, b.arg, 14.5, width - (arg_x - x) - 20)
+			arg_buf: [512]u8
+			arg := font_ellipsize(&ui.mono, b.arg, 14.5, width - (arg_x - x) - 20, arg_buf[:])
 			ui_text(ui, &ui.mono, arg, {arg_x, y + 6}, 14.5, FAINT)
 		}
 	}
@@ -390,21 +408,35 @@ layout_tool :: proc(app: ^App, b: ^Block, x, y, width: f32, draw: bool, depth: i
 		h += sub_h
 	}
 
+	// Tool output is shown as a fixed window onto the result: the first lines
+	// of the first few kilobytes. Nothing here copies the result — it is
+	// walked in place, because some of them are megabytes.
 	result := strings.trim_space(strings.to_string(b.result))
 	if result != "" {
 		shown := result
-		if len(shown) > 4000 do shown = shown[:4000]
-		lines := strings_lines(shown)
-		if len(lines) > 40 do lines = lines[:40]
+		if len(shown) > RESULT_BYTES do shown = shown[:RESULT_BYTES]
+
+		count := 0
+		counter := each_line(shown)
+		for _ in iter_next(&counter) {
+			count += 1
+			if count >= RESULT_LINES do break
+		}
+
 		lh := CODE_LH
-		box_h := f32(len(lines)) * lh + 12
+		box_h := f32(count) * lh + 12
 		if draw {
 			ui_rect(ui, {x + 16, y + h, width - 16, box_h}, CODE_BG, 8)
 			yy := y + h + 6
-			for l in lines {
-				text := font_ellipsize(&ui.mono, l, CODE_PX, width - 48)
+			drawn := 0
+			it := each_line(shown)
+			for l in iter_next(&it) {
+				if drawn >= RESULT_LINES do break
+				line_buf: [512]u8
+				text := font_ellipsize(&ui.mono, l, CODE_PX, width - 48, line_buf[:])
 				ui_text(ui, &ui.mono, text, {x + 26, yy}, CODE_PX, color_mix(CODE_TEXT, MUTED, 0.3))
 				yy += lh
+				drawn += 1
 			}
 		}
 		h += box_h + 6
@@ -414,11 +446,19 @@ layout_tool :: proc(app: ^App, b: ^Block, x, y, width: f32, draw: bool, depth: i
 
 @(private = "file")
 chevron :: proc(ui: ^UI, at: [2]f32, open: bool, col: Color) {
-	s := f32(3.5)
-	if open {
-		ui_tri(ui, {at.x - s, at.y - s / 2}, {at.x + s, at.y - s / 2}, {at.x, at.y + s}, col)
-	} else {
-		ui_tri(ui, {at.x - s / 2, at.y - s}, {at.x + s, at.y}, {at.x - s / 2, at.y + s}, col)
+	// A small triangle drawn as a stack of rows: the rounded-rect path
+	// antialiases, and a raw triangle would be the only jagged thing left.
+	rows :: 5
+	s := f32(4)
+	for i in 0 ..< rows {
+		t := f32(i) / f32(rows - 1)
+		if open {
+			w := s * 2 * (1 - t)
+			ui_rect(ui, {at.x - w / 2, at.y - s / 2 + t * s, w, 1.4}, col, 0.7)
+		} else {
+			h := s * 2 * (1 - t)
+			ui_rect(ui, {at.x - s / 2 + t * s, at.y - h / 2, 1.4, h}, col, 0.7)
+		}
 	}
 }
 
@@ -622,7 +662,7 @@ draw_editor :: proc(app: ^App, e: ^Editor, r: Rect, font: ^Font, px: f32, focuse
 	lh := px * 1.5
 
 	// Click and drag to place the caret and select.
-	id := ui_id(fmt.tprintf("editor%p", e))
+	id := ui_id_ptr(e)
 	_, hovered := ui_invisible_button(ui, id, r)
 	_ = hovered
 	if (ui.pressed && ui_hovered(ui, r)) || (ui.down && ui.active == id) {
@@ -669,22 +709,30 @@ draw_editor :: proc(app: ^App, e: ^Editor, r: Rect, font: ^Font, px: f32, focuse
 		// A block caret, the width of the character it sits on, with that
 		// character redrawn dark on top of it — a terminal cursor, because a
 		// hairline is hard to find in a window this size.
+		// Blink like a terminal: on, off, half a second each. Two frames a
+		// second, asked for by the frame that needs them, rather than sixty
+		// frames a second forever.
 		idle := ui.time - e.last_edit
 		alpha := f32(1)
 		if idle > 0.6 {
-			phase := (idle - 0.6) * 2.6
-			alpha = 0.45 + 0.55 * (0.5 + 0.5 * math.cos(phase))
-			ui.time_effects = true
+			phase := (idle - 0.6) / BLINK
+			alpha = int(phase) % 2 == 0 ? 1 : 0.18
+			ui_wake_in(ui, BLINK * (1 - (phase - f32(int(phase)))))
+		} else {
+			ui_wake_in(ui, 0.6 - idle)
 		}
 
+		// Terminal-shaped: as wide as the character it covers, as tall as the
+		// text rather than the whole line box, sitting on the baseline.
 		under: string
-		w := font_width(font, " ", px)
+		w := px * 0.55
 		if e.cursor < span.end {
 			under = text[e.cursor:next_rune(text, e.cursor)]
-			w = font_width(font, under, px)
+			w = max(font_width(font, under, px), px * 0.35)
 		}
-		caret := Rect{cx, r.y + f32(row) * lh, max(w, 3), lh - 1}
-		ui_rect(ui, caret, color_alpha(ACCENT, alpha), 2)
+		height := px * 1.15
+		top := r.y + f32(row) * lh + (lh - height) / 2 + 1
+		ui_rect(ui, {cx, top, w, height}, color_alpha(ACCENT, alpha), 1.5)
 		if under != "" && alpha > 0.6 {
 			ui_text(ui, font, under, {cx, r.y + f32(row) * lh + 2}, px, BG)
 		}

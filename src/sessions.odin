@@ -414,22 +414,6 @@ load_assistant_message :: proc(
 
 // --- small string helpers ---------------------------------------------------
 
-// Splits on newlines without allocating: the slices point into `s`.
-strings_lines :: proc(s: string) -> []string {
-	out := make([dynamic]string, context.temp_allocator)
-	rest := s
-	for len(rest) > 0 {
-		idx := strings.index_byte(rest, '\n')
-		if idx < 0 {
-			append(&out, rest)
-			break
-		}
-		if idx > 0 do append(&out, rest[:idx])
-		rest = rest[idx + 1:]
-	}
-	return out[:]
-}
-
 one_line :: proc(s: string, limit: int) -> string {
 	out := strings.trim_space(s)
 	if idx := strings.index_byte(out, '\n'); idx >= 0 do out = out[:idx]

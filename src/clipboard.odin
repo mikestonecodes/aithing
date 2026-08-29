@@ -102,7 +102,9 @@ clipboard_read :: proc(w: ^Window, mime: string) -> ([]byte, bool) {
 	buf: [64 * 1024]byte
 	for {
 		poll_fds := []linux.Poll_Fd{{fd = fds[0], events = {.IN}}}
-		n, perr := linux.poll(poll_fds, 1000)
+		// A clipboard owner that never writes must not take the window with
+		// it; a quarter of a second is already generous for a paste.
+		n, perr := linux.poll(poll_fds, 250)
 		if perr != .NONE || n <= 0 do break
 		got, rerr := linux.read(fds[0], buf[:])
 		if rerr != .NONE || got <= 0 do break

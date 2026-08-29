@@ -449,19 +449,19 @@ app_apply :: proc(app: ^App, e: ^Event) {
 
 // --- formatting -------------------------------------------------------------
 
-relative_time :: proc(t: time.Time) -> string {
+relative_time :: proc(t: time.Time, buf: []u8) -> string {
 	secs := time.duration_seconds(time.since(t))
 	switch {
 	case secs < 60:
 		return "now"
 	case secs < 3600:
-		return fmt.tprintf("%dm", int(secs / 60))
+		return fmt.bprintf(buf, "%dm", int(secs / 60))
 	case secs < 86400:
-		return fmt.tprintf("%dh", int(secs / 3600))
+		return fmt.bprintf(buf, "%dh", int(secs / 3600))
 	case secs < 86400 * 7:
-		return fmt.tprintf("%dd", int(secs / 86400))
+		return fmt.bprintf(buf, "%dd", int(secs / 86400))
 	}
-	return fmt.tprintf("%dw", int(secs / (86400 * 7)))
+	return fmt.bprintf(buf, "%dw", int(secs / (86400 * 7)))
 }
 
 // `/home/mike/Source/aithing` reads as `~/Source/aithing`, and a project slug

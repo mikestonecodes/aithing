@@ -6,7 +6,10 @@ import "core:os"
 import vk "vendor:vulkan"
 
 MAX_FRAMES :: 2
-MSAA_SAMPLES :: vk.SampleCountFlags{._4}
+// No multisampling: every shape here antialiases itself in the fragment
+// shader, and a 4x target at 4K would be 130 MB of VRAM and four times the
+// fill rate for nothing. The UI renders straight into the swapchain image.
+MSAA_SAMPLES :: vk.SampleCountFlags{._1}
 
 Frame :: struct {
 	cmd:        vk.CommandBuffer,
@@ -50,13 +53,9 @@ Gpu :: struct {
 	ui_scale:        f32,
 	composite_alpha: vk.CompositeAlphaFlagsKHR,
 
-	// 4x multisampled target. Rounded rects anti-alias themselves in the
-	// shader, but the triangles in the transport icons cannot, and jagged play
-	// buttons are the first thing you notice. The cost is irrelevant when the
-	// UI only redraws on change.
-	msaa_image:      vk.Image,
-	msaa_memory:     vk.DeviceMemory,
-	msaa_view:       vk.ImageView,
+	// Set when a frame was dropped because the compositor had no image to
+	// give us; the loop uses it to keep trying.
+	frame_skipped:   bool,
 
 	pipeline_layout: vk.PipelineLayout,
 	pipeline:        vk.Pipeline,
@@ -399,56 +398,6 @@ create_swapchain :: proc(g: ^Gpu, width, height: u32) {
 		)
 	}
 
-	create_msaa_target(g)
-}
-
-@(private = "file")
-create_msaa_target :: proc(g: ^Gpu) {
-	destroy_msaa_target(g)
-
-	info := vk.ImageCreateInfo {
-		sType = .IMAGE_CREATE_INFO,
-		imageType = .D2,
-		format = g.format,
-		extent = {g.extent.width, g.extent.height, 1},
-		mipLevels = 1,
-		arrayLayers = 1,
-		samples = MSAA_SAMPLES,
-		tiling = .OPTIMAL,
-		usage = {.COLOR_ATTACHMENT, .TRANSIENT_ATTACHMENT},
-		sharingMode = .EXCLUSIVE,
-		initialLayout = .UNDEFINED,
-	}
-	vk_check(vk.CreateImage(g.device, &info, nil, &g.msaa_image), "CreateImage (msaa)")
-
-	req: vk.MemoryRequirements
-	vk.GetImageMemoryRequirements(g.device, g.msaa_image, &req)
-	alloc := vk.MemoryAllocateInfo {
-		sType           = .MEMORY_ALLOCATE_INFO,
-		allocationSize  = req.size,
-		memoryTypeIndex = find_memory_type(g, req.memoryTypeBits, {.DEVICE_LOCAL}),
-	}
-	vk_check(vk.AllocateMemory(g.device, &alloc, nil, &g.msaa_memory), "AllocateMemory (msaa)")
-	vk.BindImageMemory(g.device, g.msaa_image, g.msaa_memory, 0)
-
-	view := vk.ImageViewCreateInfo {
-		sType = .IMAGE_VIEW_CREATE_INFO,
-		image = g.msaa_image,
-		viewType = .D2,
-		format = g.format,
-		subresourceRange = {aspectMask = {.COLOR}, levelCount = 1, layerCount = 1},
-	}
-	vk_check(vk.CreateImageView(g.device, &view, nil, &g.msaa_view), "CreateImageView (msaa)")
-}
-
-@(private = "file")
-destroy_msaa_target :: proc(g: ^Gpu) {
-	if g.msaa_view != 0 do vk.DestroyImageView(g.device, g.msaa_view, nil)
-	if g.msaa_image != 0 do vk.DestroyImage(g.device, g.msaa_image, nil)
-	if g.msaa_memory != 0 do vk.FreeMemory(g.device, g.msaa_memory, nil)
-	g.msaa_view = 0
-	g.msaa_image = 0
-	g.msaa_memory = 0
 }
 
 @(private = "file")
@@ -559,7 +508,6 @@ gpu_destroy :: proc(g: ^Gpu) {
 	}
 	vk.DestroyCommandPool(g.device, g.cmd_pool, nil)
 
-	destroy_msaa_target(g)
 	bindless_destroy(g)
 	vk.DestroyPipeline(g.device, g.pipeline, nil)
 	vk.DestroyPipelineLayout(g.device, g.pipeline_layout, nil)

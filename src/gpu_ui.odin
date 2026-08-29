@@ -167,6 +167,7 @@ gpu_draw :: proc(g: ^Gpu, ui: ^UI, clear_color: Color) -> bool {
 	// window comes back seconds after the pointer does. Timing out just skips
 	// the frame; the loop keeps servicing input either way.
 	FRAME_WAIT :: 50 * u64(1_000_000) // 50ms in nanoseconds
+	g.frame_skipped = true
 	if vk.WaitForFences(g.device, 1, &f.fence, true, FRAME_WAIT) == .TIMEOUT do return true
 
 	image_index: u32
@@ -180,6 +181,7 @@ gpu_draw :: proc(g: ^Gpu, ui: ^UI, clear_color: Color) -> bool {
 	)
 	if res == .TIMEOUT || res == .NOT_READY do return true
 	if res == .ERROR_OUT_OF_DATE_KHR do return false
+	g.frame_skipped = false
 	if res != .SUCCESS && res != .SUBOPTIMAL_KHR {
 		vk_check(res, "AcquireNextImageKHR")
 	}
@@ -199,10 +201,6 @@ gpu_draw :: proc(g: ^Gpu, ui: ^UI, clear_color: Color) -> bool {
 	}
 	vk.BeginCommandBuffer(cmd, &begin)
 
-	// Both attachments start undefined: the multisampled image is cleared and
-	// then thrown away every frame, and the swapchain image is fully covered
-	// by the resolve.
-	swap_barrier(cmd, g.msaa_image, .UNDEFINED, .COLOR_ATTACHMENT_OPTIMAL)
 	swap_barrier(cmd, g.images[image_index], .UNDEFINED, .COLOR_ATTACHMENT_OPTIMAL)
 
 	// Premultiplied, to match the composite mode the swapchain asked for.
@@ -213,17 +211,12 @@ gpu_draw :: proc(g: ^Gpu, ui: ^UI, clear_color: Color) -> bool {
 		f32((u32(clear_color) >> 16) & 0xff) / 255 * alpha,
 		alpha,
 	}
-	// Render into the multisampled image and resolve straight into the
-	// swapchain image; the MSAA contents themselves are never needed again.
 	attachment := vk.RenderingAttachmentInfo {
 		sType = .RENDERING_ATTACHMENT_INFO,
-		imageView = g.msaa_view,
+		imageView = g.views[image_index],
 		imageLayout = .COLOR_ATTACHMENT_OPTIMAL,
-		resolveMode = {.AVERAGE},
-		resolveImageView = g.views[image_index],
-		resolveImageLayout = .COLOR_ATTACHMENT_OPTIMAL,
 		loadOp = .CLEAR,
-		storeOp = .DONT_CARE,
+		storeOp = .STORE,
 		clearValue = {color = {float32 = c}},
 	}
 	rendering := vk.RenderingInfo {

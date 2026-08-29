@@ -82,6 +82,8 @@ main :: proc() {
 
 	app_init(app)
 	defer app_destroy(app)
+	watchdog_start()
+	defer watchdog_stop()
 	if model_set do app.model = model
 
 	if open_last {
@@ -105,6 +107,7 @@ main :: proc() {
 	last_frame := time.now()
 	last_draw := time.now()
 	needs_draw := true
+	wake_at: Maybe(time.Time) // when something asked to be redrawn next
 
 	// AITHING_PROFILE=1 reports how long a frame actually takes, and how long
 	// a keystroke waited between arriving and being presented.
@@ -131,6 +134,13 @@ main :: proc() {
 		if ms, pending := window_repeat_timeout(&app.win); pending {
 			timeout = min(timeout, ms)
 		}
+		if at, ok := wake_at.?; ok {
+			left := time.duration_milliseconds(time.diff(time.now(), at))
+			timeout = min(timeout, i32(max(left, 0)))
+		}
+		// A wait with a frame owed is a stall if it never ends; a wait with
+		// nothing to draw is just an idle window.
+		watch(needs_draw ? .Wait : .Poll)
 		window_poll(&app.win, timeout)
 		input_at := time.now()
 
@@ -156,13 +166,20 @@ main :: proc() {
 
 		fresh_input := window_has_input(&app.win)
 		if fresh_input do needs_draw = true
+		if at, ok := wake_at.?; ok && time.since(at) >= 0 {
+			wake_at = nil
+			needs_draw = true
+		}
+		watch(.Events)
 		if app_apply_events(app) do needs_draw = true
+		watch(.Jobs)
 		if app_poll_jobs(app) do needs_draw = true
 		if app.rescan && !runner_busy(&app.runner) {
 			app.rescan = false
 			app_rescan(app)
 			needs_draw = true
 		}
+		watch(.Input)
 		app_input(app)
 		if app_apply_clicks(app) do needs_draw = true
 
@@ -180,16 +197,21 @@ main :: proc() {
 		}
 
 		last_draw = time.now()
+		watch(.Build)
 		build_start := time.now()
 		ui_begin(&app.ui, app.win.width, app.win.height, &app.win.input, dt)
 		draw_app(app)
 		ui_end(&app.ui)
 		build_ms := time.duration_milliseconds(time.since(build_start))
 
+		watch(.Draw)
 		draw_start := time.now()
 		if !gpu_draw(&app.gpu, &app.ui, BG) {
 			gpu_resize(&app.gpu, window_pixel_size(&app.win))
 		}
+		// A frame the driver would not hand us an image for has not been
+		// presented; keep asking rather than waiting for the next keystroke.
+		skipped := app.gpu.frame_skipped
 		draw_ms := time.duration_milliseconds(time.since(draw_start))
 
 		if profile {
@@ -216,7 +238,10 @@ main :: proc() {
 			}
 		}
 
-		needs_draw = app.ui.animating || app.ui.time_effects || runner_busy(&app.runner)
+		needs_draw = skipped || app.ui.animating || app.ui.time_effects || runner_busy(&app.runner)
+		if app.ui.wake_in < NEVER {
+			wake_at = time.time_add(time.now(), time.Duration(f64(app.ui.wake_in) * f64(time.Second)))
+		}
 		free_all(context.temp_allocator)
 	}
 }
