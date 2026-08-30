@@ -15,13 +15,14 @@ import "core:time"
 g_ctx: runtime.Context
 
 FRAME_BUDGET :: time.Duration(16 * time.Millisecond)
-ATLAS_PX :: f32(34)
 
 main :: proc() {
 	g_ctx = context
 	redirect_log()
+	crash_report_install()
 
 	open_last := true // by default, pick up where the last session left off
+	reloaded := false // this run replaced an older one that saw a new binary
 	model := Model.Sonnet
 	model_set := false
 	prompt_parts := make([dynamic]string, context.temp_allocator)
@@ -49,6 +50,8 @@ main :: proc() {
 			open_last = true
 		case "--new", "-n":
 			open_last = false
+		case RELOAD_FLAG:
+			reloaded = true
 		case "--model":
 			want_model = true
 		case:
@@ -66,14 +69,13 @@ main :: proc() {
 	defer gpu_destroy(&app.gpu)
 
 	// Slots 0 and 1 of the bindless table are the glyph atlas and a white
-	// pixel by convention; everything after them is a pasted image.
-	px := ATLAS_PX * f32(app.win.scale)
-	regular, r_ok := font_load(&app.gpu, "/usr/share/fonts/noto/NotoSans-Regular.ttf", px)
+	// pixel by convention; everything after them is a pasted image. All three
+	// fonts are on the one sheet, so this is a single upload and the window
+	// scale no longer decides how sharp text is.
+	regular, bold, mono, fonts_ok := font_atlas_load(&app.gpu)
 	white := [4]byte{255, 255, 255, 255}
 	white_slot := texture_upload(&app.gpu, white[:], 1, 1, 4)
-	bold, b_ok := font_load(&app.gpu, "/usr/share/fonts/noto/NotoSans-Bold.ttf", px)
-	mono, m_ok := font_load(&app.gpu, "/usr/share/fonts/noto/NotoSansMono-Regular.ttf", px * 0.9)
-	if !r_ok || !b_ok || !m_ok || white_slot != WHITE_TEX {
+	if !fonts_ok || white_slot != WHITE_TEX {
 		fmt.eprintln("could not set up fonts")
 		return
 	}
@@ -84,7 +86,23 @@ main :: proc() {
 	defer app_destroy(app)
 	watchdog_start()
 	defer watchdog_stop()
+	reload_init()
 	if model_set do app.model = model
+
+	// What the process this one replaced was in the middle of.
+	state: Reload_State
+	if reloaded {
+		state = reload_restore()
+		if state.ok {
+			if !model_set do app.model = state.model
+			if state.cwd != "" {
+				delete(app.cwd)
+				app.cwd = state.cwd
+			}
+			editor_set_text(&app.editor, state.draft)
+			delete(state.draft)
+		}
+	}
 
 	if open_last {
 		// The scan is on a worker thread; wait for it just this once.
@@ -92,7 +110,16 @@ main :: proc() {
 			app_poll_jobs(app)
 			time.sleep(4 * time.Millisecond)
 		}
-		if len(app.sessions) > 0 do app_open(app, 0)
+		// Newest first, so 0 is the right answer unless a reload named the
+		// session it was looking at.
+		open_at := 0
+		if state.session != "" {
+			for sn, i in app.sessions do if sn.id == state.session {
+				open_at = i
+				break
+			}
+		}
+		if len(app.sessions) > 0 do app_open(app, open_at)
 	}
 	// AITHING_CYCLE=1 walks the whole session list, one every 400ms. It is how
 	// the transcript reader gets exercised against every session on disk.
@@ -157,7 +184,12 @@ main :: proc() {
 			cycle_at = time.now()
 			if cycle_index < len(app.sessions) {
 				fmt.eprintfln("cycle %d/%d", cycle_index, len(app.sessions))
-				app_open(app, cycle_index)
+				// Through the click path, not app_open directly, and with a
+				// rescan racing it: an index recorded during a frame is only
+				// acted on in the next one, by which time the list it came
+				// from may have been swapped out under it.
+				app_select(app, app.sessions[cycle_index].id)
+				app.rescan = true
 				cycle_index += 1
 			} else {
 				app.win.should_close = true
@@ -179,6 +211,11 @@ main :: proc() {
 			app_rescan(app)
 			needs_draw = true
 		}
+		// A rebuilt binary takes over here, between one frame and the next,
+		// but never in the middle of a turn: exec would take the pipe the
+		// answer is still arriving on with it.
+		if reload_ready() && !runner_busy(&app.runner) do reload_exec(app)
+
 		watch(.Input)
 		app_input(app)
 		if app_apply_clicks(app) do needs_draw = true
@@ -251,7 +288,12 @@ main :: proc() {
 // on the way down — a Vulkan complaint, a bounds check — ends up there.
 redirect_log :: proc() {
 	if terminal.is_terminal(os.stderr) do return
-	path := cache_path("last-run.log", context.temp_allocator)
+	// One shared name, so a second instance would truncate the first one's
+	// log out from under it; AITHING_LOG is how a test run stays out of the
+	// way of a window someone is actually using.
+	name := os.get_env("AITHING_LOG", context.temp_allocator)
+	if name == "" do name = "last-run.log"
+	path := cache_path(name, context.temp_allocator)
 	f, err := os.open(path, {.Write, .Create, .Trunc})
 	if err != nil do return
 	linux.dup2(linux.Fd(os.fd(f)), linux.Fd(2))
@@ -354,7 +396,8 @@ app_paste :: proc(app: ^App, target: ^Editor) {
 }
 
 app_interrupt :: proc(app: ^App) {
-	if !runner_busy(&app.runner) do return
+	if !runner_busy(&app.runner) && len(app.queue) == 0 do return
+	app_queue_clear(app)
 	runner_stop(&app.runner)
 	app_status(app, "interrupted")
 }

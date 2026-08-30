@@ -18,6 +18,7 @@ layout(location = 3)      in vec2  v_pos;
 layout(location = 4) flat in vec4  v_rect;
 layout(location = 5) flat in float v_radius;
 layout(location = 6) flat in uint  v_effect;
+layout(location = 7) flat in float v_param;
 
 layout(location = 0) out vec4 out_col;
 
@@ -25,6 +26,14 @@ layout(location = 0) out vec4 out_col;
 #define EFFECT_GLOW     1u // soft radial falloff, for the halo behind a button
 #define EFFECT_SHEEN    2u // a highlight that travels along the progress fill
 #define EFFECT_RING     3u // a ring that fades outward, for click ripples
+#define EFFECT_TEXT     4u // a glyph: the texture is a distance field
+
+// The distance a multi-channel field encodes is the median of its three
+// channels — the channels disagree exactly at a corner, and taking the middle
+// one is what keeps the corner sharp instead of rounding it off.
+float median3(vec3 v) {
+	return max(min(v.r, v.g), min(max(v.r, v.g), v.b));
+}
 
 // Signed distance to a box with rounded corners, in pixels.
 float rounded_box(vec2 p, vec2 half_extent, float r) {
@@ -33,7 +42,19 @@ float rounded_box(vec2 p, vec2 half_extent, float r) {
 }
 
 void main() {
-	vec4 c = v_col * texture(textures[nonuniformEXT(v_tex)], v_uv);
+	vec4 texel = texture(textures[nonuniformEXT(v_tex)], v_uv);
+	vec4 c;
+
+	if (v_effect == EFFECT_TEXT) {
+		// A glyph carries no colour of its own: the field says how far this
+		// pixel is from the outline, and v_param says how many pixels the
+		// field's ramp spans, which together give a coverage the edge stays
+		// sharp through at any size.
+		float sd = median3(texel.rgb);
+		c = vec4(v_col.rgb, v_col.a * clamp(v_param * (sd - 0.5) + 0.5, 0.0, 1.0));
+	} else {
+		c = v_col * texel;
+	}
 
 	// Position within the quad, -1..1 on each axis.
 	vec2 p = (v_pos - v_rect.xy) / max(v_rect.zw, vec2(0.0001));

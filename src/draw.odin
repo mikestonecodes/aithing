@@ -136,7 +136,7 @@ draw_session_row :: proc(app: ^App, s: ^Session, index: int, r: Rect, archived: 
 		ui_rect(ui, {btn.x + 6, btn.y + 5, 12, 2}, mark, 1)
 		chevron_v(ui, {btn.x + 12, btn.y + 12}, !archived, mark)
 		if clicked_btn {
-			app_archive(app, index, !archived)
+			app_archive(app, s.id, !archived)
 			return
 		}
 		right -= 28
@@ -165,7 +165,7 @@ draw_session_row :: proc(app: ^App, s: ^Session, index: int, r: Rect, archived: 
 	col := active ? TEXT : color_mix(TEXT, MUTED, archived ? 0.6 : 0.3)
 	ui_text(ui, &ui.bold, title, {text_x, r.y + 10}, 16.5, col)
 
-	if clicked do app.pending_open = index
+	if clicked do app_select(app, s.id)
 }
 
 // A small up/down arrow, built the same way as the chevron.
@@ -185,7 +185,7 @@ chevron_v :: proc(ui: ^UI, at: [2]f32, down: bool, col: Color) {
 
 draw_transcript :: proc(app: ^App, r: Rect) {
 	ui := &app.ui
-	width := min(r.w - PAD * 2, CONTENT_MAX)
+	width := composer_width(r.w)
 	x := r.x + (r.w - width) / 2
 
 	// Heights are measured only when something actually changed; on every
@@ -467,19 +467,37 @@ chevron :: proc(ui: ^UI, at: [2]f32, open: bool, col: Color) {
 COMPOSER_PX :: f32(19)
 COMPOSER_MIN :: f32(84)
 COMPOSER_MAX :: f32(300)
+COMPOSER_PAD :: f32(12) // inside the box, above the text and below it
+COMPOSER_CHIPS :: f32(36) // the band along the bottom holding the model chip
+COMPOSER_SIDE :: f32(18) // the text inset from either edge of the box
+COMPOSER_THUMB :: f32(72)
 
-composer_height :: proc(app: ^App, width: f32) -> f32 {
+// The box is exactly as tall as what goes in it, and this is the one place
+// that says how tall that is: draw_composer lays out against the same numbers,
+// so the text never lands under the chip row.
+composer_box_height :: proc(app: ^App, width: f32) -> f32 {
 	ui := &app.ui
-	inner := min(width - PAD * 2, CONTENT_MAX) - 32
+	inner := composer_width(width) - COMPOSER_SIDE * 2
 	editor_layout_lines(ui, &app.editor, inner, &ui.regular, COMPOSER_PX)
-	text_h := f32(max(len(app.editor.lines), 1)) * (COMPOSER_PX * 1.5) + 30
-	if len(app.attach) > 0 do text_h += 72
-	return clamp(text_h + 24, COMPOSER_MIN, COMPOSER_MAX)
+	h := COMPOSER_PAD * 2 + f32(max(len(app.editor.lines), 1)) * (COMPOSER_PX * 1.5)
+	if len(app.attach) > 0 do h += COMPOSER_THUMB + 14
+	return h + COMPOSER_CHIPS
+}
+
+@(private = "file")
+composer_width :: proc(width: f32) -> f32 {
+	return min(width - PAD * 2, CONTENT_MAX)
+}
+
+// What the layout above reserves for the whole strip: the box plus the 6px of
+// air above it and the 12px below that draw_composer insets by.
+composer_height :: proc(app: ^App, width: f32) -> f32 {
+	return clamp(composer_box_height(app, width) + 18, COMPOSER_MIN, COMPOSER_MAX)
 }
 
 draw_composer :: proc(app: ^App, r: Rect) {
 	ui := &app.ui
-	width := min(r.w - PAD * 2, CONTENT_MAX)
+	width := composer_width(r.w)
 	x := r.x + (r.w - width) / 2
 
 	box := Rect{x, r.y + 6, width, r.h - 18}
@@ -491,11 +509,11 @@ draw_composer :: proc(app: ^App, r: Rect) {
 	if clicked_in(app, box) do app.focus = .Composer
 	if ui_hovered(ui, box) do ui.cursor_text = true
 
-	inner_y := box.y + 12
+	inner_y := box.y + COMPOSER_PAD
 
 	// Pasted images sit above the text, each with a corner button to drop it.
 	if len(app.attach) > 0 {
-		thumb := f32(72)
+		thumb := COMPOSER_THUMB
 		tx := box.x + 14
 		for i := 0; i < len(app.attach); i += 1 {
 			a := &app.attach[i]
@@ -515,21 +533,20 @@ draw_composer :: proc(app: ^App, r: Rect) {
 		inner_y += thumb + 14
 	}
 
-	// One line of text sits in the middle of the box; more lines grow upward
-	// from the same baseline, because the box grows with them.
-	lines := f32(max(len(app.editor.lines), 1))
-	text_h := lines * (COMPOSER_PX * 1.5)
-	avail := box.y + box.h - inner_y - 24
-	text_r := Rect{box.x + 18, inner_y + max((avail - text_h) / 2, 0), box.w - 36, text_h}
+	// The text starts under the top padding and the box grows downward with it,
+	// so the first line never moves as you type and the chip row stays clear.
+	text_w := box.w - COMPOSER_SIDE * 2
+	editor_layout_lines(ui, &app.editor, text_w, &ui.regular, COMPOSER_PX)
+	text_h := f32(max(len(app.editor.lines), 1)) * (COMPOSER_PX * 1.5)
+	text_r := Rect{box.x + COMPOSER_SIDE, inner_y, text_w, text_h}
 	if editor_text(&app.editor) == "" && !focused {
-		ui_text(ui, &ui.regular, "Reply to Claude...", {text_r.x, text_r.y}, COMPOSER_PX, FAINT)
+		ui_text(ui, &ui.regular, "Reply to Claude...", {text_r.x, text_r.y + 2}, COMPOSER_PX, FAINT)
 	}
-	editor_layout_lines(ui, &app.editor, text_r.w, &ui.regular, COMPOSER_PX)
 	draw_editor(app, &app.editor, text_r, &ui.regular, COMPOSER_PX, focused)
 
 	// The only control in the window: which model answers. Permissions are
 	// whatever the harness is already configured to do.
-	chip_y := box.y + box.h - 28
+	chip_y := box.y + box.h - COMPOSER_CHIPS / 2 - 8
 	cx := draw_chip(app, ui_id("model-chip"), box.x + box.w - 12, chip_y, model_label[app.model], MUTED)
 	if ui.pressed && ui.hot == ui_id("model-chip") do app.model_open = !app.model_open
 	app.model_chip = Rect{cx, chip_y - 5, box.x + box.w - 12 - cx, 26}
@@ -627,7 +644,7 @@ editor_layout_lines :: proc(ui: ^UI, e: ^Editor, width: f32, font: ^Font, px: f3
 			r = ch
 			break
 		}
-		cw := font.chars[glyph_index(r)].xadvance * scale
+		cw := font_glyph(font, r).advance * scale
 		if w + cw > width && i > start {
 			cut := last_break > start ? last_break : i
 			append(&e.lines, Span{start, cut})
@@ -649,7 +666,7 @@ byte_at_x :: proc(font: ^Font, text: string, px, target: f32) -> int {
 	scale := font_scale(font, px)
 	w: f32
 	for ch, i in text {
-		cw := font.chars[glyph_index(ch)].xadvance * scale
+		cw := font_glyph(font, ch).advance * scale
 		if w + cw / 2 > target do return i
 		w += cw
 	}
@@ -722,19 +739,20 @@ draw_editor :: proc(app: ^App, e: ^Editor, r: Rect, font: ^Font, px: f32, focuse
 			ui_wake_in(ui, 0.6 - idle)
 		}
 
-		// Terminal-shaped: as wide as the character it covers, as tall as the
-		// text rather than the whole line box, sitting on the baseline.
+		// Terminal-shaped: as wide as the character it covers, and exactly the
+		// cell the glyph is drawn into — same origin and same height as the
+		// text above, so the block lands on the character and not beside it.
 		under: string
 		w := px * 0.55
 		if e.cursor < span.end {
 			under = text[e.cursor:next_rune(text, e.cursor)]
 			w = max(font_width(font, under, px), px * 0.35)
 		}
-		height := px * 1.15
-		top := r.y + f32(row) * lh + (lh - height) / 2 + 1
+		top := r.y + f32(row) * lh + 2
+		height := (font.ascent - font.descent) * font_scale(font, px)
 		ui_rect(ui, {cx, top, w, height}, color_alpha(ACCENT, alpha), 1.5)
 		if under != "" && alpha > 0.6 {
-			ui_text(ui, font, under, {cx, r.y + f32(row) * lh + 2}, px, BG)
+			ui_text(ui, font, under, {cx, top}, px, BG)
 		}
 	}
 }

@@ -45,18 +45,21 @@ Model :: enum {
 	Haiku,
 	Sonnet,
 	Opus,
+	Fable,
 }
 
 model_flag := [Model]string {
 	.Haiku  = "haiku",
 	.Sonnet = "sonnet",
 	.Opus   = "opus",
+	.Fable  = "fable",
 }
 
 model_label := [Model]string {
 	.Haiku  = "Haiku",
 	.Sonnet = "Sonnet",
 	.Opus   = "Opus",
+	.Fable  = "Fable",
 }
 
 Runner :: struct {

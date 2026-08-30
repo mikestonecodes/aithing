@@ -72,6 +72,11 @@ Load_Job :: struct {
 	ready:    bool,
 	ok:       bool,
 	chat:     Chat,
+	// The newest session asked for while a read was already under way. Only
+	// one is kept: clicking through five sessions should read the fifth, not
+	// all five in turn.
+	next:     Session,
+	has_next: bool,
 	// Bumped on every request; a result whose token no longer matches is from
 	// a session the reader has already clicked away from.
 	token:    int,
@@ -79,19 +84,41 @@ Load_Job :: struct {
 }
 
 load_start :: proc(j: ^Load_Job, s: Session) {
+	sync.mutex_lock(&j.mu)
+	j.want += 1
+	session_free(&j.next)
+	j.next = session_clone(s)
+	j.has_next = true
+	sync.mutex_unlock(&j.mu)
+	load_try(j)
+}
+
+// Called once a frame: starts a request that had to wait for the previous read
+// to finish. Without this a click that lands mid-read is simply lost, and the
+// transcript sits on "loading..." for a session nothing is reading.
+load_poll :: proc(j: ^Load_Job) {
+	load_try(j)
+}
+
+// The one place a reader thread is started. A load already in flight is left
+// alone — its result is dropped by the token check — and the request waits for
+// the next frame rather than racing it.
+@(private = "file")
+load_try :: proc(j: ^Load_Job) {
+	if !j.has_next do return
 	load_reap(j)
+	if j.worker != nil do return // the last thread has not been collected yet
+
 	sync.mutex_lock(&j.mu)
 	if j.running {
-		// A load is already in flight. Let it finish and discard it; the token
-		// makes sure its result is dropped rather than shown.
 		sync.mutex_unlock(&j.mu)
-		j.want += 1
 		return
 	}
-	j.want += 1
 	j.token = j.want
 	session_free(&j.session)
-	j.session = session_clone(s)
+	j.session = j.next
+	j.next = {}
+	j.has_next = false
 	j.running = true
 	j.ready = false
 	sync.mutex_unlock(&j.mu)
@@ -99,6 +126,7 @@ load_start :: proc(j: ^Load_Job, s: Session) {
 	j.worker = thread.create_and_start_with_poly_data(j, proc(j: ^Load_Job) {
 		chat, ok := session_load(&j.session)
 		sync.mutex_lock(&j.mu)
+		chat_destroy(&j.chat) // a result nobody came back for
 		j.chat = chat
 		j.ok = ok
 		j.ready = true
@@ -151,5 +179,6 @@ load_destroy :: proc(j: ^Load_Job) {
 		j.worker = nil
 	}
 	session_free(&j.session)
+	session_free(&j.next)
 	chat_destroy(&j.chat)
 }

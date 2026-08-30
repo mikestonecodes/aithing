@@ -14,10 +14,17 @@ if [ -f "$WL_XML" ] && command -v python3 >/dev/null; then
 	python3 tools/wl_gen.py src/wayland/protocol.odin "$WL_XML" "$XDG_XML" "$DEC_XML" "$BLUR_XML"
 fi
 
+# The font atlas is regenerated only when msdf-atlas-gen is around; the script
+# bows out quietly otherwise, and the committed sheet is used as it is.
+./tools/gen_font_atlas.sh >/dev/null
+
 if command -v glslc >/dev/null; then
 	glslc -O -fshader-stage=vert src/shaders/ui.vert -o src/shaders/ui.vert.spv
 	glslc -O -fshader-stage=frag src/shaders/ui.frag -o src/shaders/ui.frag.spv
 fi
 
-odin build src -out:aithing ${BUILD_FLAGS:-}
+# --export-dynamic puts the symbol names in the dynamic table, which is where
+# the crash reporter's backtrace reads them from. Without it a crash log is a
+# column of hex.
+odin build src -out:aithing -extra-linker-flags:"-Wl,--export-dynamic" ${BUILD_FLAGS:-}
 echo "built ./aithing"

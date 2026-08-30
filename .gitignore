@@ -2,3 +2,6 @@
 /src.bin
 *.o
 *.bin
+
+# The baked font atlas is committed, like the SPIR-V and the protocol bindings.
+!src/font/atlas.bin

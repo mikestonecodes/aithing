@@ -401,8 +401,14 @@ load_assistant_message :: proc(
 
 		if sidechain {
 			// Everything a subagent says hangs off the Task that started it.
+			// A sidechain whose Task is not in the part of the file that was
+			// read has nowhere to go; the block is already built, so it has to
+			// be taken apart rather than dropped on the floor.
 			owner := chat_block(chat, task)
-			if owner == nil do continue
+			if owner == nil {
+				block_destroy(&block)
+				continue
+			}
 			append(&owner.sub, block)
 		} else {
 			ref := msg_append_block(chat, m, block)

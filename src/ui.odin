@@ -44,6 +44,7 @@ Effect :: enum u32 {
 	Glow  = 1, // soft radial falloff
 	Sheen = 2, // travelling highlight
 	Ring  = 3, // fading annulus
+	Text  = 4, // a glyph: the texture is a distance field, not coverage
 }
 
 Vertex :: struct {
@@ -359,18 +360,37 @@ ui_text :: proc(
 	pen := pos
 	pen.y += font.ascent * scale // pos is the top-left of the line box
 
-	for ch in text {
-		b := font.chars[glyph_index(ch)]
+	// One number the shader needs and cannot work out for itself: how many
+	// screen pixels the distance ramp covers at this size.
+	px_range := font_px_range(size)
 
-		gw := f32(b.x1 - b.x0) * scale
-		gh := f32(b.y1 - b.y0) * scale
-		if gw > 0 && gh > 0 {
-			r := Rect{pen.x + b.xoff * scale, pen.y + b.yoff * scale, gw, gh}
-			uv0 := [2]f32{f32(b.x0) / ATLAS_SIZE, f32(b.y0) / ATLAS_SIZE}
-			uv1 := [2]f32{f32(b.x1) / ATLAS_SIZE, f32(b.y1) / ATLAS_SIZE}
-			ui_quad(ui, r, uv0, uv1, col, font.tex, NO_ROUND)
+	for ch in text {
+		g := font_glyph(font, ch)
+
+		// Plane bounds are em from the baseline with y up; the screen has y
+		// down, so the top edge is the ascent subtracted from the pen.
+		left := pen.x + g.plane[0] * scale
+		right := pen.x + g.plane[2] * scale
+		top := pen.y - g.plane[3] * scale
+		bottom := pen.y - g.plane[1] * scale
+		if right > left && bottom > top {
+			// Atlas bounds are pixels with y up from the bottom of the sheet,
+			// and the decoded image has its first row at the top.
+			uv0 := [2]f32{g.atlas[0] / g_atlas.width, 1 - g.atlas[3] / g_atlas.height}
+			uv1 := [2]f32{g.atlas[2] / g_atlas.width, 1 - g.atlas[1] / g_atlas.height}
+			ui_quad(
+				ui,
+				{left, top, right - left, bottom - top},
+				uv0,
+				uv1,
+				col,
+				font.tex,
+				NO_ROUND,
+				.Text,
+				px_range,
+			)
 		}
-		pen.x += b.xadvance * scale
+		pen.x += g.advance * scale
 	}
 	return pen.x - pos.x
 }

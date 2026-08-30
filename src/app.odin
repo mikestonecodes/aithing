@@ -51,9 +51,12 @@ App :: struct {
 	scanned:   bool, // false until the first scan lands
 	// Clicks are recorded during the frame and acted on once it is over:
 	// opening or filing a session rebuilds the very lists the sidebar is in
-	// the middle of walking.
-	pending_open:    int,
-	pending_archive: int,
+	// the middle of walking. They name the session by id rather than by row,
+	// because a scan can land in that gap and renumber every row — an index
+	// from last frame can point at a different session, or past the end of a
+	// list that came back shorter.
+	pending_open:    string,
+	pending_archive: string,
 	pending_state:   bool,
 
 	chat:      Chat,
@@ -78,6 +81,10 @@ App :: struct {
 	// answer is not lost, it just stops being drawn.
 	run_session: string,
 	run_index:   int,
+	// Messages typed while a turn was still running. One `claude -p` at a
+	// time is the whole design, so a follow-up cannot just be started; it
+	// waits here and goes out the moment the turn it was typed over finishes.
+	queue:       [dynamic]Pending,
 	// Message heights, cached: measuring a long transcript every frame is what
 	// would make typing feel heavy. Rebuilt when the width or the chat change.
 	heights:   [dynamic]f32,
@@ -90,10 +97,22 @@ App :: struct {
 	profile:   bool,
 }
 
+// A message waiting for the turn ahead of it.
+Pending :: struct {
+	prompt:  string,
+	session: string, // "" when the chat had not been given an id yet
+	cwd:     string,
+}
+
+@(private = "file")
+pending_destroy :: proc(p: ^Pending) {
+	delete(p.prompt)
+	delete(p.session)
+	delete(p.cwd)
+}
+
 app_init :: proc(app: ^App) {
 	app.selected = -1
-	app.pending_open = -1
-	app.pending_archive = -1
 	app.stick = true
 	cwd, _ := os.get_working_directory(context.allocator)
 	app.cwd = cwd
@@ -124,6 +143,10 @@ app_destroy :: proc(app: ^App) {
 	delete(app.status)
 	delete(app.run_session)
 	delete(app.cwd)
+	delete(app.pending_open)
+	delete(app.pending_archive)
+	for &p in app.queue do pending_destroy(&p)
+	delete(app.queue)
 }
 
 // Kicks off a rescan. Nothing blocks: the list is swapped in whenever the
@@ -135,27 +158,40 @@ app_rescan :: proc(app: ^App) {
 // Called once a frame: takes whatever the workers have finished.
 // Applies whatever the last frame's clicks asked for.
 app_apply_clicks :: proc(app: ^App) -> bool {
-	acted := app.pending_archive >= 0 || app.pending_open >= 0
-	if app.pending_archive >= 0 {
-		index := app.pending_archive
-		app.pending_archive = -1
-		archive_set(&app.archive, app.sessions[index].id, app.pending_state)
+	acted := app.pending_archive != "" || app.pending_open != ""
+	if id := app.pending_archive; id != "" {
+		defer delete(id)
+		app.pending_archive = ""
+		archive_set(&app.archive, id, app.pending_state)
 		archive_save(&app.archive)
 		app_filter(app)
 	}
-	if app.pending_open >= 0 {
-		index := app.pending_open
-		app.pending_open = -1
-		app_open(app, index)
+	if id := app.pending_open; id != "" {
+		defer delete(id)
+		app.pending_open = ""
+		// The row may have moved, or be gone entirely if the session was
+		// deleted between the click and here; app_open ignores -1.
+		app_open(app, session_index(app, id))
 		app_filter(app) // an opened session belongs in the working list
 	}
 	return acted
+}
+
+// Where a session sits in the current list, or -1 if it is no longer in it.
+session_index :: proc(app: ^App, id: string) -> int {
+	for s, i in app.sessions do if s.id == id do return i
+	return -1
 }
 
 app_poll_jobs :: proc(app: ^App) -> bool {
 	changed := false
 	scan_reap(&app.scan)
 	load_reap(&app.load)
+	load_poll(&app.load)
+	// Every frame rather than off the Done event: a turn that dies without
+	// finishing cleanly still frees the process, and a follow-up waiting on it
+	// should go out either way.
+	app_pump_queue(app)
 
 	if list, ok := scan_take(&app.scan); ok {
 		// Remember the open session by id: a rescan can shift every index.
@@ -230,10 +266,17 @@ app_filter :: proc(app: ^App) {
 	}
 }
 
-app_archive :: proc(app: ^App, index: int, archived: bool) {
-	if index < 0 || index >= len(app.sessions) do return
-	app.pending_archive = index
+// Both of these only record what was clicked; app_apply_clicks acts on it once
+// the frame that is walking the sidebar is over.
+app_archive :: proc(app: ^App, id: string, archived: bool) {
+	delete(app.pending_archive)
+	app.pending_archive = strings.clone(id)
 	app.pending_state = archived
+}
+
+app_select :: proc(app: ^App, id: string) {
+	delete(app.pending_open)
+	app.pending_open = strings.clone(id)
 }
 
 chat_new :: proc(app: ^App) {
@@ -282,7 +325,6 @@ app_status :: proc(app: ^App, msg: string) {
 app_send :: proc(app: ^App) {
 	text := strings.trim_space(editor_text(&app.editor))
 	if text == "" && len(app.attach) == 0 do return
-	if runner_busy(&app.runner) do return
 
 	prompt := attachments_prompt(text, app.attach[:], context.temp_allocator)
 
@@ -299,17 +341,65 @@ app_send :: proc(app: ^App) {
 	app.chat_ver += 1
 
 	cwd := app.chat.cwd != "" ? app.chat.cwd : app.cwd
+	editor_clear(&app.editor)
+
+	// A turn is still running: the message is already in the transcript where
+	// it was typed, so all that is left is to remember to send it. Dropping it
+	// here — which is what used to happen — looked exactly like a broken
+	// Enter key.
+	if runner_busy(&app.runner) {
+		append(
+			&app.queue,
+			Pending {
+				prompt = strings.clone(prompt),
+				session = strings.clone(app.chat.session_id),
+				cwd = strings.clone(cwd),
+			},
+		)
+		app.stick = true
+		app_status(app, fmt.tprintf("queued (%d)", len(app.queue)))
+		return
+	}
+
 	if !runner_start(&app.runner, cwd, app.chat.session_id, prompt, model_flag[app.model]) {
 		app_status(app, "could not start claude")
 		return
 	}
-	editor_clear(&app.editor)
 	delete(app.run_session)
 	app.run_session = strings.clone(app.chat.session_id)
 	app.run_index = app.selected
 	app.cur_msg = -1
 	app.stick = true
 	app_status(app, "thinking...")
+}
+
+// Sends the next message that was typed over a running turn. Called when one
+// finishes, which is the only time there is a process free to run it.
+app_pump_queue :: proc(app: ^App) {
+	if len(app.queue) == 0 || runner_busy(&app.runner) do return
+	p := app.queue[0]
+	ordered_remove(&app.queue, 0)
+	defer pending_destroy(&p)
+
+	// A message queued against a chat that had no id yet belongs to whichever
+	// id the harness handed back for the turn that has just finished.
+	session := p.session != "" ? p.session : app.run_session
+	if !runner_start(&app.runner, p.cwd, session, p.prompt, model_flag[app.model]) {
+		app_status(app, "could not start claude")
+		return
+	}
+	delete(app.run_session)
+	app.run_session = strings.clone(session)
+	app.run_index = session_index(app, session)
+	app.cur_msg = -1
+	app_status(app, "thinking...")
+}
+
+// Throws away what is waiting. Interrupting a turn should not be followed by
+// the next queued message starting up on its own.
+app_queue_clear :: proc(app: ^App) {
+	for &p in app.queue do pending_destroy(&p)
+	clear(&app.queue)
 }
 
 // --- applying what the runner streams ---------------------------------------
@@ -382,7 +472,10 @@ app_apply :: proc(app: ^App, e: ^Event) {
 			// A subagent's output belongs under the Task that spawned it.
 			owner_ref := chat_find_tool(c, e.parent)
 			owner := chat_block(c, owner_ref)
-			if owner == nil do return
+			if owner == nil {
+				block_destroy(&block)
+				return
+			}
 			append(&owner.sub, block)
 			ref = Ref{owner_ref.msg, owner_ref.block, len(owner.sub) - 1}
 		} else {

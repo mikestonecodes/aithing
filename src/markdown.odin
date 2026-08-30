@@ -106,6 +106,18 @@ wrap_into :: proc(
 		return
 	}
 
+	// Only the first line of a wrapped bullet carries the marker. The rest are
+	// ordinary body lines at the same indent, which is both how a list is
+	// meant to look and the only way md_draw_line's marker slice stays on a
+	// rune boundary: it takes the first two bytes, and two bytes into a
+	// continuation line is as likely to be the middle of an em dash as the
+	// "- " it is looking for.
+	st := style
+	emit :: proc(out: ^[dynamic]Line, st: ^Line_Style, text: string, indent: f32) {
+		append(out, Line{text = text, style = st^, indent = indent})
+		if st^ == .Bullet do st^ = .Body
+	}
+
 	start := 0
 	last_break := -1
 	w: f32
@@ -115,11 +127,11 @@ wrap_into :: proc(
 		step := 1
 		for i + step < len(text) && (text[i + step] & 0xc0) == 0x80 do step += 1
 		r, _ := decode_first(text[i:])
-		cw := font.chars[glyph_index(r)].xadvance * font_scale(font, px)
+		cw := font_glyph(font, r).advance * font_scale(font, px)
 
 		if w + cw > width && i > start {
 			cut := last_break > start ? last_break : i
-			append(out, Line{text = text[start:cut], style = style, indent = indent})
+			emit(out, &st, text[start:cut], indent)
 			start = cut
 			for start < len(text) && text[start] == ' ' do start += 1
 			last_break = -1
@@ -132,7 +144,7 @@ wrap_into :: proc(
 		i += step
 	}
 	if start < len(text) {
-		append(out, Line{text = text[start:], style = style, indent = indent})
+		emit(out, &st, text[start:], indent)
 	}
 }
 

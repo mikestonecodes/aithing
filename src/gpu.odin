@@ -18,9 +18,11 @@ Frame :: struct {
 	vbuf:       vk.Buffer,
 	vmem:       vk.DeviceMemory,
 	vmapped:    [^]byte,
+	vcap:       int,
 	ibuf:       vk.Buffer,
 	imem:       vk.DeviceMemory,
 	imapped:    [^]byte,
+	icap:       int,
 }
 
 Gpu :: struct {
@@ -61,12 +63,19 @@ Gpu :: struct {
 	pipeline:        vk.Pipeline,
 }
 
-VERTEX_BYTES :: 1 << 20
-INDEX_BYTES :: 1 << 19
+// What a frame in flight starts with, host-visible and written straight from
+// the draw list. A glyph is a quad, so a screen of prose with a sidebar beside
+// it runs to tens of thousands of them — how many depends on the window and on
+// what is in the transcript, which is why these grow rather than being a guess
+// that is either wasteful or too small on somebody's larger display.
+VERTEX_BYTES :: 2 << 20
+INDEX_BYTES :: 1 << 20
 
 vk_check :: proc(res: vk.Result, what: string, loc := #caller_location) {
 	if res != .SUCCESS {
-		fmt.eprintfln("vulkan: %s failed: %v (%v)", what, res, loc)
+		msg := fmt.tprintfln("vulkan: %s failed: %v (%v)", what, res, loc)
+		fmt.eprint(msg)
+		crash_note(msg)
 		os.exit(1)
 	}
 }
@@ -445,6 +454,7 @@ create_frames :: proc(g: ^Gpu) {
 
 		f.vbuf, f.vmem, f.vmapped = create_mapped_buffer(g, VERTEX_BYTES, {.VERTEX_BUFFER})
 		f.ibuf, f.imem, f.imapped = create_mapped_buffer(g, INDEX_BYTES, {.INDEX_BUFFER})
+		f.vcap, f.icap = VERTEX_BYTES, INDEX_BYTES
 	}
 }
 
@@ -483,6 +493,31 @@ create_mapped_buffer :: proc(
 	return buf, memory, cast([^]byte)ptr
 }
 
+// Makes room for a frame bigger than this one has ever had to draw. Doubling
+// from where it is keeps a transcript that grows a line at a time from
+// reallocating every frame. The wait is the whole device, which is heavy —
+// but it happens a handful of times in a run, and the alternative is a frame
+// that cannot be drawn at all.
+frame_reserve :: proc(g: ^Gpu, f: ^Frame, vbytes, ibytes: int) {
+	if vbytes <= f.vcap && ibytes <= f.icap do return
+	vk.DeviceWaitIdle(g.device)
+
+	if vbytes > f.vcap {
+		cap := max(f.vcap * 2, vbytes)
+		vk.DestroyBuffer(g.device, f.vbuf, nil)
+		vk.FreeMemory(g.device, f.vmem, nil)
+		f.vbuf, f.vmem, f.vmapped = create_mapped_buffer(g, vk.DeviceSize(cap), {.VERTEX_BUFFER})
+		f.vcap = cap
+	}
+	if ibytes > f.icap {
+		cap := max(f.icap * 2, ibytes)
+		vk.DestroyBuffer(g.device, f.ibuf, nil)
+		vk.FreeMemory(g.device, f.imem, nil)
+		f.ibuf, f.imem, f.imapped = create_mapped_buffer(g, vk.DeviceSize(cap), {.INDEX_BUFFER})
+		f.icap = cap
+	}
+}
+
 find_memory_type :: proc(g: ^Gpu, bits: u32, props: vk.MemoryPropertyFlags) -> u32 {
 	mem_props: vk.PhysicalDeviceMemoryProperties
 	vk.GetPhysicalDeviceMemoryProperties(g.phys, &mem_props)
@@ -491,6 +526,7 @@ find_memory_type :: proc(g: ^Gpu, bits: u32, props: vk.MemoryPropertyFlags) -> u
 		if props <= mem_props.memoryTypes[i].propertyFlags do return i
 	}
 	fmt.eprintln("no suitable Vulkan memory type")
+	crash_note("no suitable Vulkan memory type")
 	os.exit(1)
 }
 

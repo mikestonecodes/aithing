@@ -1,5 +1,6 @@
 package aithing
 
+import "core:fmt"
 import "core:mem"
 import vk "vendor:vulkan"
 
@@ -166,6 +167,16 @@ gpu_draw :: proc(g: ^Gpu, ui: ^UI, clear_color: Color) -> bool {
 	// up — would otherwise park the whole program inside the driver, and the
 	// window comes back seconds after the pointer does. Timing out just skips
 	// the frame; the loop keeps servicing input either way.
+	// Grown before anything is acquired or reset. A frame abandoned after
+	// taking a swapchain image leaves its fence reset with nothing to signal
+	// it and its acquire semaphore signalled with nothing to wait on it, and
+	// the next frame inherits both: the window wedges on a 50ms timeout per
+	// frame, and the driver eventually returns DEVICE_LOST, which vk_check
+	// turns into a silent exit.
+	vbytes := len(ui.verts) * size_of(Vertex)
+	ibytes := len(ui.indices) * size_of(u32)
+	frame_reserve(g, f, vbytes, ibytes)
+
 	FRAME_WAIT :: 50 * u64(1_000_000) // 50ms in nanoseconds
 	g.frame_skipped = true
 	if vk.WaitForFences(g.device, 1, &f.fence, true, FRAME_WAIT) == .TIMEOUT do return true
@@ -187,9 +198,6 @@ gpu_draw :: proc(g: ^Gpu, ui: ^UI, clear_color: Color) -> bool {
 	}
 	vk.ResetFences(g.device, 1, &f.fence)
 
-	vbytes := len(ui.verts) * size_of(Vertex)
-	ibytes := len(ui.indices) * size_of(u32)
-	if vbytes > VERTEX_BYTES || ibytes > INDEX_BYTES do return true // skip a too-big frame
 	if vbytes > 0 do mem.copy(f.vmapped, raw_data(ui.verts), vbytes)
 	if ibytes > 0 do mem.copy(f.imapped, raw_data(ui.indices), ibytes)
 
