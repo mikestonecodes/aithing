@@ -192,6 +192,12 @@ gpu_draw :: proc(g: ^Gpu, ui: ^UI, clear_color: Color) -> bool {
 	)
 	if res == .TIMEOUT || res == .NOT_READY do return true
 	if res == .ERROR_OUT_OF_DATE_KHR do return false
+	if res == .ERROR_SURFACE_LOST_KHR {
+		// The compositor is gone. Rebuilding the swapchain would fail on the
+		// same surface, so this is the end of the run, not an error to die on.
+		g.surface_lost = true
+		return true
+	}
 	g.frame_skipped = false
 	if res != .SUCCESS && res != .SUBOPTIMAL_KHR {
 		vk_check(res, "AcquireNextImageKHR")

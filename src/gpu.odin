@@ -58,6 +58,10 @@ Gpu :: struct {
 	// Set when a frame was dropped because the compositor had no image to
 	// give us; the loop uses it to keep trying.
 	frame_skipped:   bool,
+	// Set when the surface itself is gone — the compositor exited, or the
+	// window was taken away. There is nothing to rebuild and nothing to draw
+	// into, so the loop stops rather than treating it as a fatal Vulkan error.
+	surface_lost:    bool,
 
 	pipeline_layout: vk.PipelineLayout,
 	pipeline:        vk.Pipeline,

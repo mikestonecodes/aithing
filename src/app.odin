@@ -102,6 +102,7 @@ Pending :: struct {
 	prompt:  string,
 	session: string, // "" when the chat had not been given an id yet
 	cwd:     string,
+	msg:     int, // where it sits in the transcript, so it can stop looking queued
 }
 
 @(private = "file")
@@ -348,12 +349,14 @@ app_send :: proc(app: ^App) {
 	// here — which is what used to happen — looked exactly like a broken
 	// Enter key.
 	if runner_busy(&app.runner) {
+		app.chat.msgs[m].queued = true
 		append(
 			&app.queue,
 			Pending {
 				prompt = strings.clone(prompt),
 				session = strings.clone(app.chat.session_id),
 				cwd = strings.clone(cwd),
+				msg = m,
 			},
 		)
 		app.stick = true
@@ -384,6 +387,13 @@ app_pump_queue :: proc(app: ^App) {
 	// A message queued against a chat that had no id yet belongs to whichever
 	// id the harness handed back for the turn that has just finished.
 	session := p.session != "" ? p.session : app.run_session
+	// It is going out now, so it stops being drawn as waiting — unless the
+	// reader has moved to another session, in which case that transcript is
+	// gone and there is nothing to unmark.
+	if p.session == app.chat.session_id && p.msg >= 0 && p.msg < len(app.chat.msgs) {
+		app.chat.msgs[p.msg].queued = false
+		app.chat_ver += 1
+	}
 	if !runner_start(&app.runner, p.cwd, session, p.prompt, model_flag[app.model]) {
 		app_status(app, "could not start claude")
 		return
@@ -398,7 +408,13 @@ app_pump_queue :: proc(app: ^App) {
 // Throws away what is waiting. Interrupting a turn should not be followed by
 // the next queued message starting up on its own.
 app_queue_clear :: proc(app: ^App) {
-	for &p in app.queue do pending_destroy(&p)
+	for &p in app.queue {
+		if p.session == app.chat.session_id && p.msg >= 0 && p.msg < len(app.chat.msgs) {
+			app.chat.msgs[p.msg].queued = false
+		}
+		pending_destroy(&p)
+	}
+	if len(app.queue) > 0 do app.chat_ver += 1
 	clear(&app.queue)
 }
 

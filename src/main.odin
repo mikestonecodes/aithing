@@ -213,8 +213,9 @@ main :: proc() {
 		}
 		// A rebuilt binary takes over here, between one frame and the next,
 		// but never in the middle of a turn: exec would take the pipe the
-		// answer is still arriving on with it.
-		if reload_ready() && !runner_busy(&app.runner) do reload_exec(app)
+		// answer is still arriving on with it, and anything queued behind it
+		// only exists in this process.
+		if reload_ready() && !runner_busy(&app.runner) && len(app.queue) == 0 do reload_exec(app)
 
 		watch(.Input)
 		app_input(app)
@@ -249,6 +250,7 @@ main :: proc() {
 		// A frame the driver would not hand us an image for has not been
 		// presented; keep asking rather than waiting for the next keystroke.
 		skipped := app.gpu.frame_skipped
+		if app.gpu.surface_lost do app.win.should_close = true
 		draw_ms := time.duration_milliseconds(time.since(draw_start))
 
 		if profile {

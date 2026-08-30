@@ -63,6 +63,10 @@ Msg :: struct {
 	role:   Role,
 	blocks: [dynamic]Block,
 	agent:  string, // non-empty when this is a subagent's transcript
+	// Typed, shown, but not sent yet: it is waiting behind a running turn.
+	// Drawn dimmed and labelled, because a message that has gone out and one
+	// that is still waiting are otherwise the same bubble.
+	queued: bool,
 }
 
 Chat :: struct {

@@ -260,14 +260,22 @@ layout_message :: proc(app: ^App, m: ^Msg, x, y, width: f32, draw: bool) -> f32 
 		bw := width * 0.8
 		bx := x + width - bw
 		if draw {
-			ui_rect(ui, {bx, y, bw, h + 20}, USER_BG, 12)
+			// A message still waiting its turn is drawn back, with the word
+			// under it: it has been typed and accepted, but nothing has been
+			// sent yet, and those two states used to look identical.
+			ui_rect(ui, {bx, y, bw, h + 20}, m.queued ? PANEL : USER_BG, 12)
 			yy := y + 10
 			for &b in m.blocks {
 				yy += layout_block(app, &b, bx + 12, yy, inner, true, 0)
 			}
+			if m.queued {
+				label := "queued"
+				lw := font_width(&ui.regular, label, 13)
+				ui_text(ui, &ui.regular, label, {bx + bw - lw, y + h + 23}, 13, FAINT)
+			}
 		}
 		_ = body
-		return h + 32
+		return m.queued ? h + 46 : h + 32
 	}
 
 	h := f32(0)
