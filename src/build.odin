@@ -10,7 +10,7 @@ import "core:thread"
 // Dogfooding a window means editing it while it is open, and a card that
 // changes this program's own source changes nothing anyone can see until
 // somebody goes and builds it. So the window builds itself: work that lands
-// in the repository this binary came from starts `build.sh` there.
+// in the repository this binary came from builds it there.
 //
 // The trigger is the landing, not the turn. A card works in a checkout of its
 // own (see worktree.odin), so the source it edits is not the source this
@@ -34,8 +34,9 @@ Build :: struct {
 	running: bool,
 	ready:   bool,
 	ok:      bool,
-	// Where this binary sits, which is where build.sh is. Resolved once at
-	// startup: /proc/self/exe is not read later because a linker that
+	// Where this binary sits, which is the root of the repo it was built
+	// from. Resolved once at startup: /proc/self/exe is not read later
+	// because a linker that
 	// replaces the file rather than rewriting it leaves that link pointing at
 	// the deleted inode.
 	repo:    string,
@@ -83,8 +84,19 @@ build_is_own :: proc(project: string) -> bool {
 }
 
 // Starts a build of this window, if what just landed was this window. Nothing
-// blocks: build.sh takes a few seconds and the window goes on drawing through
-// them, turns and all.
+// blocks: the compiler takes a few seconds and the window goes on drawing
+// through them, turns and all.
+//
+// The compiler, not `build.sh`. The script regenerates the Wayland bindings,
+// the font atlas and the SPIR-V before it builds, and all three are committed
+// — so a build started by a landing rewrote tracked files in the project's own
+// tree, and the next card to land there had to stash a diff this window had
+// made behind its back. The generated files are in the repository precisely so
+// that a plain `odin build` works; this is the case that needs it to.
+//
+// `--export-dynamic` stays, which the script explains: it puts the symbol
+// names in the dynamic table, which is where the crash reporter's backtrace
+// reads them from, and a crash log without it is a column of hex.
 build_start :: proc(app: ^App, project: string) {
 	if !build_is_own(project) do return
 	sync.mutex_lock(&g_build.mu)
@@ -92,8 +104,8 @@ build_start :: proc(app: ^App, project: string) {
 	sync.mutex_unlock(&g_build.mu)
 	if already do return
 
-	script, _ := filepath.join({g_build.repo, "build.sh"}, context.temp_allocator)
-	if !os.exists(script) do return
+	src, _ := filepath.join({g_build.repo, "src"}, context.temp_allocator)
+	if !os.exists(src) do return
 
 	stamp := src_mtime(g_build.repo)
 	if stamp != 0 && stamp <= g_build.built do return // it changed nothing under src
@@ -107,17 +119,23 @@ build_start :: proc(app: ^App, project: string) {
 	app_status(app, "building...")
 
 	g_build.worker = thread.create_and_start_with_poly_data(
-		strings.clone(script),
-		proc(script: string) {
-			defer delete(script)
+		strings.clone(g_build.repo),
+		proc(repo: string) {
+			defer delete(repo)
 			// Everything it says goes to a file, the way the harness's stderr
 			// does: the window has nowhere to put a build log, and after a
 			// failure it is the only thing worth reading.
 			context.allocator = context.temp_allocator
 			log, lerr := os.open(cache_path("last-build.log"), {.Write, .Create, .Trunc})
 			desc := os.Process_Desc {
-				command     = {script},
-				working_dir = filepath.dir(script),
+				command     = {
+					"odin",
+					"build",
+					"src",
+					"-out:aithing",
+					"-extra-linker-flags:-Wl,--export-dynamic",
+				},
+				working_dir = repo,
 				stdout      = lerr == nil ? log : nil,
 				stderr      = lerr == nil ? log : nil,
 			}
