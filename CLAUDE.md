@@ -63,6 +63,15 @@ odin test src -define:ODIN_TEST_FANCY=false
 
 Both must pass before anything is finished.
 
+## Finishing a card
+
+A card is not done when the work is written. It is done when it is **built,
+merged into `main`, and pushed** — every time, follow-ups included. The window
+does not rebuild itself: auto reload and `dev.sh` were deleted, so a card whose
+work is only committed is a card that does nothing when the app is restarted.
+Run `./build.sh` and `git push origin main` as the last step, not as something
+to ask about.
+
 ## Comments
 
 Comments here say *why*, in prose, and usually name what the code used to do
