@@ -25,14 +25,6 @@ is needed for a plain build.
 
 Needs the `claude` CLI on `PATH`.
 
-`./dev.sh` rebuilds on every change under `src/`. A running window stats its
-own binary twice a second, and when a newer one lands it `exec`s over itself —
-same process, same place: the open session, the model and whatever is
-half-typed in the composer all come back. Nothing coordinates the two, the
-build is the signal, so a plain `./build.sh` from another terminal reloads an
-open window just as well. A reload never interrupts a turn in flight; it waits
-for the answer to finish.
-
 ## Use
 
 ```sh
@@ -218,9 +210,7 @@ The list is written to `~/.config/aithing/todos` beside the archive — the
 cards, and every card dismissed by hand — and what was on screen to
 `~/.config/aithing/state`, rewritten whenever it changes. `AITHING_CONFIG`
 points the lot somewhere else, so a test run stays out of the way of a window
-someone is using. The state file is the same picture the auto-reload hands to
-the binary that replaces it, by the same serializer, which is why a normal
-launch and a reload put back exactly the same thing.
+someone is using.
 
 ## Text
 
@@ -251,7 +241,6 @@ screen pixels the distance ramp spans, which rides along in the vertex.
 | `src/turns.odin` | the slots those run in: as many turns at once as asked for |
 | `src/sessions.odin` | reading `~/.claude/projects` |
 | `src/jobs.odin` | the scan and parse worker threads |
-| `src/reload.odin` | noticing a rebuilt binary and exec'ing it over this one |
 | `src/watchdog.odin` | the phase a frozen frame loop stopped in |
 | `src/crash.odin` | a backtrace to `crash.log` when a signal kills it |
 | `src/font.odin` | the MSDF glyph sheet: metrics, lookup, measuring |

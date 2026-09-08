@@ -85,6 +85,44 @@ model_parse :: proc(name: string) -> (m: Model, ok: bool) {
 	return MODEL_DEFAULT, false
 }
 
+// How hard the next turn thinks. The same choice the harness calls effort,
+// and the same five words it takes on --effort, so nothing here has to map
+// one vocabulary onto another.
+Effort :: enum {
+	Low,
+	Medium,
+	High,
+	Xhigh,
+	Max,
+}
+
+// What goes on the CLI's --effort, and what the saved choice and our own
+// --effort read back.
+effort_flag := [Effort]string {
+	.Low    = "low",
+	.Medium = "medium",
+	.High   = "high",
+	.Xhigh  = "xhigh",
+	.Max    = "max",
+}
+
+effort_label := [Effort]string {
+	.Low    = "Low",
+	.Medium = "Medium",
+	.High   = "High",
+	.Xhigh  = "Xhigh",
+	.Max    = "Max",
+}
+
+// Medium is what the harness itself would have picked, so a window that has
+// never been told otherwise runs turns exactly as `claude` would.
+EFFORT_DEFAULT :: Effort.Medium
+
+effort_parse :: proc(name: string) -> (e: Effort, ok: bool) {
+	for c in Effort do if effort_flag[c] == name do return c, true
+	return EFFORT_DEFAULT, false
+}
+
 Runner :: struct {
 	mu:      sync.Mutex,
 	events:  [dynamic]Event,
@@ -137,6 +175,7 @@ runner_start :: proc(
 	session_id: string,
 	prompt: string,
 	model: string = "",
+	effort: string = "",
 	slot := 0,
 ) -> bool {
 	if runner_busy(r) do return false
@@ -145,6 +184,7 @@ runner_start :: proc(
 	append(&args, "claude", "-p", prompt)
 	append(&args, "--output-format", "stream-json", "--include-partial-messages", "--verbose")
 	if model != "" do append(&args, "--model", model)
+	if effort != "" do append(&args, "--effort", effort)
 	if session_id != "" do append(&args, "--resume", session_id)
 
 	out_r, out_w, pipe_err := os.pipe()

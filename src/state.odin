@@ -11,12 +11,7 @@ import "core:strings"
 // was narrowed to, the card the cursor was on, how far down it was scrolled,
 // the model, and both half-typed boxes.
 //
-// This is the same picture the reload writes when a rebuilt binary takes the
-// process over, so there is one serializer and one restore, and a normal
-// launch picks up where the last one stopped for the same reason a reload
-// does. The reload's copy lives in the cache and is taken away as it is read
-// — a run that crashed on the way up should not keep restoring the same
-// draft — and the persistent one lives beside the archive and is rewritten
+// One serializer and one restore, writing beside the archive, rewritten
 // whenever it changes.
 
 @(private = "file")
@@ -30,6 +25,7 @@ App_State :: struct {
 	draft:        string, // the composer, inside the open thread
 	capture:      string, // the box under the grid
 	model:        Model,
+	effort:       Effort,
 	opened:       bool,
 	scroll:       f32,
 	ok:           bool,
@@ -59,6 +55,7 @@ state_text :: proc(app: ^App) -> string {
 	fmt.sbprintfln(&b, "version %s", STATE_VERSION)
 	fmt.sbprintfln(&b, "session %s", app.chat.session_id)
 	fmt.sbprintfln(&b, "model %s", model_short[app.model])
+	fmt.sbprintfln(&b, "effort %s", effort_flag[app.effort])
 	fmt.sbprintfln(&b, "cwd %s", app.cwd)
 	fmt.sbprintfln(&b, "project %s", app.canvas.project)
 	fmt.sbprintfln(&b, "sel %s", app.canvas.sel)
@@ -86,11 +83,9 @@ state_save :: proc(app: ^App) {
 	_ = os.write_entire_file(config_path("state"), transmute([]byte)text)
 }
 
-// Reads a state file. `take` removes it as it is read, which is what the
-// reload wants and the persistent copy does not.
-state_read :: proc(path: string, take := false, allocator := context.allocator) -> (s: App_State) {
+// Reads a state file.
+state_read :: proc(path: string, allocator := context.allocator) -> (s: App_State) {
 	data, rerr := os.read_entire_file(path, context.temp_allocator)
-	if take do os.remove(path)
 	if rerr != nil do return
 
 	rest := string(data)
@@ -118,6 +113,8 @@ state_read :: proc(path: string, take := false, allocator := context.allocator) 
 			// turn slots. Read and dropped, so those files still restore.
 		case "model":
 			s.model, _ = model_parse(value)
+		case "effort":
+			s.effort, _ = effort_parse(value)
 		case "opened":
 			s.opened = value == "1"
 		case "archive":
@@ -150,9 +147,10 @@ state_free :: proc(s: ^App_State) {
 
 // Everything that does not need the session list: the rest of the restore is
 // in main, once the first scan has landed and there are threads to open.
-state_restore :: proc(app: ^App, s: App_State, model_set: bool) {
+state_restore :: proc(app: ^App, s: App_State, model_set: bool, effort_set := false) {
 	if !s.ok do return
 	if !model_set do app.model = s.model
+	if !effort_set do app.effort = s.effort
 	if s.cwd != "" {
 		delete(app.cwd)
 		app.cwd = strings.clone(s.cwd)

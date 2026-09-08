@@ -18,6 +18,19 @@ scratch_dir :: proc(t: ^testing.T) {
 	_ = os.set_env("AITHING_CONFIG", dir)
 }
 
+// Where the tests' checkouts go, and it is one fixed path rather than a path
+// per test on purpose: the runner runs tests in parallel and the cache is
+// named by an environment variable, so two tests pointing it at two different
+// directories at once is one of them looking for its trees in the other's.
+// Every test that touches the cache sets it to this, and they all agree.
+@(private = "file")
+SCRATCH_CACHE :: "/tmp/aithing-test-cache"
+
+@(private = "file")
+scratch_cache :: proc() {
+	_ = os.set_env("AITHING_CACHE", SCRATCH_CACHE)
+}
+
 @(private = "file")
 fake_session :: proc(id, title: string) -> Session {
 	return Session{id = id, title = title, cwd = "/tmp/proj", mtime = time.now(), size = 100}
@@ -27,7 +40,7 @@ fake_session :: proc(id, title: string) -> Session {
 // for now, so every test that types into the capture box would otherwise run
 // a real `claude` per card; this is what turn_spawn is pointed at instead.
 @(private = "file")
-stub_spawn :: proc(r: ^Runner, cwd, session_id, prompt, model: string, slot: int) -> bool {
+stub_spawn :: proc(r: ^Runner, cwd, session_id, prompt, model, effort: string, slot: int) -> bool {
 	r.running = true
 	return true
 }
@@ -57,6 +70,7 @@ scratch_free :: proc(app: ^App) {
 	for id in app.pending_dismiss do delete(id)
 	delete(app.todo_view)
 	delete(app.visible)
+	delete(app.open)
 	delete(app.pending_open)
 	delete(app.status)
 	turns_destroy(app)
@@ -446,6 +460,45 @@ launcher_narrows_and_esc_widens :: proc(t: ^testing.T) {
 	testing.expect_value(t, len(app_visible(app)), 2)
 }
 
+// `/` on a grid that has been narrowed to nothing offers the projects before
+// anything else, with nothing typed. It used to offer only threads until a
+// query was typed, which is the one thing the grid behind the menu is already
+// showing.
+@(test)
+launcher_opens_on_the_projects :: proc(t: ^testing.T) {
+	scratch_dir(t)
+	app := scratch_app()
+	defer scratch_free(app)
+	sessions := make([]Session, 3)
+	sessions[0] = fake_session("a1", "one")
+	sessions[1] = fake_session("b1", "two")
+	sessions[1].cwd = "/tmp/other"
+	sessions[2] = fake_session("c1", "three") // same project as a1
+	app.sessions = sessions
+	app_filter(app)
+
+	hits := launcher_hits(app, "")
+	testing.expect(t, len(hits) >= 3)
+	// One row a project, newest first, and the second of a project's threads
+	// counts towards the row rather than making another.
+	testing.expect_value(t, hits[0].session, -1)
+	testing.expect_value(t, hits[0].name, "proj")
+	testing.expect_value(t, hits[0].count, 2)
+	testing.expect_value(t, hits[1].session, -1)
+	testing.expect_value(t, hits[1].name, "other")
+	// Then the threads.
+	testing.expect(t, hits[2].session >= 0)
+
+	// Narrowed, the project you are in is not offered again: the row that
+	// widens it is what the top of the menu is for.
+	canvas_filter_project(app, "/tmp/proj")
+	hits = launcher_hits(app, "")
+	testing.expect_value(t, hits[0].name, "all projects")
+	for hit in hits {
+		testing.expect(t, !(hit.session < 0 && hit.cwd == "/tmp/proj"))
+	}
+}
+
 // A card whose thread the last scan knew nothing about — one this window made
 // itself a moment ago — still opens when it is clicked. The click used to be
 // thrown away, and clicking the card again did nothing either.
@@ -474,6 +527,46 @@ clicking_a_brand_new_thread_opens_it :: proc(t: ^testing.T) {
 	_ = app_apply_clicks(app)
 	testing.expect_value(t, app.pending_open, "")
 	testing.expect_value(t, app.chat.session_id, "sess-fresh")
+}
+
+// Clicking a card puts you in that card's thread and nothing else, even
+// before the scan has heard of it. The page moved on the click and the
+// transcript waited for the scan, so a card whose turn had just started —
+// which is a file the scan skips, having nothing in it worth a title — left
+// the last conversation you had open sitting there under the new card's
+// click, wearing its own title, and a message typed into it went there.
+@(test)
+opening_a_card_leaves_no_other_thread_on_screen :: proc(t: ^testing.T) {
+	scratch_dir(t)
+	app := scratch_app()
+	defer scratch_free(app)
+
+	sessions := make([]Session, 1)
+	sessions[0] = fake_session("sess-old", "the last thing read")
+	app.sessions = sessions
+
+	// A thread is open and read.
+	app_open(app, 0)
+	testing.expect_value(t, app.chat.session_id, "sess-old")
+
+	// Now a card whose thread nothing has scanned.
+	id := todos_add(&app.todos, "bake the atlas", "sess-fresh", "/tmp/proj")
+	app_open_todo(app, id)
+	testing.expect_value(t, app.chat.session_id, "sess-fresh")
+	testing.expect_value(t, len(app.chat.msgs), 0)
+	testing.expect_value(t, app_chat_title(app), "bake the atlas")
+
+	// And when the scan does land, the transcript is read: the empty chat put
+	// up on the click must not be mistaken for one already open.
+	_ = app_apply_clicks(app)
+	testing.expect_value(t, app.pending_open, "sess-fresh")
+	delete(app.sessions)
+	fresh := make([]Session, 1)
+	fresh[0] = fake_session("sess-fresh", "bake the atlas")
+	app.sessions = fresh
+	_ = app_apply_clicks(app)
+	testing.expect_value(t, app.pending_open, "")
+	testing.expect(t, load_busy(&app.load))
 }
 
 // Esc on the grid does not stop work. It used to fall through to stopping
@@ -613,30 +706,35 @@ a_card_lands_in_the_project_you_are_in :: proc(t: ^testing.T) {
 	scratch_dir(t)
 	app := scratch_app()
 	defer scratch_free(app)
-	app.cwd = strings.clone("/home/mike/Source/aithing")
+	// Directories that are nobody's repository. A card asked for is a card
+	// started, and starting one cuts it a worktree in whatever project it is
+	// filed under — so this test, which is only about which project that is,
+	// used to leave a branch and a checkout in the repository it names every
+	// time the suite ran.
+	app.cwd = strings.clone("/tmp/proj-a")
 	sessions := make([]Session, 1)
 	sessions[0] = fake_session("tmm-1", "playback tree")
-	sessions[0].cwd = "/home/mike/Source/toomanymachines"
+	sessions[0].cwd = "/tmp/proj-b"
 	app.sessions = sessions
 
 	// Typed with nothing open: it goes where the window was launched.
 	editor_set_text(&app.capture, "one")
 	app_capture(app)
-	testing.expect_value(t, app.todos.list[0].cwd, "/home/mike/Source/aithing")
+	testing.expect_value(t, app.todos.list[0].cwd, "/tmp/proj-a")
 
 	// Now a thread in another project is opened, which is where the work is.
 	app_open(app, 0)
-	testing.expect_value(t, app.cwd, "/home/mike/Source/toomanymachines")
+	testing.expect_value(t, app.cwd, "/tmp/proj-b")
 	editor_set_text(&app.capture, "two")
 	app_capture(app)
-	testing.expect_value(t, app.todos.list[1].cwd, "/home/mike/Source/toomanymachines")
+	testing.expect_value(t, app.todos.list[1].cwd, "/tmp/proj-b")
 
 	// The grid narrowed to a project still wins: it is the more recent thing
 	// said about where you are.
-	canvas_filter_project(app, "/home/mike/Source/aithing")
+	canvas_filter_project(app, "/tmp/proj-a")
 	editor_set_text(&app.capture, "three")
 	app_capture(app)
-	testing.expect_value(t, app.todos.list[2].cwd, "/home/mike/Source/aithing")
+	testing.expect_value(t, app.todos.list[2].cwd, "/tmp/proj-a")
 }
 
 // One variable says what is on screen, and Esc walks it back one step at a
@@ -881,6 +979,68 @@ a_later_message_takes_the_claim_back :: proc(t: ^testing.T) {
 	testing.expect_value(t, app.todos.list[0].state, Todo_State.Asked)
 }
 
+// A card you asked for never reads as one you have not. `waiting` is the word
+// for a card nothing has started, and a turn that went away without ever
+// saying Done or Failed used to be put back to it — so the grid showed a card
+// indistinguishable from one you had never touched, and nothing anywhere said
+// a turn had gone out for it at all. A turn that would not start in the first
+// place is the same rule, in app_start_todo.
+//
+// Nothing should be able to reach this: the reader thread emits Done on its
+// way out whatever happened to the process. Which is the reason to say so on
+// the card rather than tidy it into the state a card starts life in.
+@(test)
+a_card_that_was_asked_for_never_says_waiting :: proc(t: ^testing.T) {
+	scratch_dir(t)
+	app := scratch_app()
+	defer scratch_free(app)
+	app.cwd = strings.clone("/tmp")
+
+	id := todos_add(&app.todos, "bake the atlas", "", "/tmp")
+	testing.expect(t, turn_start_stub(app, id))
+	testing.expect_value(t, todo_display_state(app, app.todos.list[0]), Todo_State.Running)
+
+	// The process gone and nothing left to read out of it, with no ending
+	// ever applied: what turns_reap is the last word on.
+	for turn in app.turns do turn.runner.running = false
+	turns_reap(app)
+	testing.expect_value(t, app.todos.list[0].state, Todo_State.Failed)
+	testing.expect_value(t, app.notes[id], "the turn ended without a word")
+}
+
+// The handshake never reaches the screen. A thread read back off disk has
+// always had the marker taken off it, but a thread you had open while its turn
+// finished watched `<aithing>done</aithing>` type itself out at the bottom —
+// the transcript is written by the deltas, and nothing stripped those.
+@(test)
+the_marker_is_not_in_the_transcript :: proc(t: ^testing.T) {
+	scratch_dir(t)
+	app := scratch_app()
+	defer scratch_free(app)
+
+	at := turn_slot(app)
+	app.turns[at]^ = Turn{live = true, chat = true, cwd = strings.clone("/tmp")}
+	app.turns[at].runner.running = true
+
+	start := Event{kind = .Block_Start, block_kind = .Text}
+	defer event_destroy(&start)
+	app_apply_event_for_test(app, at, &start)
+
+	// In pieces, the way it arrives: the marker is one line and the deltas cut
+	// it wherever the bytes happened to land, which is why nothing can strip
+	// it until the block has stopped.
+	for piece in ([]string{"baked it\n\n", "<aithing>", "done</aithing>"}) {
+		d := Event{kind = .Delta, text = strings.clone(piece)}
+		app_apply_event_for_test(app, at, &d)
+		event_destroy(&d)
+	}
+	stop := Event{kind = .Block_Stop}
+	defer event_destroy(&stop)
+	app_apply_event_for_test(app, at, &stop)
+
+	testing.expect_value(t, block_text(chat_block(&app.chat, Ref{0, 0, -1})), "baked it")
+}
+
 // Reading the marker off a message. The later of the two wins, so a message
 // that quotes the instructions before using them still says what it meant.
 @(test)
@@ -977,12 +1137,257 @@ json_quote :: proc(text: string) -> string {
 @(test)
 a_worktree_is_not_a_project :: proc(t: ^testing.T) {
 	scratch_dir(t)
+	scratch_cache()
 	app := scratch_app()
 	defer scratch_free(app)
 
-	id := todos_add(&app.todos, "bake the atlas", "sess-w", "/home/mike/Source/aithing")
-	tree := worktree_path("/home/mike/Source/aithing", id, context.temp_allocator)
-	testing.expect_value(t, worktree_project(app, tree), "/home/mike/Source/aithing")
+	id := todos_add(&app.todos, "bake the atlas", "sess-w", "/tmp/proj")
+	tree := worktree_path("/tmp/proj", id, context.temp_allocator)
+	testing.expect_value(t, worktree_project(app, tree), "/tmp/proj")
 	// Anywhere else is itself, whatever it is called.
 	testing.expect_value(t, worktree_project(app, "/tmp/proj"), "/tmp/proj")
+}
+
+// --- giving a tree back -------------------------------------------------------
+
+// A real repository and a real cache, because what is being pinned below is
+// what git does: the whole of the policy about which trees may go is which
+// ones git refuses to remove, and a fake git would pin our opinion of it
+// instead.
+//
+// One test, not three: the sweep walks everything under the cache root, and
+// the tests share one — a second test's trees would be swept as readily as
+// its own.
+@(test)
+a_finished_card_gives_its_tree_back :: proc(t: ^testing.T) {
+	scratch_dir(t)
+	scratch_cache()
+	cache := SCRATCH_CACHE
+	repo := "/tmp/aithing-test-repo"
+	if !testing.expect(t, run(t, "rm", "-rf", cache, repo), "could not clear the scratch dirs") {
+		return
+	}
+	os.make_directory_all(repo)
+	made :=
+		run(t, "git", "-C", repo, "init", "-q") &&
+		run(t, "git", "-C", repo, "config", "user.email", "test@example.com") &&
+		run(t, "git", "-C", repo, "config", "user.name", "test") &&
+		os.write_entire_file(strings.concatenate({repo, "/f"}, context.temp_allocator), "a") ==
+			nil &&
+		run(t, "git", "-C", repo, "add", "f") &&
+		run(t, "git", "-C", repo, "commit", "-qm", "one")
+	if !testing.expect(t, made, "git is needed for this one") do return
+
+	app := scratch_app()
+	defer scratch_free(app)
+
+	// A finished card's checkout does not sit in the cache for good. It goes,
+	// its branch goes with it while the branch has nothing in it, and asking
+	// for the card again checks it out afresh.
+	id := todos_add(&app.todos, "bake the atlas", "sess-w", repo)
+	tree, why := worktree_for(repo, id, context.temp_allocator)
+	testing.expect_value(t, why, "")
+	testing.expect(t, os.exists(tree), "the tree was not made")
+	testing.expect(t, !worktree_idle(&app.todos, id), "an open card is still working in it")
+	todo_set_state(&app.todos, id, .Done)
+	testing.expect(t, worktree_idle(&app.todos, id), "a finished card is not")
+	testing.expect(t, worktree_release(repo, id), "the tree did not go")
+	testing.expect(t, !os.exists(tree), "the tree is still there")
+	testing.expect(t, !has_branch(t, repo, id), "an empty branch was left behind")
+	again, _ := worktree_for(repo, id, context.temp_allocator)
+	testing.expect_value(t, again, tree)
+	testing.expect(t, os.exists(tree), "the tree did not come back")
+
+	// The other half of the rule: git decides, and git will not remove a tree
+	// with anything in it that is not committed. Removing them regardless was
+	// the version of this that could lose an afternoon.
+	_ = os.write_entire_file(
+		strings.concatenate({tree, "/half-done"}, context.temp_allocator),
+		"x",
+	)
+	testing.expect(t, !worktree_release(repo, id), "git should have refused")
+	testing.expect(t, os.exists(tree), "an afternoon of work was thrown away")
+
+	// Committed, and the tree may go — and the branch stays, because the
+	// commits are what makes it worth keeping, not the checkout.
+	run(t, "git", "-C", tree, "add", "half-done")
+	run(t, "git", "-C", tree, "commit", "-qm", "half")
+	testing.expect(t, worktree_release(repo, id), "a committed tree may go")
+	testing.expect(t, !os.exists(tree), "the tree is still there")
+	testing.expect(t, has_branch(t, repo, id), "the commits went with the tree")
+
+	// Landing it, which is what a card finishing actually does: the work goes
+	// back into the branch the project is on, uncommitted or not, and only
+	// then does the tree go. Nothing ever merged one before, so a week of
+	// green cards was a week of `aithing/n-*` branches to go through by hand.
+	land := todos_add(&app.todos, "wire it up", "s-land", repo)
+	land_tree, _ := worktree_for(repo, land, context.temp_allocator)
+	_ = os.write_entire_file(join(land_tree, "wired"), "y")
+	landed, _ := worktree_land(repo, land, "wire it up")
+	testing.expect_value(t, landed, "")
+	testing.expect(t, os.exists(join(repo, "wired")), "the work never reached the project")
+	todo_set_state(&app.todos, land, .Done)
+	testing.expect(t, worktree_release(repo, land), "a landed tree may go")
+	testing.expect(t, !has_branch(t, repo, land), "a landed branch was left behind")
+
+	// And what happens when it will not go back. Two cards cut from the same
+	// commit, both editing the same line: the first lands, the second cannot,
+	// and the second keeps everything — the whole point of resolving it on
+	// the card's branch is that there is still a tree to resolve it in.
+	one := todos_add(&app.todos, "say hello", "s-one", repo)
+	two := todos_add(&app.todos, "say goodbye", "s-two", repo)
+	one_tree, _ := worktree_for(repo, one, context.temp_allocator)
+	two_tree, _ := worktree_for(repo, two, context.temp_allocator)
+	_ = os.write_entire_file(join(one_tree, "f"), "hello")
+	_ = os.write_entire_file(join(two_tree, "f"), "goodbye")
+	first, _ := worktree_land(repo, one, "say hello")
+	testing.expect_value(t, first, "")
+	second, conflicted := worktree_land(repo, two, "say goodbye")
+	testing.expect(t, second != "", "a conflict landed anyway")
+	// And it is left mid-merge on purpose: the markers in the files are what
+	// an agent is put in there to settle, and aborting was the version of
+	// this that made a card that had done its work into a chore.
+	testing.expect(t, conflicted, "the conflict was not offered to anyone")
+	testing.expect(t, worktree_merging(two_tree), "the merge was thrown away")
+	testing.expect(t, os.exists(two_tree), "the tree to resolve it in was taken away")
+	testing.expect(t, has_branch(t, repo, two), "the branch with the work on it went")
+	// Exactly one go. A tree still mid-merge is one something has already
+	// tried, so asking again says so rather than starting the merge over —
+	// which is what keeps a card that cannot be landed from going round for
+	// ever.
+	retry, twice := worktree_land(repo, two, "say goodbye")
+	testing.expect_value(t, retry, "the merge was left unresolved")
+	testing.expect(t, !twice, "it offered the same conflict a second time")
+	// And the project is exactly where the first card left it: a failed
+	// landing touches nothing.
+	f, _ := os.read_entire_file_from_path(join(repo, "f"), context.temp_allocator)
+	testing.expect_value(t, string(f), "hello")
+	todos_dismiss(&app.todos, two)
+
+	// A card that did its work perfectly, and an unrelated file open in the
+	// project that git will not fast-forward over. Refusing to land on that
+	// is a card held up by something that has nothing to do with it, so the
+	// work is put aside, the fast-forward taken, and the work put back.
+	lines := strings.builder_make(context.temp_allocator)
+	for i in 0 ..< 20 do strings.write_string(&lines, "keep\n")
+	_ = os.write_entire_file(join(repo, "big"), transmute([]byte)strings.to_string(lines))
+	run(t, "git", "-C", repo, "add", "big")
+	run(t, "git", "-C", repo, "commit", "-qm", "big")
+
+	three := todos_add(&app.todos, "change the end", "s-three", repo)
+	three_tree, _ := worktree_for(repo, three, context.temp_allocator)
+	_ = os.write_entire_file(join(three_tree, "big"), transmute([]byte)strings.concatenate(
+		{strings.to_string(lines)[:len("keep\n") * 19], "the card was here\n"},
+		context.temp_allocator,
+	))
+	// And the same file open in the project, edited at the other end of it.
+	mine := strings.concatenate(
+		{"i was in the middle of this\n", strings.to_string(lines)[len("keep\n"):]},
+		context.temp_allocator,
+	)
+	_ = os.write_entire_file(join(repo, "big"), transmute([]byte)mine)
+
+	blocked, _ := worktree_land(repo, three, "change the end")
+	testing.expect_value(t, blocked, "")
+	got, _ := os.read_entire_file_from_path(join(repo, "big"), context.temp_allocator)
+	// The card's work is in, and so is the line that was never committed:
+	// nothing was taken off the project's tree and left off it.
+	testing.expect(t, strings.contains(string(got), "the card was here"), "the card did not land")
+	testing.expect(t, strings.contains(string(got), "i was in the middle of this"), "work was stashed and never given back")
+	todo_set_state(&app.todos, three, .Done)
+	testing.expect(t, worktree_release(repo, three), "a landed tree may go")
+	run(t, "git", "-C", repo, "checkout", "-q", "--", "big")
+
+	// And the pile that built up while nothing ever removed one: a tree per
+	// card ever run. The sweep reads the card list — a tree whose card is
+	// still open is somewhere work is happening.
+	open_id := todos_add(&app.todos, "two", "s2", repo)
+	gone_id := todos_add(&app.todos, "three", "s3", repo)
+	done_tree, _ := worktree_for(repo, id, context.temp_allocator)
+	open_tree, _ := worktree_for(repo, open_id, context.temp_allocator)
+	gone_tree, _ := worktree_for(repo, gone_id, context.temp_allocator)
+	todos_dismiss(&app.todos, gone_id)
+
+	worktree_sweep(&app.todos)
+	testing.expect(t, !os.exists(done_tree), "a finished card kept its tree")
+	testing.expect(t, !os.exists(gone_tree), "a dismissed card kept its tree")
+	testing.expect(t, os.exists(open_tree), "a card still working lost its tree")
+}
+
+@(private = "file")
+join :: proc(dir, name: string) -> string {
+	return strings.concatenate({dir, "/", name}, context.temp_allocator)
+}
+
+@(private = "file")
+has_branch :: proc(t: ^testing.T, repo, id: string) -> bool {
+	ref := strings.concatenate({"refs/heads/", worktree_branch(id)}, context.temp_allocator)
+	return run(t, "git", "-C", repo, "rev-parse", "--verify", "--quiet", ref)
+}
+
+@(private = "file")
+run :: proc(t: ^testing.T, args: ..string) -> bool {
+	state, _, _, err := os.process_exec(
+		{command = args, working_dir = "/tmp"},
+		context.temp_allocator,
+	)
+	return err == nil && state.exited && state.exit_code == 0
+}
+
+// A card's tree is where work happens, not a place you can go. Threads that
+// ran in one used to fill the launcher with a project row per card ever run —
+// `aithing-n-12`, `aithing-n-13`, every one of them the same project wearing a
+// card's id, and half of those directories given back the moment their card
+// finished. The card on the grid is the door to that thread.
+@(test)
+the_launcher_never_offers_a_tree :: proc(t: ^testing.T) {
+	scratch_dir(t)
+	// The shared root, like everything else that touches the cache: the
+	// environment is one variable for the whole process and the runner runs
+	// these on 32 threads, so a test with a cache root of its own is every
+	// other test's trees moving out from under it mid-run.
+	scratch_cache()
+	app := scratch_app()
+	defer scratch_free(app)
+
+	id := todos_add(&app.todos, "bake the atlas", "w1", "/tmp/proj")
+	tree := worktree_path("/tmp/proj", id, context.temp_allocator)
+	testing.expect_value(t, worktree_card(tree), id)
+	testing.expect_value(t, worktree_card("/tmp/proj"), "")
+
+	sessions := make([]Session, 2, context.temp_allocator)
+	sessions[0] = fake_session("a1", "one")
+	sessions[1] = fake_session("w1", "in a tree")
+	sessions[1].cwd = tree
+	app.sessions = sessions
+	// The list is the temp allocator's here, and scratch_free frees the one
+	// it is handed.
+	defer app.sessions = nil
+
+	testing.expect_value(t, len(app_visible(app)), 1)
+	// And it stays hidden when it is asked for by name: a thread that ran in
+	// a card's tree is one you reach through the card.
+	editor_set_text(&app.search, "tree")
+	testing.expect_value(t, len(app_visible(app)), 0)
+}
+
+// A window nobody has told otherwise thinks as hard as the harness would on
+// its own, and the word it saves is the word the CLI takes. The chip used to
+// be able to show a level the flag did not spell the same way, because the
+// label and the flag were two lists.
+@(test)
+effort_is_medium_until_it_is_picked :: proc(t: ^testing.T) {
+	scratch_dir(t)
+	os.remove(config_path("effort"))
+	testing.expect_value(t, effort_load(), EFFORT_DEFAULT)
+	testing.expect_value(t, EFFORT_DEFAULT, Effort.Medium)
+
+	effort_save(.Xhigh)
+	testing.expect_value(t, effort_load(), Effort.Xhigh)
+
+	// Anything that is not one of the five is the default again, not a level
+	// the harness would reject.
+	e, ok := effort_parse("thorough")
+	testing.expect(t, !ok)
+	testing.expect_value(t, e, EFFORT_DEFAULT)
 }
