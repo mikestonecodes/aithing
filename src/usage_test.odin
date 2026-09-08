@@ -2,6 +2,7 @@ package aithing
 
 import "core:os"
 import "core:strings"
+import "core:sync"
 import "core:testing"
 import "core:time"
 
@@ -9,9 +10,19 @@ import "core:time"
 // its own window. What these are here to catch is one window's silence being
 // read as another window's answer.
 
+// One file, one writer at a time. A reading is written through the moment it
+// lands — which is the point of it — so every test here that lets one land
+// writes the same path, and the runner runs them side by side. The lock is
+// the config file's, not any test's.
+@(private = "file")
+usage_file: sync.Mutex
+
 @(private = "file")
 usage_app :: proc() -> ^App {
-	dir := "/tmp/aithing-usage-test"
+	// The one directory every test here points the config at. Two tests
+	// pointing it at two different ones at once is one of them reading the
+	// other's — the variable is the process's, not the test's.
+	dir := "/tmp/aithing-test-config"
 	os.make_directory_all(dir)
 	_ = os.set_env("AITHING_CONFIG", dir)
 	return new(App)
@@ -47,17 +58,25 @@ test_usage_allowance_expires :: proc(t: ^testing.T) {
 	testing.expect_value(t, window_used(Allowance{util = 0.4}), 0) // never read
 }
 
+// Everything the file is for, in one test because there is one file: two of
+// these running side by side is one of them reading the other's reading.
 @(test)
 test_usage_round_trip :: proc(t: ^testing.T) {
+	sync.mutex_lock(&usage_file)
+	defer sync.mutex_unlock(&usage_file)
 	app := usage_app()
 	defer usage_free(app)
 
-	app.usage.limits = Limits {
+	// A reading is on disk as soon as it is read, which is what the next
+	// window to open draws before its own probe comes back. It used to wait
+	// for the slow tick everything else was saved on, so a window killed in
+	// between opened on three dashes and asked again.
+	os.remove(config_path("usage"))
+	usage_take(&app.usage, Limits {
 		session = {util = 0.25, resets = 1_788_922_800},
 		week    = {util = 0.5, resets = 1_789_426_800},
 		fable   = {util = 0.75, resets = 1_789_426_800},
-	}
-	usage_save(&app.usage)
+	})
 
 	back: Ledger
 	defer usage_destroy(&back)
@@ -66,6 +85,7 @@ test_usage_round_trip :: proc(t: ^testing.T) {
 	testing.expect_value(t, back.limits.week.util, 0.5)
 	testing.expect_value(t, back.limits.week.resets, app.usage.limits.week.resets)
 	testing.expect_value(t, back.limits.fable.util, 0.75)
+	testing.expect(t, back.limits.read_at != 0, "a cached reading with no time on it")
 
 	// Nothing changed, so nothing is written: a window sitting still must not
 	// rewrite the file on every tick.
@@ -79,6 +99,8 @@ test_usage_round_trip :: proc(t: ^testing.T) {
 // nearly all of them here — and the newest one is the whole answer.
 @(test)
 test_usage_limits_from_a_headless_turn :: proc(t: ^testing.T) {
+	sync.mutex_lock(&usage_file)
+	defer sync.mutex_unlock(&usage_file)
 	app := usage_app()
 	defer usage_free(app)
 
@@ -104,6 +126,8 @@ test_usage_limits_from_a_headless_turn :: proc(t: ^testing.T) {
 // wiped back to unread by the next Haiku turn that happened to report.
 @(test)
 test_usage_fable_week_survives_other_models :: proc(t: ^testing.T) {
+	sync.mutex_lock(&usage_file)
+	defer sync.mutex_unlock(&usage_file)
 	app := usage_app()
 	defer usage_free(app)
 
@@ -128,27 +152,3 @@ test_usage_fable_week_survives_other_models :: proc(t: ^testing.T) {
 	testing.expect_value(t, window_used(app.usage.limits.fable), 0.8)
 }
 
-// A reading is on disk as soon as it is read, which is what the next window to
-// open draws before its own probe comes back. It used to wait for the slow
-// tick everything else is saved on, so a window killed in between opened with
-// three dashes and had to ask again.
-@(test)
-test_usage_cached_when_read :: proc(t: ^testing.T) {
-	app := usage_app()
-	defer usage_free(app)
-	os.remove(config_path("usage"))
-
-	now := time.time_to_unix(time.now())
-	usage_take(&app.usage, Limits {
-		session = {util = 0.2, resets = now + 600},
-		week    = {util = 0.5, resets = now + 6000},
-		fable   = {util = 0.8, resets = now + 6000},
-	})
-
-	back: Ledger
-	defer usage_destroy(&back)
-	usage_load(&back)
-	testing.expect_value(t, window_used(back.limits.fable), 0.8)
-	testing.expect_value(t, window_used(back.limits.session), 0.2)
-	testing.expect(t, back.limits.read_at != 0, "a cached reading with no time on it")
-}
