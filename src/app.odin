@@ -46,6 +46,7 @@ Overlay :: enum {
 	None,
 	Launcher, // the big menu
 	Model, // the picker, over the composer
+	Effort, // how hard it thinks, in the picker beside it
 }
 
 Focus :: enum {
@@ -111,6 +112,11 @@ App :: struct {
 	// after it in a list the grid is in the middle of walking, so the press is
 	// recorded here and acted on once the frame is over.
 	pending_dismiss: [dynamic;32]string,
+	// Cards whose work would not go back into the project on its own, waiting
+	// for an agent to be put in the tree to settle it. Recorded rather than
+	// started where it is decided: that is inside the walk over app.turns, and
+	// taking a slot can grow the list the walk is holding a pointer into.
+	pending_resolve: [dynamic;32]string,
 
 	chat:      Chat,
 	// Every turn in flight, one slot each: see turns.odin. Grown as far as the
@@ -131,6 +137,8 @@ App :: struct {
 	status:    string,
 	model:     Model,
 	model_chip: Rect, // where it opens from
+	effort:    Effort,
+	effort_chip: Rect,
 	cwd:       string, // where a new chat runs
 	cur_msg:   int,
 	// Message heights, cached: measuring a long transcript every frame is what
@@ -178,8 +186,12 @@ app_init :: proc(app: ^App) {
 	app.status = strings.clone("ready")
 	archive_load(&app.archive)
 	todos_load(&app.todos)
+	// Every tree left behind by a card that is finished or gone, before
+	// anything can start running in one.
+	worktree_sweep(&app.todos)
 	groups_load(&app.groups)
 	app.model = model_load()
+	app.effort = effort_load()
 	app.profile = os.get_env("AITHING_PROFILE", context.temp_allocator) != ""
 	chat_new(app)
 	app_rescan(app)
@@ -212,6 +224,7 @@ app_destroy :: proc(app: ^App) {
 	delete(app.todo_view)
 	app_notes_destroy(app)
 	for id in app.pending_dismiss do delete(id)
+	for id in app.pending_resolve do delete(id)
 	delete(app.state_last)
 	groups_destroy(&app.groups)
 	canvas_destroy(&app.canvas)
@@ -227,7 +240,12 @@ app_rescan :: proc(app: ^App) {
 // Called once a frame: takes whatever the workers have finished.
 // Applies whatever the last frame's clicks asked for.
 app_apply_clicks :: proc(app: ^App) -> bool {
-	acted := app.pending_open != "" || len(app.pending_dismiss) > 0
+	acted := app.pending_open != "" || len(app.pending_dismiss) > 0 || len(app.pending_resolve) > 0
+	for id in app.pending_resolve {
+		app_start_resolve(app, id)
+		delete(id)
+	}
+	clear(&app.pending_resolve)
 	if len(app.pending_dismiss) > 0 {
 		for id in app.pending_dismiss {
 			app_drop_todo(app, id)
@@ -379,6 +397,13 @@ app_filter :: proc(app: ^App) {
 	clear(&app.visible)
 	query := strings.to_lower(strings.trim_space(editor_text(&app.search)), context.temp_allocator)
 	for s, i in app.sessions {
+		// A card's own tree is not a place you browse to. Threads that ran in
+		// one filled the launcher with a project per card ever run —
+		// `aithing-n-12`, `aithing-n-13` — every one of them the same project
+		// wearing a card's id, and half of them directories that have since
+		// been given back. The card on the grid is the door to that thread,
+		// and it is the only one that stays true.
+		if worktree_card(s.cwd) != "" do continue
 		if app.canvas.project != "" && s.cwd != app.canvas.project do continue
 		if query != "" {
 			// Searching looks everywhere: the archive and the abandoned
@@ -535,10 +560,15 @@ app_start_todo :: proc(app: ^App, id: string) {
 	// With the preamble on the front: a headless turn is the one nobody is
 	// reading, so it is the one that has to say whether it finished.
 	if !turn_start(app, cwd, project, "", verdict_preamble(td.text), id, false) {
-		// Not a failure of the work: a pipe or a process this window could
-		// not get hold of just now. Saying `failed` on a card whose turn
-		// never ran — while the ones beside it carry on — is a lie the grid
-		// used to tell, so the card stays as it was and can be asked again.
+		// Not a failure of the work — a pipe or a process this window could
+		// not get hold of just now — but it is a failure of the asking, and
+		// the card has to say so. It used to be left exactly as it was, which
+		// on a card nobody had run before is `waiting`: you asked for it, the
+		// status line said something for a second, and the grid went on
+		// showing a card that looked like one you had never touched. Failed
+		// with the reason on it, and Enter asks again.
+		app_note(app, id, "could not start claude")
+		app_todo_finished(app, id, .Failed)
 		app_status(app, "could not start claude")
 		return
 	}
@@ -723,7 +753,7 @@ app_cancel :: proc(app: ^App) -> bool {
 		app_launcher(app, false)
 		return true
 
-	case app.overlay == .Model:
+	case app.overlay == .Model || app.overlay == .Effort:
 		app.overlay = .None
 
 	case app.page == .Thread:
@@ -896,7 +926,9 @@ app_submit :: proc(app: ^App, text, prompt: string) -> bool {
 	clear(&app.attach) // the blocks own the attachments now
 	app.chat_ver += 1
 
-	cwd := app_chat_cwd(app)
+	// The thread's own directory, checked out again if it was a card's tree
+	// and the card has since finished with it.
+	cwd := worktree_restore(app, app_chat_cwd(app))
 	route_clear(app)
 
 	// A turn already running in this thread is no reason to hold this one:
@@ -1043,7 +1075,22 @@ app_apply :: proc(app: ^App, at: int, e: ^Event) {
 		key := open_key(e.parent, e.index)
 		ref, has := app.open[key]
 		if has {
-			if b := chat_block(c, ref); b != nil && b.kind != .Tool do b.running = false
+			if b := chat_block(c, ref); b != nil && b.kind != .Tool {
+				b.running = false
+				// The handshake goes here, not on screen. A thread read back
+				// off disk has always had it taken off (sessions.odin), but a
+				// card whose thread you had open while it finished watched
+				// `<aithing>done</aithing>` type itself out at the bottom of
+				// the transcript. Here rather than in the deltas because the
+				// marker is one line and the deltas cut it wherever the bytes
+				// happened to arrive; a block that has stopped is whole.
+				text := strings.to_string(b.text)
+				if bare := verdict_unmark(text); len(bare) != len(text) {
+					kept := strings.clone(bare, context.temp_allocator)
+					strings.builder_reset(&b.text)
+					strings.write_string(&b.text, kept)
+				}
+			}
 			delete_key(&app.open, key)
 		}
 
@@ -1102,10 +1149,18 @@ app_turn_failed :: proc(app: ^App, t: ^Turn, text: string) {
 	app_turn_ended(app, t, .Failed)
 }
 
-// A turn is over. Its card is marked, the sidebar is re-read because the
-// session file has just changed, and a turn that changed this window rebuilds
-// it — the new binary takes the process over a few seconds later.
-@(private = "file")
+// A turn that went away without a word: no Done, no Failed, no exit anything
+// noticed. Nothing should reach this — the reader thread emits Done on its way
+// out whatever happened — so a card that lands here is a card whose turn is
+// unaccounted for, and saying that is worth more than the tidiest of the
+// wrong answers.
+app_turn_vanished :: proc(app: ^App, t: ^Turn) {
+	app_note(app, t.todo, "the turn ended without a word")
+	app_turn_ended(app, t, .Failed)
+}
+
+// A turn is over. Its card is marked, and the sidebar is re-read because the
+// session file has just changed.
 app_turn_ended :: proc(app: ^App, t: ^Turn, state: Todo_State) {
 	if t.ended do return // Failed then Done is one ending, and the first wins
 	t.ended = true
@@ -1116,7 +1171,103 @@ app_turn_ended :: proc(app: ^App, t: ^Turn, state: Todo_State) {
 	if outcome == .Asked do app_note(app, t.todo, t.say)
 	app_todo_finished(app, t.todo, outcome)
 	app.rescan = true
-	reload_build(app, t.cwd)
+	// And the work goes back into the project it came from, now, on the frame
+	// the card said it was finished — see app_land_worktree.
+	app_land_worktree(app, t)
+}
+
+// A finished card's work, put back into its project, and then its checkout
+// given back. Both in the one place, and in that order: a tree removed before
+// its commits were merged is a branch nobody would ever find again, and this
+// used to remove without merging at all — a week of green cards was a week of
+// `aithing/n-*` branches left for somebody to go through by hand.
+//
+// Only a card that is done, and only a tree nothing else is running in: a
+// follow-up typed into the same thread starts beside the turn that is ending
+// and runs in the same directory, and merging or deleting the floor out from
+// under a working agent is the one way this could lose work.
+//
+// A card that would not land keeps its tree, its branch and everything in it,
+// and stops being Done: it says `needs you` with git's own sentence beside
+// it, because the only place a conflict can be settled is the tree the work
+// is in, and a card that says `complete` over work that is not in the project
+// is the lie this whole path exists to stop telling.
+@(private = "file")
+app_land_worktree :: proc(app: ^App, t: ^Turn) {
+	if t.todo == "" || t.project == "" || t.cwd == t.project do return
+	if !worktree_idle(&app.todos, t.todo) do return
+	for other in app.turns do if other != t && other.live && other.cwd == t.cwd do return
+	// A card that is no longer on the grid is not a card that finished. Its
+	// tree still goes, on git's terms, but nothing of it goes into the
+	// project: dismissing a card is saying you are done with what it was
+	// doing, and merging the work of something you threw away is the one
+	// thing here that could put code you never wanted into a branch you do.
+	at := todos_find(&app.todos, t.todo)
+	if at < 0 {
+		_ = worktree_release(t.project, t.todo)
+		return
+	}
+	why, conflicted := worktree_land(t.project, t.todo, app.todos.list[at].text)
+	if why != "" {
+		app_note(app, t.todo, why)
+		app_todo_finished(app, t.todo, .Asked)
+		// A conflict is not the end of the asking. The tree is sitting there
+		// with the markers in it, and the thing best placed to settle them is
+		// the one that wrote one of the two sides — so it gets put back in
+		// there to finish the job, and the card goes on saying `processing`
+		// while it does. Handing a merge conflict to a person was the whole
+		// of the answer before, and it made a card that had done its work
+		// perfectly into a chore.
+		//
+		// Exactly one go: worktree_land refuses a tree that is already
+		// mid-merge, so a resolve turn that ends without settling it lands
+		// the card on `needs you` and stops there.
+		if conflicted && !app_resolving(app, t.todo) {
+			append(&app.pending_resolve, strings.clone(t.todo))
+		}
+		return
+	}
+	_ = worktree_release(t.project, t.todo)
+}
+
+// What a turn is given when the merge is the work. Its own thread, resumed:
+// the agent that did the card is the one that wrote one side of the conflict,
+// and starting a stranger in a tree full of markers throws that away.
+RESOLVE_PROMPT :: "Your work is being merged back into the project and it conflicts. The merge is already started in this working directory — the conflicting files have markers in them and MERGE_HEAD is set. Resolve every conflict, keeping what your work was for and what the project has moved on to, check it still builds and its tests still pass, and commit the merge. Do not abort it and do not touch any other repository.\n\nThe work was:\n\n"
+
+// Puts an agent back in a card's tree to settle the merge. Once the frame is
+// over rather than where it is decided, and through the ordinary turn path —
+// a resolve is a turn on the card like any other, so the card says
+// `processing`, the thread it writes to is the card's own, and stopping or
+// dismissing the card stops it.
+@(private = "file")
+app_start_resolve :: proc(app: ^App, id: string) {
+	at := todos_find(&app.todos, id)
+	if at < 0 do return
+	td := app.todos.list[at]
+	if turn_for_todo(app, id) >= 0 do return
+	project := td.cwd != "" ? td.cwd : app.cwd
+	tree := worktree_path(project, id, context.temp_allocator)
+	if !worktree_merging(tree) do return
+	prompt := verdict_preamble(strings.concatenate({RESOLVE_PROMPT, td.text}, context.temp_allocator))
+	if !turn_start(app, tree, project, td.session, prompt, id, false) {
+		app_note(app, id, "could not start claude to resolve the merge")
+		app_todo_finished(app, id, .Failed)
+		return
+	}
+	app_note_clear(app, id)
+	app_status(app, "resolving the merge")
+}
+
+// Whether a card's tree is already stopped in a merge. Read off the tree, so
+// there is nothing to keep in step: a card gets one go at resolving because
+// the second attempt finds MERGE_HEAD still there.
+@(private = "file")
+app_resolving :: proc(app: ^App, id: string) -> bool {
+	at := todos_find(&app.todos, id)
+	if at < 0 do return false
+	project := app.todos.list[at].cwd != "" ? app.todos.list[at].cwd : app.cwd
+	return worktree_merging(worktree_path(project, id, context.temp_allocator))
 }
 
 // --- formatting -------------------------------------------------------------
