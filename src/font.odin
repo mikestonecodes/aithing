@@ -65,6 +65,7 @@ Font :: struct {
 	ascent:   f32, // em, positive above the baseline
 	descent:  f32, // em, negative below it
 	line_gap: f32,
+	baseline: f32, // em from the top of the line box down to the baseline
 	tex:      u32,
 }
 
@@ -138,7 +139,39 @@ font_read :: proc(offset: int) -> (font: Font, next: int, ok: bool) {
 		font.dense[int(r - DENSE_FIRST)] = gl
 	}
 	font.sparse = glyphs[sparse_from:]
+	font.baseline = font_baseline(&font)
 	return font, off, true
+}
+
+// Where the baseline goes inside a line box of `ascent - descent`.
+//
+// Not at `ascent`, which is what the metric invites and what looks wrong: Noto
+// Sans' hhea ascender is 1.069em, a third of an em above anything Latin text
+// actually draws, while the descender clears the deepest `g` by almost
+// nothing. Hanging the baseline off it leaves all the slack above the text and
+// none below, so every string sits low in whatever box it was given — by
+// about 2px at reading sizes, which is exactly enough to look off.
+//
+// So the ink is measured instead and centred: the tallest and deepest of the
+// letters and digits, with the distance field's padding taken back off, get
+// equal air above and below. The line box keeps its height, since layout and
+// the text cursor are built on it; only the glyphs inside it move up.
+@(private = "file")
+font_baseline :: proc(f: ^Font) -> f32 {
+	TALL :: "bdfhklABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	DEEP :: "gjpqyQ"
+
+	// planeBounds are grown by half the distance range so the shader has room
+	// to ramp; that skirt is not ink and must not count as height.
+	pad := g_atlas.em_px > 0 ? g_atlas.distance_range / (2 * g_atlas.em_px) : 0
+
+	top, bottom: f32
+	for ch in TALL do top = max(top, font_glyph(f, ch).plane[3] - pad)
+	for ch in DEEP do bottom = min(bottom, font_glyph(f, ch).plane[1] + pad)
+	if top <= bottom do return f.ascent // no usable ink; fall back to the metric
+
+	box := f.ascent - f.descent
+	return (box + top + bottom) / 2
 }
 
 // The sheet has no CJK and no emoji, so anything outside it is folded onto the

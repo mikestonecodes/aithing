@@ -153,6 +153,7 @@ Editor_Action :: enum {
 	Copy,
 	Cut,
 	Paste,
+	Stop, // ctrl c, which is not copy here: see below
 }
 
 // Applies one key press. Text itself arrives separately, as UTF-8, because the
@@ -161,6 +162,11 @@ editor_key :: proc(e: ^Editor, k: Key, time_now: f32) -> Editor_Action {
 	text := editor_text(e)
 	select := .Shift in k.mods
 	ctrl := .Ctrl in k.mods
+	// Copy, cut and paste are super, the way they are on a Mac and the way
+	// every browser and terminal on Linux ends up wanting them once ctrl c
+	// means something else. Here ctrl c means stop, which is the one thing it
+	// means everywhere a program can be interrupted.
+	super := .Super in k.mods
 	e.last_edit = time_now
 
 	switch k.code {
@@ -211,16 +217,17 @@ editor_key :: proc(e: ^Editor, k: Key, time_now: f32) -> Editor_Action {
 		if !select do e.anchor = e.cursor
 		return .None
 	case KEY_A:
-		if ctrl {
+		if super || ctrl {
 			e.anchor, e.cursor = 0, len(text)
 			return .None
 		}
 	case KEY_C:
-		if ctrl do return .Copy
+		if super do return .Copy
+		if ctrl do return .Stop
 	case KEY_X:
-		if ctrl do return .Cut
+		if super do return .Cut
 	case KEY_V:
-		if ctrl do return .Paste
+		if super do return .Paste
 	}
 	return .None
 }

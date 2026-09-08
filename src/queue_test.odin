@@ -15,6 +15,16 @@ scratch_app :: proc() -> ^App {
 	return app
 }
 
+// Every slot taken, so the next message has nowhere to go but the queue.
+// Nothing is actually started: the flags are what app_submit reads.
+@(private = "file")
+fill_turns :: proc(app: ^App) {
+	for &t in app.turns {
+		t.live = true
+		t.runner.running = true
+	}
+}
+
 @(private = "file")
 scratch_free :: proc(app: ^App) {
 	editor_destroy(&app.editor)
@@ -24,9 +34,7 @@ scratch_free :: proc(app: ^App) {
 		delete(p.session)
 		delete(p.cwd)
 	}
-	delete(app.queue)
 	delete(app.status)
-	delete(app.run_session)
 	free(app)
 }
 
@@ -34,7 +42,7 @@ scratch_free :: proc(app: ^App) {
 send_while_busy_queues :: proc(t: ^testing.T) {
 	app := scratch_app()
 	defer scratch_free(app)
-	app.runner.running = true // a turn is in flight
+	fill_turns(app) // every slot is in flight
 
 	editor_set_text(&app.editor, "the follow-up")
 	app_send(app)
@@ -53,7 +61,7 @@ send_while_busy_queues :: proc(t: ^testing.T) {
 queue_keeps_the_order_typed :: proc(t: ^testing.T) {
 	app := scratch_app()
 	defer scratch_free(app)
-	app.runner.running = true
+	fill_turns(app)
 
 	for text in ([?]string{"first", "second", "third"}) {
 		editor_set_text(&app.editor, text)
@@ -69,7 +77,7 @@ queue_keeps_the_order_typed :: proc(t: ^testing.T) {
 interrupt_drops_the_queue :: proc(t: ^testing.T) {
 	app := scratch_app()
 	defer scratch_free(app)
-	app.runner.running = true
+	fill_turns(app)
 
 	editor_set_text(&app.editor, "never sent")
 	app_send(app)
@@ -86,7 +94,7 @@ interrupt_drops_the_queue :: proc(t: ^testing.T) {
 empty_composer_queues_nothing :: proc(t: ^testing.T) {
 	app := scratch_app()
 	defer scratch_free(app)
-	app.runner.running = true
+	fill_turns(app)
 
 	editor_set_text(&app.editor, "   \n  ")
 	app_send(app)

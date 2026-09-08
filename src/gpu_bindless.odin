@@ -9,7 +9,6 @@ import vk "vendor:vulkan"
 // album cover differ only by an integer in the vertex data.
 BINDLESS_CAPACITY :: 1024
 
-FONT_TEX :: 0 // slot 0 is always the glyph atlas
 WHITE_TEX :: 1 // slot 1 is always a 1x1 opaque white pixel
 
 Texture :: struct {
@@ -205,24 +204,6 @@ make_texture :: proc(g: ^Gpu, pixels: []byte, width, height, channels: int) -> T
 	vk_check(vk.CreateImageView(g.device, &view_info, nil, &tex.view), "CreateImageView")
 
 	return tex
-}
-
-// Swaps new pixels into an existing slot, so a texture that is replaced often —
-// the feature cover, at full size — costs one entry rather than one per track.
-texture_replace :: proc(g: ^Gpu, slot: u32, pixels: []byte, width, height, channels: int) {
-	if int(slot) >= len(g.textures) do return
-
-	// The old image may still be referenced by a frame in flight. Replacing it
-	// happens once per track, so waiting is cheaper than tracking lifetimes.
-	vk.DeviceWaitIdle(g.device)
-
-	old := g.textures[slot]
-	vk.DestroyImageView(g.device, old.view, nil)
-	vk.DestroyImage(g.device, old.image, nil)
-	vk.FreeMemory(g.device, old.memory, nil)
-
-	g.textures[slot] = make_texture(g, pixels, width, height, channels)
-	write_texture_descriptor(g, slot)
 }
 
 @(private = "file")

@@ -56,6 +56,7 @@ KEY_RIGHT :: 106
 KEY_END :: 107
 KEY_DOWN :: 108
 KEY_PAGEDOWN :: 109
+KEY_SLASH :: 53
 KEY_DELETE :: 111
 
 @(private = "file")
@@ -80,17 +81,6 @@ key_char :: proc "contextless" (code: u32, shift: bool) -> u8 {
 	table := shift ? SHIFTED[:] : UNSHIFTED[:]
 	if int(code) >= len(table) do return 0
 	return table[code]
-}
-
-// Which keys should repeat while held. Text keys and the movement/deletion
-// keys do; modifiers, escape and enter do not.
-key_repeats :: proc "contextless" (code: u32) -> bool {
-	switch code {
-	case KEY_BACKSPACE, KEY_DELETE, KEY_LEFT, KEY_RIGHT, KEY_UP, KEY_DOWN,
-	     KEY_PAGEUP, KEY_PAGEDOWN:
-		return true
-	}
-	return key_char(code, false) != 0
 }
 
 // --- the compositor's own keymap --------------------------------------------

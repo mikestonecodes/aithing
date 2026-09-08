@@ -230,7 +230,3 @@ md_draw_line :: proc(ui: ^UI, l: Line, x, y, width: f32, col: Color, dim: Color)
 	return lh
 }
 
-md_height :: proc(ui: ^UI, b: ^Block, width: f32) -> f32 {
-	md_layout(ui, b, width)
-	return b.height
-}

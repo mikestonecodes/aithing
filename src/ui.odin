@@ -13,14 +13,6 @@ Rect :: struct {
 
 Color :: distinct u32
 
-rgba :: proc "contextless" (r, g, b, a: u8) -> Color {
-	return Color(u32(r) | u32(g) << 8 | u32(b) << 16 | u32(a) << 24)
-}
-
-rgb :: proc "contextless" (r, g, b: u8) -> Color {
-	return rgba(r, g, b, 255)
-}
-
 color_alpha :: proc "contextless" (c: Color, a: f32) -> Color {
 	v := u32(c)
 	old := f32((v >> 24) & 0xff)
@@ -45,6 +37,7 @@ Effect :: enum u32 {
 	Sheen = 2, // travelling highlight
 	Ring  = 3, // fading annulus
 	Text  = 4, // a glyph: the texture is a distance field, not coverage
+	Punch = 5, // replaces what is under it: see ui_punch
 }
 
 Vertex :: struct {
@@ -60,6 +53,7 @@ Vertex :: struct {
 
 DrawCmd :: struct {
 	clip:         Rect,
+	punch:        bool, // drawn with the replacing pipeline, not the blending one
 	index_offset: u32,
 	index_count:  u32,
 }
@@ -70,6 +64,7 @@ UI :: struct {
 	cmds:       [dynamic]DrawCmd,
 	clip:       Rect,
 	clip_stack: [dynamic]Rect,
+	punching:   bool,
 
 	regular:    Font,
 	bold:       Font,
@@ -78,11 +73,20 @@ UI :: struct {
 	size:       [2]f32,
 	mouse:      [2]f32,
 	has_mouse:  bool,
+	// The pointer only steals a selection on the frame it actually moved:
+	// a menu that opened under a resting cursor keeps the keyboard's row.
+	mouse_moved: bool,
+	last_mouse: [2]f32,
 	down:       bool,
 	pressed:    bool,
 	released:   bool,
 	click_count: int, // 2 on a double click, 3 on a triple
-	scroll:     f32,
+	scroll:     f32, // wheel notches, ~10 per click
+	scroll_px:  f32, // touchpad travel, in pixels
+	scroll_x:   f32,
+	scroll_x_px: f32,
+	scroll_end: bool, // the fingers left the touchpad this frame
+	mods:       Mods,
 
 	hot:        u64,
 	active:     u64,
@@ -90,6 +94,10 @@ UI :: struct {
 	// the composer keeps the caret while the pointer is somewhere else.
 	focus:      u64,
 	cursor_text: bool, // set when the pointer is over something text-editable
+	// Where the pointer was when the button went down. A widget that has
+	// moved out from under a still pointer between the press and the release
+	// — a card easing past under a scroll — has still been clicked.
+	press_pos:  [2]f32,
 
 	// Animation state is the one thing that survives between frames, keyed by
 	// widget id. Values chase a target so nothing in the UI snaps.
@@ -106,16 +114,24 @@ UI :: struct {
 	wake_in:      f32,
 }
 
-// Eases `id`'s stored value toward `target`. `speed` is roughly "how much of
-// the remaining distance per second".
+// Eases `id`'s stored value toward `target`. `speed` is the rate the distance
+// left decays at, per second. The exponential is what keeps the motion the
+// same shape whether the frame took 4ms or 40: a plain `dt * speed` lerp
+// overshoots on a slow frame and crawls on a fast one, which is most of what
+// makes a scroll feel wrong.
 ui_anim :: proc(ui: ^UI, id: u64, target: f32, speed: f32 = 22) -> f32 {
 	current := ui.anim[id]
-	t := clamp(ui.dt * speed, 0, 1)
+	t := ease_rate(ui.dt, speed)
 	next := current + (target - current) * t
 	if abs(next - target) < 0.001 do next = target
 	else do ui.animating = true
 	ui.anim[id] = next
 	return next
+}
+
+// The fraction of the remaining distance to cover this frame.
+ease_rate :: proc "contextless" (dt, speed: f32) -> f32 {
+	return 1 - math.exp(-speed * dt)
 }
 
 NO_ROUND :: f32(-1)
@@ -136,10 +152,6 @@ rect_intersect :: proc "contextless" (a, b: Rect) -> Rect {
 	x1 := min(a.x + a.w, b.x + b.w)
 	y1 := min(a.y + a.h, b.y + b.h)
 	return Rect{x0, y0, max(x1 - x0, 0), max(y1 - y0, 0)}
-}
-
-rect_inset :: proc "contextless" (r: Rect, dx, dy: f32) -> Rect {
-	return Rect{r.x + dx, r.y + dy, r.w - dx * 2, r.h - dy * 2}
 }
 
 // FNV-1a over the label, so widget identity survives layout changes.
@@ -175,13 +187,21 @@ ui_begin :: proc(ui: ^UI, width, height: int, input: ^Input, dt: f32 = 1.0 / 60)
 	ui.size = {f32(width), f32(height)}
 	ui.clip = {0, 0, ui.size.x, ui.size.y}
 
+	ui.mouse_moved = ui.has_mouse && input.has_mouse && input.mouse != ui.last_mouse
+	ui.last_mouse = input.mouse
 	ui.mouse = input.mouse
 	ui.has_mouse = input.has_mouse
 	ui.down = input.down[0]
 	ui.pressed = input.pressed[0]
+	if ui.pressed do ui.press_pos = input.mouse
 	ui.released = input.released[0]
 	ui.click_count = input.click_count
 	ui.scroll = input.scroll
+	ui.scroll_px = input.scroll_px
+	ui.scroll_x = input.scroll_x
+	ui.scroll_x_px = input.scroll_x_px
+	ui.scroll_end = input.scroll_end
+	ui.mods = input.mods
 	ui.hot = 0
 	ui.animating = false
 	ui.time_effects = false
@@ -205,13 +225,14 @@ ui_pop_clip :: proc(ui: ^UI) {
 current_cmd :: proc(ui: ^UI) -> ^DrawCmd {
 	if len(ui.cmds) > 0 {
 		last := &ui.cmds[len(ui.cmds) - 1]
-		if last.clip == ui.clip do return last
+		if last.clip == ui.clip && last.punch == ui.punching do return last
 		if last.index_count == 0 {
 			last.clip = ui.clip
+			last.punch = ui.punching
 			return last
 		}
 	}
-	append(&ui.cmds, DrawCmd{clip = ui.clip, index_offset = u32(len(ui.indices))})
+	append(&ui.cmds, DrawCmd{clip = ui.clip, punch = ui.punching, index_offset = u32(len(ui.indices))})
 	return &ui.cmds[len(ui.cmds) - 1]
 }
 
@@ -262,82 +283,8 @@ ui_quad_corners :: proc(
 	cmd.index_count += 6
 }
 
-// A vertical fade, for laying text over artwork without it getting lost.
-ui_gradient_v :: proc(ui: ^UI, r: Rect, top, bottom: Color) {
-	if r.w <= 0 || r.h <= 0 do return
-	if rect_intersect(r, ui.clip).w <= 0 do return
-	ui_quad_corners(
-		ui,
-		{{r.x, r.y}, {r.x + r.w, r.y}, {r.x + r.w, r.y + r.h}, {r.x, r.y + r.h}},
-		{{0, 0}, {1, 0}, {1, 1}, {0, 1}},
-		{top, top, bottom, bottom},
-		WHITE_TEX,
-	)
-}
-
-// A card turning about its vertical axis. `turn` is -1..1, zero facing us.
-// Not a real projection: the leading edge is made taller and the trailing edge
-// shorter, which is what sells the rotation at this size.
-ui_image_turn :: proc(ui: ^UI, r: Rect, tex: u32, turn: f32, tint: Color = 0xffffffff) {
-	t := clamp(turn, -1, 1)
-	squeeze := math.cos(t * math.PI * 0.5) // 1 face on, 0 edge on
-	if abs(squeeze) < 0.002 do return
-
-	cx := r.x + r.w / 2
-	half_w := r.w / 2 * abs(squeeze)
-	lean := math.sin(t * math.PI * 0.5) * 0.16 // how much perspective to fake
-
-	left_h := r.h * (1 + lean) / 2
-	right_h := r.h * (1 - lean) / 2
-	cy := r.y + r.h / 2
-
-	ui_quad_corners(
-		ui,
-		{
-			{cx - half_w, cy - left_h},
-			{cx + half_w, cy - right_h},
-			{cx + half_w, cy + right_h},
-			{cx - half_w, cy + left_h},
-		},
-		{{0, 0}, {1, 0}, {1, 1}, {0, 1}},
-		{tint, tint, tint, tint},
-		tex,
-	)
-}
-
-// A flat triangle, used for the play and skip glyphs.
-ui_tri :: proc(ui: ^UI, a, b, c: [2]f32, col: Color) {
-	cmd := current_cmd(ui)
-	base := u32(len(ui.verts))
-	shape := [4]f32{0, 0, 0, 0}
-
-	append(&ui.verts, Vertex{a, {0, 0}, col, WHITE_TEX, shape, NO_ROUND, .None, 0})
-	append(&ui.verts, Vertex{b, {1, 0}, col, WHITE_TEX, shape, NO_ROUND, .None, 0})
-	append(&ui.verts, Vertex{c, {1, 1}, col, WHITE_TEX, shape, NO_ROUND, .None, 0})
-	append(&ui.indices, base, base + 1, base + 2)
-	cmd.index_count += 3
-}
-
 ui_rect :: proc(ui: ^UI, r: Rect, col: Color, radius: f32 = NO_ROUND) {
 	ui_quad(ui, r, {0, 0}, {1, 1}, col, WHITE_TEX, radius)
-}
-
-// A soft light source. Draw it behind whatever it should be lighting.
-ui_glow :: proc(ui: ^UI, centre: [2]f32, radius: f32, col: Color) {
-	r := Rect{centre.x - radius, centre.y - radius, radius * 2, radius * 2}
-	ui_quad(ui, r, {0, 0}, {1, 1}, col, WHITE_TEX, NO_ROUND, .Glow)
-}
-
-// An expanding ring, for the ripple a click leaves behind.
-ui_ring :: proc(ui: ^UI, centre: [2]f32, radius: f32, col: Color) {
-	r := Rect{centre.x - radius, centre.y - radius, radius * 2, radius * 2}
-	ui_quad(ui, r, {0, 0}, {1, 1}, col, WHITE_TEX, NO_ROUND, .Ring)
-}
-
-// A filled bar with a highlight travelling along it.
-ui_rect_sheen :: proc(ui: ^UI, r: Rect, col: Color, radius: f32 = NO_ROUND) {
-	ui.time_effects = true
-	ui_quad(ui, r, {0, 0}, {1, 1}, col, WHITE_TEX, radius, .Sheen)
 }
 
 ui_circle :: proc(ui: ^UI, centre: [2]f32, radius: f32, col: Color) {
@@ -395,11 +342,29 @@ ui_text :: proc(
 	return pen.x - pos.x
 }
 
+// Text at a given x, sitting in the middle of a rect's height. The line box
+// is what ui_text is positioned by, so this is the same sum ui_text_centred
+// does — without giving up the horizontal placing.
+ui_text_middle :: proc(ui: ^UI, font: ^Font, text: string, x: f32, r: Rect, size: f32, col: Color) {
+	line := (font.ascent - font.descent) * font_scale(font, size)
+	ui_text(ui, font, text, {x, r.y + (r.h - line) / 2}, size, col)
+}
+
 ui_text_centred :: proc(ui: ^UI, font: ^Font, text: string, r: Rect, size: f32, col: Color) {
 	w := font_width(font, text, size)
 	line := font.ascent - font.descent
 	y := r.y + (r.h - line * font_scale(font, size)) / 2
 	ui_text(ui, font, text, {r.x + (r.w - w) / 2, y}, size, col)
+}
+
+// Cuts a hole through everything already drawn: the rect is not blended with
+// what is under it, it replaces it. A colour with a low alpha therefore leaves
+// the window see-through there, so what shows is the desktop behind the
+// window rather than the interface behind the rect.
+ui_punch :: proc(ui: ^UI, r: Rect, col: Color, radius: f32 = NO_ROUND) {
+	ui.punching = true
+	ui_quad(ui, r, {0, 0}, {1, 1}, col, WHITE_TEX, radius, .Punch)
+	ui.punching = false
 }
 
 // Returns whether the pointer is inside `r`, honouring the current clip.
@@ -409,43 +374,32 @@ ui_hovered :: proc(ui: ^UI, r: Rect) -> bool {
 	return rect_contains(rect_intersect(r, ui.clip), ui.mouse)
 }
 
+// How far the pointer may have travelled since the press and still count as a
+// click on the thing that was pressed rather than a drag off it.
+CLICK_SLOP :: f32(4)
+
 // The whole button protocol: hot on hover, active while held, fires on release
 // inside. No retained state beyond the two ids on UI.
+//
+// "Inside" is the release position against the rect this frame, which is not
+// enough on its own: the rects here are recomputed every frame, so a card
+// sliding under an easing scroll takes its buttons out from under a pointer
+// that never moved, and the click is dropped with nothing to show for it. A
+// press the pointer has not walked away from is therefore a click wherever the
+// widget has got to. Moving off it still cancels, which is what a drag off a
+// button is for.
 ui_invisible_button :: proc(ui: ^UI, id: u64, r: Rect) -> (clicked: bool, hovered: bool) {
 	hovered = ui_hovered(ui, r) || ui.active == id
 	if hovered do ui.hot = id
 
 	if ui.pressed && ui_hovered(ui, r) do ui.active = id
 	if ui.released && ui.active == id {
-		if rect_contains(rect_intersect(r, ui.clip), ui.mouse) do clicked = true
+		d := ui.mouse - ui.press_pos
+		still := abs(d.x) <= CLICK_SLOP && abs(d.y) <= CLICK_SLOP
+		if still || rect_contains(rect_intersect(r, ui.clip), ui.mouse) do clicked = true
 		ui.active = 0
 	}
 	return
-}
-
-// Drag-anywhere slider. Returns the value, changed while the pointer is held.
-ui_slider :: proc(
-	ui: ^UI,
-	label: string,
-	r: Rect,
-	value: f32,
-	track_col, fill_col, knob_col: Color,
-) -> f32 {
-	id := ui_id(label)
-	_, hovered := ui_invisible_button(ui, id, r)
-
-	value := clamp(value, 0, 1)
-	if ui.active == id && r.w > 0 {
-		value = clamp((ui.mouse.x - r.x) / r.w, 0, 1)
-	}
-
-	bar := Rect{r.x, r.y + r.h / 2 - 2, r.w, 4}
-	ui_rect(ui, bar, track_col, 2)
-	ui_rect(ui, {bar.x, bar.y, bar.w * value, bar.h}, fill_col, 2)
-	if hovered || ui.active == id {
-		ui_circle(ui, {bar.x + bar.w * value, bar.y + 2}, 5, knob_col)
-	}
-	return value
 }
 
 Scroll :: struct {
@@ -453,23 +407,60 @@ Scroll :: struct {
 	target:      f32,
 	content:     f32,
 	view_height: f32,
+	// A touchpad flick keeps going after the fingers lift: the speed they
+	// left at, in pixels a second, dying out under friction.
+	vel:         f32,
+	gliding:     bool,
 }
+
+SCROLL_FRICTION :: f32(5.5) // how fast a flick runs out, per second
+SCROLL_STOP :: f32(20) // below this it has stopped, in pixels a second
 
 // Scrolls with the wheel and clamps to content. Draw items at
 // `r.y - scroll.offset + i * row_height`, clipped to `r`.
 ui_begin_scroll :: proc(ui: ^UI, r: Rect, s: ^Scroll, content_height: f32) {
 	s.content = content_height
 	s.view_height = r.h
-	if ui_hovered(ui, r) {
+	limit := max(content_height - r.h, 0)
+	hovered := ui_hovered(ui, r)
+
+	// A press puts a stop to a glide, the way a finger on a spinning record
+	// does.
+	if ui.pressed && hovered do s.vel, s.gliding = 0, false
+
+	if hovered && ui.scroll != 0 {
 		// One wheel notch arrives as ~10 units; this lands it near three rows.
 		s.target -= ui.scroll * 28
+		s.vel, s.gliding = 0, false
 	}
-	s.target = clamp(s.target, 0, max(content_height - r.h, 0))
+	if hovered && ui.scroll_px != 0 {
+		// A touchpad already speaks pixels, and pixels belong under the
+		// fingers: no easing, no lag, and the speed is remembered for the
+		// glide that may follow.
+		s.target -= ui.scroll_px
+		s.target = clamp(s.target, 0, limit)
+		s.offset = s.target
+		inst := -ui.scroll_px / max(ui.dt, 1.0 / 240)
+		s.vel = s.vel * 0.7 + inst * 0.3
+		s.gliding = false
+	} else if hovered && ui.scroll_end {
+		s.gliding = abs(s.vel) > SCROLL_STOP
+	} else if s.gliding {
+		s.vel *= math.exp(-SCROLL_FRICTION * ui.dt)
+		s.target = clamp(s.target + s.vel * ui.dt, 0, limit)
+		s.offset = s.target
+		// Spent, or run into an end.
+		if abs(s.vel) < SCROLL_STOP || s.target <= 0 || s.target >= limit {
+			s.vel, s.gliding = 0, false
+		} else {
+			ui.animating = true
+		}
+	}
+	s.target = clamp(s.target, 0, limit)
 
 	// Chase the target so the wheel glides instead of jumping.
-	t := clamp(ui.dt * 26, 0, 1)
-	s.offset += (s.target - s.offset) * t
-	if abs(s.target - s.offset) < 0.5 do s.offset = s.target
+	s.offset += (s.target - s.offset) * ease_rate(ui.dt, 26)
+	if abs(s.target - s.offset) < 0.35 do s.offset = s.target
 	else do ui.animating = true
 
 	ui_push_clip(ui, r)

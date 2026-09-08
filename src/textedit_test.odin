@@ -87,3 +87,25 @@ enter_sends_shift_enter_does_not :: proc(t: ^testing.T) {
 	testing.expect_value(t, editor_text(&e), "hi\n")
 	testing.expect_value(t, editor_key(&e, Key{KEY_ENTER, {}}, 0), Editor_Action.Submit)
 }
+
+// Copy, cut and paste are super; ctrl c is stop. Ctrl c meaning copy is what
+// left the app with no key for stopping a turn, so Esc had to do it — and Esc
+// is pressed by people trying to close things.
+@(test)
+super_copies_and_ctrl_c_stops :: proc(t: ^testing.T) {
+	e: Editor
+	defer editor_destroy(&e)
+	editor_set_text(&e, "hello")
+
+	testing.expect_value(t, editor_key(&e, Key{code = KEY_C, mods = {.Super}}, 0), Editor_Action.Copy)
+	testing.expect_value(t, editor_key(&e, Key{code = KEY_X, mods = {.Super}}, 0), Editor_Action.Cut)
+	testing.expect_value(t, editor_key(&e, Key{code = KEY_V, mods = {.Super}}, 0), Editor_Action.Paste)
+	testing.expect_value(t, editor_key(&e, Key{code = KEY_C, mods = {.Ctrl}}, 0), Editor_Action.Stop)
+	// And Esc backs out; it never stops anything.
+	testing.expect_value(t, editor_key(&e, Key{code = KEY_ESC, mods = {}}, 0), Editor_Action.Cancel)
+
+	// Select all answers to either, since one of them is muscle memory.
+	editor_key(&e, Key{code = KEY_A, mods = {.Super}}, 0)
+	lo, hi := editor_selection(&e)
+	testing.expect_value(t, hi - lo, 5)
+}

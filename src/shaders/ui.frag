@@ -27,6 +27,7 @@ layout(location = 0) out vec4 out_col;
 #define EFFECT_SHEEN    2u // a highlight that travels along the progress fill
 #define EFFECT_RING     3u // a ring that fades outward, for click ripples
 #define EFFECT_TEXT     4u // a glyph: the texture is a distance field
+#define EFFECT_PUNCH    5u // replaces what is under it, alpha and all
 
 // The distance a multi-channel field encodes is the median of its three
 // channels — the channels disagree exactly at a corner, and taking the middle
@@ -81,6 +82,17 @@ void main() {
 	if (v_radius >= 0.0) {
 		float d = rounded_box(v_pos - v_rect.xy, v_rect.zw, v_radius);
 		c.a *= 1.0 - smoothstep(-0.7, 0.7, d);
+	}
+
+	if (v_effect == EFFECT_PUNCH) {
+		// Drawn with replacing blend, so what lands here is what the window
+		// holds: a low alpha means the desktop shows through, whatever the
+		// interface had already drawn underneath. There is no blending to
+		// feather the edge with, so the shape is cut hard and the border
+		// drawn over it covers the step.
+		if (c.a < v_col.a * 0.5) discard;
+		out_col = vec4(v_col.rgb * v_col.a, v_col.a);
+		return;
 	}
 
 	if (c.a <= 0.0) discard;

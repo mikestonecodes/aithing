@@ -143,6 +143,19 @@ create_ui_pipeline :: proc(g: ^Gpu) {
 		vk.CreateGraphicsPipelines(g.device, 0, 1, &info, nil, &g.pipeline),
 		"CreateGraphicsPipelines",
 	)
+
+	// The same pipeline with the blending turned off: what it draws replaces
+	// what is in the framebuffer, alpha included, which is the only way to
+	// make a part of the window see-through again once something opaque has
+	// been drawn there. See ui_punch.
+	blend_attachment.srcColorBlendFactor = .ONE
+	blend_attachment.dstColorBlendFactor = .ZERO
+	blend_attachment.srcAlphaBlendFactor = .ONE
+	blend_attachment.dstAlphaBlendFactor = .ZERO
+	vk_check(
+		vk.CreateGraphicsPipelines(g.device, 0, 1, &info, nil, &g.pipeline_punch),
+		"CreateGraphicsPipelines (punch)",
+	)
 }
 
 @(private = "file")
@@ -268,8 +281,13 @@ gpu_draw :: proc(g: ^Gpu, ui: ^UI, clear_color: Color) -> bool {
 		vk.CmdBindVertexBuffers(cmd, 0, 1, &vbuf, &offset)
 		vk.CmdBindIndexBuffer(cmd, f.ibuf, 0, .UINT32)
 
+		bound_punch := false
 		for dc in ui.cmds {
 			if dc.index_count == 0 do continue
+			if dc.punch != bound_punch {
+				bound_punch = dc.punch
+				vk.CmdBindPipeline(cmd, .GRAPHICS, bound_punch ? g.pipeline_punch : g.pipeline)
+			}
 			scissor := vk.Rect2D {
 				offset = {
 					i32(max(dc.clip.x, 0) * g.ui_scale),

@@ -188,12 +188,6 @@ jarr :: proc(v: json.Value, key: string) -> (json.Array, bool) {
 	return a, is_arr
 }
 
-jstring_of :: proc(v: json.Value) -> string {
-	s, ok := v.(json.String)
-	if !ok do return ""
-	return string(s)
-}
-
 // A tool call's most interesting argument, for the one-line summary next to
 // the tool name: the command for Bash, the path for a file tool, and so on.
 tool_summary :: proc(name: string, input: json.Value, allocator := context.allocator) -> string {

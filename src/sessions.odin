@@ -22,6 +22,24 @@ Session :: struct {
 	preview: string,
 	mtime:   time.Time,
 	size:    i64,
+	guess:   string, // the kind this thread looks like: see tags.odin
+	// A thread that was opened and abandoned: a prompt or two, no work done.
+	// These are the majority of what is on disk and none of them are worth a
+	// place on the map, so they are hidden the way an archived thread is.
+	transient: bool,
+	prompts: int,
+	verify: Verify, // whether the work was ever checked: see below
+}
+
+// The state of a thread's work, guessed the way its kind is. The signal is a
+// check-shaped command near the end of the file and what came back from it,
+// so nothing has to be run and nothing has to be remembered: every scan works
+// it out again from what is on disk.
+Verify :: enum {
+	None,     // nothing was run, so there is nothing to check
+	Untested, // work was done and nothing ever ran it
+	Failed,   // the last check came back an error
+	Passed,   // the last check ran clean
 }
 
 claude_home :: proc(allocator := context.allocator) -> string {
@@ -71,10 +89,36 @@ sessions_scan :: proc(allocator := context.allocator) -> []Session {
 	return out[:]
 }
 
+// Commands that count as checking the work. Only the command itself is read,
+// so a thread that talks about tests is not one that ran them.
+@(private = "file")
+CHECK_WORDS :: [?]string{"test", "spec", "lint", "build", "check", "tsc", "mypy", "vet", "make "}
+
+// Tools that change the work, and so put a passing check back out of date.
+@(private = "file")
+EDIT_TOOLS :: [?]string{`"name":"Edit"`, `"name":"Write"`, `"name":"MultiEdit"`, `"name":"NotebookEdit"`}
+
+@(private = "file")
+is_check_cmd :: proc(line: string) -> bool {
+	i := strings.index(line, `"command":"`)
+	if i < 0 do return false
+	cmd := line[i + 11:]
+	if j := strings.index_byte(cmd, '"'); j >= 0 do cmd = cmd[:j]
+	if len(cmd) > 300 do cmd = cmd[:300]
+	low := strings.to_lower(cmd, context.temp_allocator)
+	for w in CHECK_WORDS do if strings.contains(low, w) do return true
+	return false
+}
+
 @(private = "file")
 HEAD_BYTES :: 64 * 1024
 @(private = "file")
 TAIL_BYTES :: 256 * 1024
+// A thread this small that ran no tool and holds no more than a couple of
+// prompts did not do anything: it is kept off the map. The size is also what
+// makes the decision cheap — a file under it is read in full while deciding.
+TRANSIENT_BYTES :: i64(100 * 1024)
+TRANSIENT_PROMPTS :: 2
 
 // Titles are written as their own records (`custom-title` beats `ai-title`)
 // and land near the end of the file; the opening user prompt is the fallback,
@@ -85,28 +129,44 @@ session_read_summary :: proc(s: ^Session, allocator: runtime.Allocator) {
 	if err != nil do return
 	defer os.close(f)
 
-	head := make([]byte, min(int(s.size), HEAD_BYTES))
+	head := make([]byte, min(int(s.size), max(HEAD_BYTES, int(TRANSIENT_BYTES) + 1)))
 	defer delete(head)
 	n, _ := os.read_at(f, head, 0)
 
+	// A file small enough to be a throwaway is read right through, so the
+	// count of prompts and of work done is exact. Anything bigger is not a
+	// throwaway whatever it holds, so once the two fields this came for are
+	// in hand the rest of it is skipped.
+	small := s.size <= TRANSIENT_BYTES
+	worked := false
 	head_lines := each_line(string(head[:max(n, 0)]))
 	for line in iter_next(&head_lines) {
-		v, perr := json.parse(transmute([]byte)line, allocator = context.temp_allocator)
-		if perr == nil {
-			if s.cwd == "" {
-				if cwd := jstr(v, "cwd"); cwd != "" do s.cwd = strings.clone(cwd, allocator)
-			}
-			if s.preview == "" && jstr(v, "type") == "user" {
-				if msg, ok := jobj(v, "message"); ok {
-					if txt := content_first_text(msg); txt != "" {
-						s.preview = strings.clone(one_line(txt, 200), allocator)
+		// Reading a record costs a JSON parse; counting one does not, and
+		// most of a file is records this only has to count.
+		if !worked && strings.contains(line, "\"tool_use\"") do worked = true
+		is_prompt := strings.contains(line, "\"type\":\"user\"") && !strings.contains(line, "\"tool_result\"")
+		if is_prompt do s.prompts += 1
+		if s.cwd == "" || (s.preview == "" && is_prompt) {
+			v, perr := json.parse(transmute([]byte)line, allocator = context.temp_allocator)
+			if perr == nil {
+				if s.cwd == "" {
+					if cwd := jstr(v, "cwd"); cwd != "" do s.cwd = strings.clone(cwd, allocator)
+				}
+				if s.preview == "" && jstr(v, "type") == "user" {
+					if msg, ok := jobj(v, "message"); ok {
+						if txt := content_first_text(msg); txt != "" {
+							s.preview = strings.clone(one_line(txt, 200), allocator)
+						}
 					}
 				}
 			}
+			free_all(context.temp_allocator)
 		}
-		free_all(context.temp_allocator)
-		if s.cwd != "" && s.preview != "" do break
+		if !small && s.cwd != "" && s.preview != "" do break
 	}
+	// Nothing was run and barely anything was said: a thread that was opened
+	// and abandoned, or a question asked and answered in one breath.
+	s.transient = small && !worked && s.prompts <= TRANSIENT_PROMPTS
 
 	tail_off := max(s.size - TAIL_BYTES, 0)
 	tail := make([]byte, int(s.size - tail_off))
@@ -120,8 +180,28 @@ session_read_summary :: proc(s: ^Session, allocator: runtime.Allocator) {
 	defer delete(custom_title, allocator)
 	defer delete(last_prompt, allocator)
 
+	// Read in order: a check that ran, the result that came straight back from
+	// it, and any edit after it that puts the answer out of date. String
+	// tests rather than a parse — most of the tail is records this only has
+	// to walk past.
+	checked, check_failed, pending := false, false, false
 	tail_lines := each_line(string(tail[:max(tn, 0)]))
 	for line in iter_next(&tail_lines) {
+		if strings.contains(line, "\"tool_use\"") {
+			worked = true
+			if is_check_cmd(line) {
+				pending = true
+			} else {
+				for t in EDIT_TOOLS do if strings.contains(line, t) {
+					checked = false // the work moved on since the last check
+					break
+				}
+			}
+		} else if pending && strings.contains(line, "\"tool_result\"") {
+			checked = true
+			check_failed = strings.contains(line, "\"is_error\":true")
+			pending = false
+		}
 		v, perr := json.parse(transmute([]byte)line, allocator = context.temp_allocator)
 		if perr == nil {
 			switch jstr(v, "type") {
@@ -151,6 +231,65 @@ session_read_summary :: proc(s: ^Session, allocator: runtime.Allocator) {
 		fallback := slug_to_path(s.project, context.temp_allocator)
 		s.cwd = strings.clone(fallback, allocator)
 	}
+	switch {
+	case !worked:
+		s.verify = .None
+	case !checked:
+		s.verify = .Untested
+	case check_failed:
+		s.verify = .Failed
+	case:
+		s.verify = .Passed
+	}
+	s.guess = tag_guess(s.preview != "" ? s.preview : s.title, allocator)
+}
+
+// Every thread of one task, read as one conversation. A task picked up three
+// times is three files on disk and one piece of work in anyone's head, so the
+// card for it opens as one transcript: the threads end to end, oldest first,
+// with a rule between them saying where one stopped and the next began. What
+// is typed underneath goes to the newest of them, which is the one still
+// being worked on.
+//
+// `members` comes in oldest first. The chat takes the newest one's identity,
+// so continuing it is continuing that thread and nothing here has to know the
+// difference.
+group_load :: proc(members: []Session) -> (chat: Chat, ok: bool) {
+	if len(members) == 0 do return {}, false
+	if len(members) == 1 do return session_load(&members[0])
+
+	for &m, i in members {
+		part, part_ok := session_load(&m)
+		if !part_ok do continue
+
+		// A rule, in the same voice the truncation notice uses.
+		sys := chat_append(&chat, .System)
+		ref := msg_append_block(&chat, sys, Block{kind = .Text})
+		buf: [16]u8
+		fmt.sbprintf(
+			&chat_block(&chat, ref).text,
+			"thread %d of %d  ·  %s  ·  %s",
+			i + 1,
+			len(members),
+			relative_time(m.mtime, buf[:]),
+			m.title,
+		)
+
+		// The messages move across whole: everything they own moves with
+		// them, and the chat they came from is emptied rather than freed.
+		for msg in part.msgs do append(&chat.msgs, msg)
+		clear(&part.msgs)
+		chat_destroy(&part)
+		ok = true
+	}
+	if !ok do return {}, false
+
+	newest := members[len(members) - 1]
+	chat.session_id = strings.clone(newest.id)
+	chat.cwd = strings.clone(newest.cwd)
+	chat.title = strings.clone(newest.title)
+	chat.path = strings.clone(newest.path)
+	return chat, true
 }
 
 // Iterates the lines of `s` without allocating anything: each step yields a
@@ -180,8 +319,7 @@ iter_next :: proc(it: ^Line_Iter) -> (line: string, ok: bool) {
 // only a fallback for sessions whose records carry no `cwd`.
 slug_to_path :: proc(slug: string, allocator := context.allocator) -> string {
 	b := strings.builder_make(allocator)
-	for ch, i in slug {
-		if ch == '-' && i == 0 do continue
+	for ch in slug {
 		strings.write_rune(&b, ch == '-' ? '/' : ch)
 	}
 	return strings.to_string(b)
@@ -195,6 +333,7 @@ session_clone :: proc(s: Session, allocator := context.allocator) -> Session {
 	out.cwd = strings.clone(s.cwd, allocator)
 	out.title = strings.clone(s.title, allocator)
 	out.preview = strings.clone(s.preview, allocator)
+	out.guess = strings.clone(s.guess, allocator)
 	return out
 }
 
@@ -203,6 +342,7 @@ session_free :: proc(s: ^Session, allocator := context.allocator) {
 	delete(s.path, allocator)
 	delete(s.project, allocator)
 	delete(s.cwd, allocator)
+	delete(s.guess, allocator)
 	delete(s.title, allocator)
 	delete(s.preview, allocator)
 }
@@ -419,6 +559,33 @@ load_assistant_message :: proc(
 }
 
 // --- small string helpers ---------------------------------------------------
+
+// What a thread looks like it is about, from the first thing asked of it: a
+// bug, a question, a feature, a chore, an idea. Only used to search by, and
+// only has to be right often enough to be worth typing.
+tag_guess :: proc(text: string, allocator := context.allocator) -> string {
+	if text == "" do return ""
+	low := strings.to_lower(text, context.temp_allocator)
+	Rule :: struct {
+		kind:  string,
+		words: []string,
+	}
+	rules := []Rule {
+		{"bug", {"bug", "broken", "crash", "fix ", "fails", "failing", "error", "regression", "wrong", "doesn't work", "does not work", "not working", "hang", "freeze", "froze", "stuck", "leak", "weird", "janky", "glitch", "issue", "misaligned", "not centered", "too low", "too high", "off by"}},
+		{"question", {"why ", "how do", "how does", "what is", "what does", "explain", "should i", "?"}},
+		{"feature", {"add ", "implement", "support for", "build a", "build the", "create a", "make a", "new "}},
+		{"chore", {"test ", "testing", "clean up", "cleanup", "refactor", "rename", "move the", "bump", "update the", "upgrade", "tidy", "remove the", "delete the"}},
+		{"idea", {"what if", "idea", "maybe we", "could we", "brainstorm", "we should"}},
+	}
+	// First match in the text wins, so "fix the crash" beats a stray "add".
+	best, at := "", len(low)
+	for r in rules do for w in r.words {
+		if i := strings.index(low, w); i >= 0 && i < at {
+			best, at = r.kind, i
+		}
+	}
+	return best == "" ? "" : strings.clone(best, allocator)
+}
 
 one_line :: proc(s: string, limit: int) -> string {
 	out := strings.trim_space(s)

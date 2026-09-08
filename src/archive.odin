@@ -1,16 +1,17 @@
 package aithing
 
 import "core:os"
-import "core:path/filepath"
 import "core:strings"
 
-// The sidebar is a working list, not a log: what you are on stays at the top,
-// everything else is archived and out of the way. Sessions that have never
-// been filed either way fall back to "the newest few are what I'm working on",
-// which is right on a fresh install and stops mattering as soon as anything is
-// filed by hand.
-
-ACTIVE_BY_DEFAULT :: 10
+// Threads filed away by hand. Dismissing the last card of a thread files it,
+// which is what keeps the x pressed: nothing is going to offer that thread a
+// card again.
+//
+// It used to be more than that — a set of rules about how far back the grid
+// reached, how long finished work stayed on it and how many threads a project
+// was allowed — and all of them ran against the clock, so the grid rearranged
+// itself while nobody was touching it. What decides now is dismissal, and
+// nothing else does.
 
 Archive :: struct {
 	// id -> archived. Only sessions filed by hand are in here; everything else
@@ -19,17 +20,9 @@ Archive :: struct {
 	dirty: bool,
 }
 
-archive_path :: proc(allocator := context.temp_allocator) -> string {
-	home := os.get_env("HOME", context.temp_allocator)
-	dir, _ := filepath.join({home, ".config", "aithing"}, context.temp_allocator)
-	os.make_directory_all(dir)
-	path, _ := filepath.join({dir, "archived"}, allocator)
-	return path
-}
-
 // One line per filed session: `+<id>` is archived, `-<id>` is kept active.
 archive_load :: proc(a: ^Archive) {
-	data, err := os.read_entire_file_from_path(archive_path(), context.temp_allocator)
+	data, err := os.read_entire_file_from_path(config_path("archived"), context.temp_allocator)
 	if err != nil do return
 	it := each_line(string(data))
 	for line in iter_next(&it) {
@@ -49,12 +42,12 @@ archive_save :: proc(a: ^Archive) {
 		strings.write_string(&b, id)
 		strings.write_byte(&b, '\n')
 	}
-	_ = os.write_entire_file(archive_path(), transmute([]byte)strings.to_string(b))
+	_ = os.write_entire_file(config_path("archived"), transmute([]byte)strings.to_string(b))
 }
 
-archive_is :: proc(a: ^Archive, id: string, index: int) -> bool {
+archive_is :: proc(a: ^Archive, id: string) -> bool {
 	if filed, has := a.filed[id]; has do return filed
-	return index >= ACTIVE_BY_DEFAULT
+	return false
 }
 
 archive_set :: proc(a: ^Archive, id: string, archived: bool) {
@@ -68,24 +61,15 @@ archive_set :: proc(a: ^Archive, id: string, archived: bool) {
 
 // The model choice lives beside the archive: one word, so that picking a model
 // is remembered the way the sidebar is.
-model_path :: proc(allocator := context.temp_allocator) -> string {
-	home := os.get_env("HOME", context.temp_allocator)
-	dir, _ := filepath.join({home, ".config", "aithing"}, context.temp_allocator)
-	os.make_directory_all(dir)
-	path, _ := filepath.join({dir, "model"}, allocator)
-	return path
-}
-
 model_load :: proc() -> Model {
-	data, err := os.read_entire_file_from_path(model_path(), context.temp_allocator)
-	if err != nil do return .Sonnet
-	name := strings.trim_space(string(data))
-	for m in Model do if model_flag[m] == name do return m
-	return .Sonnet
+	data, err := os.read_entire_file_from_path(config_path("model"), context.temp_allocator)
+	if err != nil do return MODEL_DEFAULT
+	m, _ := model_parse(strings.trim_space(string(data)))
+	return m
 }
 
 model_save :: proc(m: Model) {
-	_ = os.write_entire_file(model_path(), transmute([]byte)model_flag[m])
+	_ = os.write_entire_file(config_path("model"), transmute([]byte)model_short[m])
 }
 
 archive_destroy :: proc(a: ^Archive) {

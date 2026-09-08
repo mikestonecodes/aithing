@@ -11,174 +11,266 @@ import "core:strings"
 // actually gets drawn.
 
 PAD :: f32(16)
+// The composer's own ground: dark enough to read white text on, thin enough
+// that the desktop behind the window still shows through it.
+COMPOSER_BG :: Color(0x66202224)
 BLINK :: f32(0.55) // caret on/off, in seconds
 RESULT_BYTES :: 4000 // how much of a tool result is ever shown
 RESULT_LINES :: 40
-ROW_H :: f32(42)
 
 draw_app :: proc(app: ^App) {
 	ui := &app.ui
 	ui.cursor_text = false
 
-	side := Rect{0, 0, SIDEBAR_W, ui.size.y}
-	main := Rect{SIDEBAR_W, 0, ui.size.x - SIDEBAR_W, ui.size.y}
+	full := Rect{0, 0, ui.size.x, ui.size.y}
+	panel, arrived, t := canvas_panel(app, full)
 
-	ui_rect(ui, side, SIDEBAR_BG)
-	ui_rect(ui, {SIDEBAR_W - 1, 0, 1, ui.size.y}, BORDER)
+	// The canvas underneath, dimmed as the panel takes over. While the panel
+	// is up the canvas must not see the pointer either.
+	canvas_mouse := ui.mouse
+	if app.canvas.opened || t > 0.02 do ui.mouse = {-1e6, -1e6}
+	draw_canvas(app, full)
+	ui.mouse = canvas_mouse
+	if t > 0.01 do ui_rect(ui, full, color_alpha(Color(0xff000000), 0.45 * t))
 
-	draw_sidebar(app, side)
-
-	composer_h := composer_height(app, main.w)
-	draw_transcript(app, {main.x, 0, main.w, main.h - composer_h})
-	draw_composer(app, {main.x, main.h - composer_h, main.w, composer_h})
-	// Drawn last so it sits over the composer: there is no z order here, only
-	// the order things are put in the list.
-	if app.model_open do draw_model_picker(app)
-}
-
-// --- sidebar ----------------------------------------------------------------
-
-draw_sidebar :: proc(app: ^App, r: Rect) {
-	ui := &app.ui
-
-	// A new-chat button and a search box; the list is the rest.
-	new_r := Rect{r.x + r.w - PAD - 34, r.y + 14, 34, 34}
-	clicked, hovered := ui_invisible_button(ui, ui_id("new-chat"), new_r)
-	ui_rect(ui, new_r, hovered ? PANEL_HI : PANEL, 8)
-	ui_rect(ui, {new_r.x + 16, new_r.y + 9, 2, 16}, hovered ? TEXT : MUTED, 1)
-	ui_rect(ui, {new_r.x + 9, new_r.y + 16, 16, 2}, hovered ? TEXT : MUTED, 1)
-	if clicked && !runner_busy(&app.runner) do chat_new(app)
-
-	// Search.
-	search_r := Rect{r.x + 12, r.y + 14, r.w - 24 - 40, 34}
-	focused := app.focus == .Search
-	ui_rect(ui, search_r, focused ? PANEL_HI : PANEL, 8)
-	if focused do ui_rect(ui, search_r, ACCENT_DIM, 8)
-	if clicked_in(app, search_r) do app.focus = .Search
-	if ui_hovered(ui, search_r) do ui.cursor_text = true
-
-	query := editor_text(&app.search)
-	inner := Rect{search_r.x + 14, search_r.y + 6, search_r.w - 28, 24}
-	if query == "" && !focused {
-		ui_text(ui, &ui.regular, "Search", {inner.x, inner.y}, 16.5, FAINT)
+	// The panel: a growing box, then the real thing once it has arrived.
+	if t > 0.01 {
+		ui_rect(ui, {panel.x + 2, panel.y + 8, panel.w, panel.h}, color_alpha(Color(0xff000000), 0.4 * t), 14 * (1 - t))
+		ui_rect(ui, panel, BG, 14 * (1 - t))
+		if arrived {
+			composer_h := composer_height(app, panel.w)
+			draw_transcript(app, {panel.x, panel.y, panel.w, panel.h - composer_h})
+			draw_composer(app, {panel.x, panel.y + panel.h - composer_h, panel.w, composer_h})
+			if app.model_open do draw_model_picker(app)
+		} else {
+			ui_text(ui, &ui.bold, app.chat.title, {panel.x + 20, panel.y + 16}, 16, color_alpha(TEXT, t))
+		}
 	} else {
-		editor_layout_lines(ui, &app.search, inner.w, &ui.regular, 16.5)
-		draw_editor(app, &app.search, inner, &ui.regular, 16.5, focused)
+		draw_project_head(app, full)
+		draw_capture(app, full)
 	}
-
-	// The list: what you are working on, then everything filed away behind one
-	// row. No date headers — ten rows do not need to be sorted into days.
-	list := Rect{r.x, r.y + 60, r.w, r.h - 60}
-	content := f32(len(app.visible)) * ROW_H + 8
-	if len(app.archived) > 0 {
-		content += ROW_H
-		if app.show_archive do content += f32(len(app.archived)) * ROW_H
-	}
-
-	ui_begin_scroll(ui, list, &app.sidebar, content)
-	y := list.y + 4 - app.sidebar.offset
-	for idx in app.visible {
-		if y + ROW_H > list.y && y < list.y + list.h {
-			draw_session_row(app, &app.sessions[idx], idx, {list.x + 8, y, list.w - 16, ROW_H - 4}, false)
-		}
-		y += ROW_H
-	}
-
-	if len(app.archived) > 0 {
-		head := Rect{list.x + 8, y, list.w - 16, ROW_H - 4}
-		if y + ROW_H > list.y && y < list.y + list.h {
-			clicked, hovered := ui_invisible_button(ui, ui_id("archive-head"), head)
-			if clicked do app.show_archive = !app.show_archive
-			chevron(ui, {head.x + 12, head.y + head.h / 2}, app.show_archive, hovered ? MUTED : FAINT)
-			label_buf: [32]u8
-			label := fmt.bprintf(label_buf[:], "Archived  %d", len(app.archived))
-			ui_text(ui, &ui.bold, label, {head.x + 26, head.y + 8}, 13, hovered ? MUTED : FAINT)
-		}
-		y += ROW_H
-
-		if app.show_archive {
-			for idx in app.archived {
-				if y + ROW_H > list.y && y < list.y + list.h {
-					draw_session_row(app, &app.sessions[idx], idx, {list.x + 8, y, list.w - 16, ROW_H - 4}, true)
-				}
-				y += ROW_H
-			}
-		}
-	}
-	ui_end_scroll(ui, list, &app.sidebar)
-
-	// A scrollbar, drawn only while there is something to scroll.
-	if content > list.h {
-		frac := list.h / content
-		bar_h := max(list.h * frac, 30)
-		t := app.sidebar.offset / max(content - list.h, 1)
-		ui_rect(ui, {list.x + list.w - 5, list.y + t * (list.h - bar_h), 3, bar_h}, PANEL_HI, 2)
-	}
+	draw_launcher(app, full)
+	if t > 0.01 && !arrived do ui_wake_in(ui, 0)
 }
 
+// The one line above the grid: the project you are in, which is the project a
+// card typed into the box below will belong to.
+//
+// Without it there was nothing on screen that said where new work would land,
+// and it landed wherever the window happened to have been launched — so a
+// task written down while reading one project went quietly into another, and
+// the only way to find out was to notice the card under the wrong heading.
 @(private = "file")
-draw_session_row :: proc(app: ^App, s: ^Session, index: int, r: Rect, archived: bool) {
+draw_project_head :: proc(app: ^App, full: Rect) {
 	ui := &app.ui
-	id := ui_id("session", index)
-	active := app.selected == index
-	over := ui_hovered(ui, r) || ui.active == id
+	filtered := app.canvas.project != ""
+	cwd := filtered ? app.canvas.project : app.cwd
+	if cwd == "" do return
 
-	// The archive button is claimed before the row is, or the row would take
-	// the press first and the button would never see it.
-	right := r.x + r.w - 10
-	if over {
-		btn := Rect{right - 24, r.y + (r.h - 22) / 2, 24, 22}
-		btn_id := ui_id("archive", index)
-		clicked_btn, btn_hovered := ui_invisible_button(ui, btn_id, btn)
-		ui_rect(ui, btn, btn_hovered ? PANEL_HI : Color(0), 6)
-		mark := btn_hovered ? TEXT : MUTED
-		// A tray: lid on top, and either dropping in or coming back out.
-		ui_rect(ui, {btn.x + 6, btn.y + 5, 12, 2}, mark, 1)
-		chevron_v(ui, {btn.x + 12, btn.y + 12}, !archived, mark)
-		if clicked_btn {
-			app_archive(app, s.id, !archived)
-			return
-		}
-		right -= 28
-	}
+	x := full.x + GRID_PAD
+	y := full.y + 20
+	w := ui_text(ui, &ui.bold, base_name(cwd), {x, y}, 21, TEXT)
 
-	clicked, hovered := ui_invisible_button(ui, id, r)
-	glow := ui_anim(ui, id, hovered || active ? 1 : 0, 26)
-	if glow > 0.01 {
-		ui_rect(ui, r, color_alpha(active ? PANEL_HI : PANEL, glow), 8)
-	}
-	if active {
-		ui_rect(ui, {r.x, r.y + 5, 3, r.h - 10}, ACCENT, 2)
-	}
-
-	text_x := r.x + 12
-	stamp_buf: [16]u8
-	stamp := relative_time(s.mtime, stamp_buf[:])
-	stamp_w := font_width(&ui.regular, stamp, 13)
-	if !over {
-		ui_text(ui, &ui.regular, stamp, {right - stamp_w, r.y + 12}, 13, FAINT)
-	}
-
-	title_buf: [256]u8
-	title_w := right - text_x - (over ? 4 : stamp_w + 10)
-	title := font_ellipsize(&ui.bold, s.title, 16.5, title_w, title_buf[:])
-	col := active ? TEXT : color_mix(TEXT, MUTED, archived ? 0.6 : 0.3)
-	ui_text(ui, &ui.bold, title, {text_x, r.y + 10}, 16.5, col)
-
-	if clicked do app_select(app, s.id)
+	// What that name is: the project the grid has been narrowed to, or simply
+	// the one last worked in. They read the same and mean different things.
+	note := filtered ? "only this project  ·  / to widen" : "new cards go here"
+	ui_text(ui, &ui.regular, note, {x + w + 14, y + 6}, 13, FAINT)
 }
 
-// A small up/down arrow, built the same way as the chevron.
+// --- the box under the grid ---------------------------------------------------
+
+// A list is written down before it is worked on, and writing it down should
+// not mean opening a thread first. So the grid has one box along the bottom:
+// type into it and every part of what was typed becomes a card.
+//
+// The box asks for nothing but the work. Where one item stops and the next
+// begins is worked out from what was written — a line, a bullet, a numbered
+// point, a sentence — rather than being a rule the writer has to keep to, and
+// the count under the box says what was made of it before Enter is pressed.
+
+CAPTURE_PX :: f32(15)
+CAPTURE_PAD :: f32(12)
+
+// How much of the window the box takes, which the grid above it keeps clear.
+capture_height :: proc(app: ^App, width: f32) -> f32 {
+	ui := &app.ui
+	inner := composer_width(width) - COMPOSER_SIDE * 2
+	editor_layout_lines(ui, &app.capture, inner, &ui.regular, CAPTURE_PX)
+	lines := f32(clamp(len(app.capture.lines), 1, 6))
+	return CAPTURE_PAD * 2 + lines * (CAPTURE_PX * 1.5) + 22
+}
+
 @(private = "file")
-chevron_v :: proc(ui: ^UI, at: [2]f32, down: bool, col: Color) {
-	rows :: 4
-	s := f32(3.5)
-	for i in 0 ..< rows {
-		t := f32(i) / f32(rows - 1)
-		w := s * 2 * (down ? 1 - t : t)
-		y := at.y - s + (down ? t * s * 2 : t * s * 2)
-		ui_rect(ui, {at.x - w / 2, y, w, 1.4}, col, 0.7)
+draw_capture :: proc(app: ^App, full: Rect) {
+	ui := &app.ui
+	h := capture_height(app, full.w)
+	width := composer_width(full.w)
+	x := full.x + (full.w - width) / 2
+	box := Rect{x, full.y + full.h - h + 6, width, h - 18}
+
+	focused := app.focus == .Capture
+	ui_punch(ui, box, COMPOSER_BG, 14)
+	ui_rect(ui, box, focused ? color_alpha(ACCENT, 0.35) : color_alpha(BORDER, 0.9), 14)
+	if clicked_in(app, box) do app.focus = .Capture
+	if ui_hovered(ui, box) do ui.cursor_text = true
+
+	text_w := box.w - COMPOSER_SIDE * 2 - 90
+	editor_layout_lines(ui, &app.capture, text_w, &ui.regular, CAPTURE_PX)
+	text_h := f32(max(len(app.capture.lines), 1)) * (CAPTURE_PX * 1.5)
+	text_r := Rect{box.x + COMPOSER_SIDE, box.y + CAPTURE_PAD, text_w, text_h}
+	if editor_text(&app.capture) == "" {
+		ui_text(ui, &ui.regular, "what needs doing", {text_r.x, text_r.y + 1}, CAPTURE_PX, FAINT)
 	}
+	draw_editor(app, &app.capture, text_r, &ui.regular, CAPTURE_PX, focused)
+
+	// What Enter will do, and what the agent is up to behind it.
+	note := ""
+	if strings.trim_space(editor_text(&app.capture)) != "" {
+		n := len(todos_split(editor_text(&app.capture)))
+		note = n == 1 ? "enter · runs it" : fmt.tprintf("enter · %d cards, one thread", n)
+	}
+	if note != "" {
+		nw := font_width(&ui.regular, note, 12)
+		ui_text(ui, &ui.regular, note, {box.x + box.w - COMPOSER_SIDE - nw, box.y + box.h - 20}, 12, FAINT)
+	}
+}
+
+// --- the launcher ------------------------------------------------------------
+
+// What a row of the big menu does when it is chosen.
+Hit :: struct {
+	session: int, // -1 on a project row
+	cwd:     string,
+	name:    string,
+	sub:     string,
+	count:   int,
+}
+
+LAUNCH_ROWS :: 8
+
+// Everything the typed text finds: the projects first, because narrowing to
+// one is the commonest thing to want, then the threads themselves.
+launcher_hits :: proc(app: ^App, query: string) -> []Hit {
+	out := make([dynamic]Hit, context.temp_allocator)
+	// The way back out of a narrowed grid, offered where the narrowing was
+	// chosen. Esc does not do this: a project you picked is a thing you said,
+	// and a key that backs out of everything else should not undo it.
+	if app.canvas.project != "" {
+		append(&out, Hit{session = -1, cwd = "", name = "all projects", sub = "everything"})
+	}
+	if query != "" {
+		seen := make(map[string]int, context.temp_allocator)
+		for s in app.sessions {
+			name := strings.to_lower(base_name(s.cwd), context.temp_allocator)
+			if !strings.contains(name, query) do continue
+			if at, has := seen[s.cwd]; has {
+				out[at].count += 1
+				continue
+			}
+			seen[s.cwd] = len(out)
+			append(&out, Hit{session = -1, cwd = s.cwd, name = base_name(s.cwd), sub = "project", count = 1})
+		}
+	}
+	// Threads: the filtered list is already in newest-first order and already
+	// matches the query, archived and abandoned ones included.
+	for i in app.visible {
+		if len(out) >= LAUNCH_ROWS do break
+		s := &app.sessions[i]
+		append(&out, Hit{session = i, name = s.title, sub = base_name(s.cwd)})
+	}
+	if len(out) > LAUNCH_ROWS do resize(&out, LAUNCH_ROWS)
+	return out[:]
+}
+
+// Type big enough to read from across the room: the query, and under it what
+// it found. Arrows choose, Enter takes it.
+@(private = "file")
+draw_launcher :: proc(app: ^App, full: Rect) {
+	ui := &app.ui
+	c := &app.canvas
+	t := ui_anim(ui, ui_id("launcher"), c.launcher ? 1 : 0, 16)
+	if t < 0.01 do return
+	if t < 0.99 do ui_wake_in(ui, 0)
+
+	ui_rect(ui, full, color_alpha(Color(0xff000000), 0.88 * t))
+
+	w := min(full.w - 120, 980)
+	x := full.x + (full.w - w) / 2
+	y := full.y + full.h * 0.14 + (1 - t) * 18
+
+	// One card holding the whole menu, so the grid behind it reads as a
+	// backdrop rather than as something still being offered.
+	lower0 := strings.to_lower(strings.trim_space(editor_text(&app.search)), context.temp_allocator)
+	rows := f32(len(launcher_hits(app, lower0)))
+	card := Rect{x - 34, y - 34, w + 68, 128 + max(rows, 1) * 52 + 46}
+	ui_rect(ui, {card.x + 3, card.y + 10, card.w, card.h}, color_alpha(Color(0xff000000), 0.5 * t), 20)
+	ui_rect(ui, card, color_alpha(PANEL, 0.97 * t), 20)
+	ui_rect(ui, card, color_alpha(BORDER, 0.8 * t), 20)
+
+	// The query, in the biggest type in the program.
+	query := editor_text(&app.search)
+	size := f32(46)
+	if query == "" {
+		ui_text(ui, &ui.bold, "Search everything", {x, y}, size, color_alpha(FAINT, t))
+	} else {
+		editor_layout_lines(ui, &app.search, w, &ui.bold, size)
+		draw_editor(app, &app.search, {x, y, w, size * 1.4}, &ui.bold, size, true)
+	}
+	y += size * 1.5
+	ui_rect(ui, {x, y, w, 1}, color_alpha(BORDER, t))
+	y += 22
+
+	lower := strings.to_lower(strings.trim_space(query), context.temp_allocator)
+	hits := launcher_hits(app, lower)
+	if len(hits) == 0 {
+		ui_text(ui, &ui.regular, "nothing by that name", {x, y + 8}, 22, color_alpha(FAINT, t))
+		return
+	}
+	c.menu_at = clamp(c.menu_at, 0, len(hits) - 1)
+
+	row_h := f32(52)
+	for hit, i in hits {
+		r := Rect{x - 18, y, w + 36, row_h}
+		clicked, hovered := ui_invisible_button(ui, ui_id("launch-row", i), r)
+		if hovered && ui.mouse_moved do c.menu_at = i
+		on := i == c.menu_at
+		if on {
+			ui_rect(ui, r, color_alpha(PANEL_HI, 0.9 * t), 12)
+			ui_rect(ui, {r.x, r.y + 10, 3, r.h - 20}, color_alpha(ACCENT, t), 2)
+		}
+		buf: [256]u8
+		sub_w := font_width(&ui.regular, hit.sub, 16) + 30
+		name := font_ellipsize(&ui.bold, hit.name, 27, r.w - 40 - sub_w, buf[:])
+		ui_text(ui, &ui.bold, name, {x, r.y + 11}, 27, color_alpha(on ? TEXT : MUTED, t))
+		ui_text(ui, &ui.regular, hit.sub, {x + w - font_width(&ui.regular, hit.sub, 16), r.y + 19}, 16, color_alpha(FAINT, t))
+		if clicked do launcher_take(app, hit)
+		y += row_h
+	}
+
+	ui_text(ui, &ui.regular, "enter opens  ·  esc closes  ·  a project row narrows the grid", {x, y + 18}, 13.5, color_alpha(FAINT, 0.8 * t))
+}
+
+// Choosing a row: a project narrows the grid, a thread opens.
+launcher_take :: proc(app: ^App, hit: Hit) {
+	if hit.session < 0 {
+		canvas_filter_project(app, hit.cwd)
+		app.canvas.launcher = false
+		editor_clear(&app.search)
+		app.focus = .Composer
+		app_filter(app)
+		return
+	}
+	canvas_open(app, app.sessions[hit.session].id)
+	editor_clear(&app.search)
+	app_filter(app)
+}
+
+// Enter, from the key handler.
+launcher_confirm :: proc(app: ^App) {
+	query := strings.to_lower(strings.trim_space(editor_text(&app.search)), context.temp_allocator)
+	hits := launcher_hits(app, query)
+	if len(hits) == 0 do return
+	launcher_take(app, hits[clamp(app.canvas.menu_at, 0, len(hits) - 1)])
 }
 
 // --- transcript -------------------------------------------------------------
@@ -197,7 +289,7 @@ draw_transcript :: proc(app: ^App, r: Rect) {
 		app.heights_at = app.chat_ver
 		clear(&app.heights)
 		total := f32(PAD)
-		for &m in app.chat.msgs {
+		for &m, i in app.chat.msgs {
 			h := layout_message(app, &m, x, 0, width, false)
 			append(&app.heights, h)
 			total += h
@@ -209,7 +301,7 @@ draw_transcript :: proc(app: ^App, r: Rect) {
 		}
 	}
 	total := app.total_h
-	if runner_busy(&app.runner) && len(app.open) == 0 do total += 30
+	if app_chat_busy(app) && len(app.open) == 0 do total += 30
 
 	// Pin to the bottom while new output is arriving, unless the reader has
 	// scrolled up to look at something.
@@ -228,12 +320,12 @@ draw_transcript :: proc(app: ^App, r: Rect) {
 		h := i < len(app.heights) ? app.heights[i] : layout_message(app, &m, x, y, width, false)
 		// Only what is on screen is drawn; the rest is just an offset.
 		if y + h > r.y && y < r.y + r.h {
-			layout_message(app, &m, x, y, width, true)
+			_ = layout_message(app, &m, x, y, width, true)
 		}
 		y += h
 	}
 
-	if runner_busy(&app.runner) && len(app.open) == 0 {
+	if app_chat_busy(app) && len(app.open) == 0 {
 		ellipsis := "working..."
 		dots := int(ui.time * 3) % 4
 		ui_text(ui, &ui.regular, ellipsis[:7 + dots], {x, y}, 17, MUTED)
@@ -363,7 +455,6 @@ thinking_teaser :: proc(b: ^Block, buf: []u8) -> string {
 	return fmt.bprintf(buf, "Thinking: %s", one_line(text, 90))
 }
 
-@(private = "file")
 layout_tool :: proc(app: ^App, b: ^Block, x, y, width: f32, draw: bool, depth: int) -> f32 {
 	ui := &app.ui
 	id := ui_id_ptr(b)
@@ -510,9 +601,11 @@ draw_composer :: proc(app: ^App, r: Rect) {
 
 	box := Rect{x, r.y + 6, width, r.h - 18}
 	focused := app.focus == .Composer
-	ui_rect(ui, box, PANEL, 14)
+	// What you are about to say sits over the desktop, not over the app: the
+	// box is cut out of everything drawn behind it and filled with a colour
+	// too thin to hide what the compositor blurs through the window.
+	ui_punch(ui, box, COMPOSER_BG, 14)
 	ui_rect(ui, box, focused ? color_alpha(ACCENT, 0.35) : color_alpha(BORDER, 0.9), 14)
-	ui_rect(ui, rect_inset(box, 1, 1), PANEL, 13)
 
 	if clicked_in(app, box) do app.focus = .Composer
 	if ui_hovered(ui, box) do ui.cursor_text = true
@@ -541,6 +634,10 @@ draw_composer :: proc(app: ^App, r: Rect) {
 		inner_y += thumb + 14
 	}
 
+	// A draft in a new chat may belong to a thread that is already open on
+	// this project; the manager reads it as it grows and opens that thread.
+	if app.canvas.opened do route_update(app)
+
 	// The text starts under the top padding and the box grows downward with it,
 	// so the first line never moves as you type and the chip row stays clear.
 	text_w := box.w - COMPOSER_SIDE * 2
@@ -558,10 +655,7 @@ draw_composer :: proc(app: ^App, r: Rect) {
 	cx := draw_chip(app, ui_id("model-chip"), box.x + box.w - 12, chip_y, model_label[app.model], MUTED)
 	if ui.pressed && ui.hot == ui_id("model-chip") do app.model_open = !app.model_open
 	app.model_chip = Rect{cx, chip_y - 5, box.x + box.w - 12 - cx, 26}
-	if ui.pressed && ui.hot == ui_id("model-chip") {
-		app.model = Model((int(app.model) + 1) % len(Model))
-	}
-	if runner_busy(&app.runner) {
+	if app_chat_busy(app) {
 		// While a turn is in flight the same corner says so, and stops it.
 		stop := Rect{box.x + 14, chip_y - 3, 58, 22}
 		clicked, hovered := ui_invisible_button(ui, ui_id("stop"), stop)
@@ -569,6 +663,23 @@ draw_composer :: proc(app: ^App, r: Rect) {
 		ui_rect(ui, {stop.x + 8, stop.y + 7, 8, 8}, RED, 2)
 		ui_text(ui, &ui.regular, "stop", {stop.x + 22, stop.y + 3}, 13, hovered ? TEXT : MUTED)
 		if clicked do app_interrupt(app)
+	}
+	// A rebuilt window waiting for the turn to finish. It goes next to the
+	// model chip rather than in the status, which is busy saying what the
+	// turn is doing.
+	if reload_waiting() {
+		label := "update ready"
+		w := font_width(&ui.regular, label, 12) + 8
+		ui_text(ui, &ui.regular, label, {cx - w - 8, chip_y + 3}, 12, GREEN)
+	}
+
+	// The strip that used to carry the status is gone, so it says its piece
+	// down here instead, out of the way of the text.
+	if app.status != "" && app.status != "ready" {
+		buf: [128]u8
+		room := box.w - 220 - (app_chat_busy(app) ? 66 : 0)
+		msg := font_ellipsize(&ui.regular, app.status, 13, room, buf[:])
+		ui_text(ui, &ui.regular, msg, {box.x + 14 + (app_chat_busy(app) ? 66 : 0), chip_y + 3}, 13, FAINT)
 	}
 }
 

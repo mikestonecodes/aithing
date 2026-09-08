@@ -65,6 +65,7 @@ Gpu :: struct {
 
 	pipeline_layout: vk.PipelineLayout,
 	pipeline:        vk.Pipeline,
+	pipeline_punch:  vk.Pipeline, // same, with blending replaced outright
 }
 
 // What a frame in flight starts with, host-visible and written straight from
@@ -550,6 +551,7 @@ gpu_destroy :: proc(g: ^Gpu) {
 
 	bindless_destroy(g)
 	vk.DestroyPipeline(g.device, g.pipeline, nil)
+	vk.DestroyPipeline(g.device, g.pipeline_punch, nil)
 	vk.DestroyPipelineLayout(g.device, g.pipeline_layout, nil)
 
 	destroy_swapchain_views(g)

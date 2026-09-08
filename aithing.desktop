@@ -1,0 +1,16 @@
+[Desktop Entry]
+Type=Application
+Name=aithing
+Comment=A native window around Claude Code
+Exec=/home/mike/Source/aithing/aithing
+Path=/home/mike/Source/aithing
+Icon=aithing
+Terminal=false
+Categories=Development;
+Keywords=claude;ai;chat;code;
+StartupWMClass=aithing
+Actions=new;
+
+[Desktop Action new]
+Name=New thread
+Exec=/home/mike/Source/aithing/aithing --new

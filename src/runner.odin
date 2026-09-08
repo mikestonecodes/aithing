@@ -48,7 +48,18 @@ Model :: enum {
 	Fable,
 }
 
+// What goes on the CLI's --model: exact IDs, so "fable" can never drift to a
+// different release than the one the picker shows.
 model_flag := [Model]string {
+	.Haiku  = "claude-haiku-4-5",
+	.Sonnet = "claude-sonnet-5",
+	.Opus   = "claude-opus-5",
+	.Fable  = "claude-fable-5-1",
+}
+
+// The short name: what --model on our own command line and the saved choice
+// use, and what older saves wrote.
+model_short := [Model]string {
 	.Haiku  = "haiku",
 	.Sonnet = "sonnet",
 	.Opus   = "opus",
@@ -56,10 +67,18 @@ model_flag := [Model]string {
 }
 
 model_label := [Model]string {
-	.Haiku  = "Haiku",
-	.Sonnet = "Sonnet",
-	.Opus   = "Opus",
-	.Fable  = "Fable",
+	.Haiku  = "Haiku 4.5",
+	.Sonnet = "Sonnet 5",
+	.Opus   = "Opus 5",
+	.Fable  = "Fable 5.1",
+}
+
+MODEL_DEFAULT :: Model.Fable
+
+// Accepts the short name or the full ID.
+model_parse :: proc(name: string) -> (m: Model, ok: bool) {
+	for c in Model do if model_short[c] == name || model_flag[c] == name do return c, true
+	return MODEL_DEFAULT, false
 }
 
 Runner :: struct {
@@ -80,13 +99,26 @@ runner_busy :: proc(r: ^Runner) -> bool {
 	return r.running
 }
 
+// No process and nothing left to read from the one that has gone. The turn is
+// over for good, whether or not it ever said so.
+runner_settled :: proc(r: ^Runner) -> bool {
+	sync.mutex_lock(&r.mu)
+	defer sync.mutex_unlock(&r.mu)
+	return !r.running && len(r.events) == 0
+}
+
 // Starts a turn. `session_id` empty means a brand new session.
+// `slot` only names the file this turn's stderr goes to. Turns run several at
+// a time and they all used to write one `last-stderr.log`, each truncating it
+// as it started — so the reason a turn failed was as likely to be another
+// turn's stderr, or nothing at all.
 runner_start :: proc(
 	r: ^Runner,
 	cwd: string,
 	session_id: string,
 	prompt: string,
 	model: string = "",
+	slot := 0,
 ) -> bool {
 	if runner_busy(r) do return false
 
@@ -104,7 +136,7 @@ runner_start :: proc(
 
 	// stderr goes to a file rather than a second pipe: nothing reads it until
 	// the process is gone, and a pipe nobody drains would eventually wedge.
-	err_path := cache_path("last-stderr.log")
+	err_path := cache_path(fmt.tprintf("turn-%d-stderr.log", slot))
 	err_file, err_open := os.open(err_path, {.Write, .Create, .Trunc})
 	if err_open != nil do err_file = nil
 
@@ -146,6 +178,10 @@ runner_stop :: proc(r: ^Runner) {
 	process := r.process
 	sync.mutex_unlock(&r.mu)
 	if !running do return
+	// A running flag with no process behind it can only come of a bug, but
+	// the pid it carries is 0, and killing 0 is killing this whole process
+	// group — the window, and every turn in it.
+	if process.pid <= 0 do return
 	_ = os.process_kill(process)
 }
 

@@ -34,7 +34,16 @@ Input :: struct {
 	pressed:      [3]bool,
 	released:     [3]bool,
 	click_count:  int, // 2 on a double click, 3 on a triple
+	// Wheel notches (~10 per click, so a click scrolls a few rows) and the
+	// pixels a touchpad travelled, which move content 1:1. Both axes: a
+	// touchpad swiped sideways is how a canvas gets panned.
 	scroll:       f32,
+	scroll_px:    f32,
+	scroll_x:     f32,
+	scroll_x_px:  f32,
+	// The compositor says when the fingers left the touchpad, which is the
+	// only honest moment to turn their speed into a glide.
+	scroll_end:   bool,
 	// Keys that fired this frame, including synthesised repeats, and the text
 	// they produced. Both are cleared at the top of every poll.
 	keys:         [dynamic]Key,
@@ -94,6 +103,11 @@ Window :: struct {
 	should_close: bool,
 	input:        Input,
 	last_mouse:   [2]f32,
+
+	// Outstanding wl_surface.frame request: the compositor answers it when it
+	// is ready for the next frame, which is what paces animations.
+	frame_cb:     ^wl.wl_callback,
+	axis_source:  u32,
 }
 
 @(private = "file")
@@ -115,6 +129,8 @@ seat_listener: wl.wl_seat_listener
 pointer_listener: wl.wl_pointer_listener
 @(private = "file")
 keyboard_listener: wl.wl_keyboard_listener
+@(private = "file")
+frame_listener: wl.wl_callback_listener
 
 window_open :: proc(w: ^Window, title: string, width, height: int) -> bool {
 	g_win_ctx = context
@@ -325,13 +341,31 @@ on_seat_capabilities :: proc "c" (data: rawptr, self: ^wl.wl_seat, capabilities:
 			},
 			button = on_pointer_button,
 			axis = proc "c" (data: rawptr, self: ^wl.wl_pointer, time: u32, axis: u32, value: wl.Fixed) {
-				if axis != wl.wl_pointer_axis_vertical_scroll do return
 				w := cast(^Window)data
-				w.input.scroll -= f32(wl.fixed_to_f64(value))
+				v := f32(wl.fixed_to_f64(value))
+				horiz := axis == wl.wl_pointer_axis_horizontal_scroll
+				switch w.axis_source {
+				case wl.wl_pointer_axis_source_finger, wl.wl_pointer_axis_source_continuous:
+					if horiz do w.input.scroll_x_px -= v
+					else do w.input.scroll_px -= v
+				case:
+					if horiz do w.input.scroll_x -= v
+					else do w.input.scroll -= v
+				}
 			},
-			frame = proc "c" (data: rawptr, self: ^wl.wl_pointer) {},
-			axis_source = proc "c" (data: rawptr, self: ^wl.wl_pointer, axis_source: u32) {},
-			axis_stop = proc "c" (data: rawptr, self: ^wl.wl_pointer, time: u32, axis: u32) {},
+			// The source arrives once per pointer frame, before its axis
+			// events, and resets to the wheel afterwards so a stray axis
+			// without one still scrolls.
+			frame = proc "c" (data: rawptr, self: ^wl.wl_pointer) {
+				(cast(^Window)data).axis_source = wl.wl_pointer_axis_source_wheel
+			},
+			axis_source = proc "c" (data: rawptr, self: ^wl.wl_pointer, axis_source: u32) {
+				(cast(^Window)data).axis_source = axis_source
+			},
+			// Fingers off the pad. Whatever they were doing keeps going.
+			axis_stop = proc "c" (data: rawptr, self: ^wl.wl_pointer, time: u32, axis: u32) {
+				(cast(^Window)data).input.scroll_end = true
+			},
 			axis_discrete = proc "c" (data: rawptr, self: ^wl.wl_pointer, axis: u32, discrete: i32) {},
 			axis_value120 = proc "c" (data: rawptr, self: ^wl.wl_pointer, axis: u32, value120: i32) {},
 			axis_relative_direction = proc "c" (data: rawptr, self: ^wl.wl_pointer, axis: u32, direction: u32) {},
@@ -513,6 +547,10 @@ window_poll :: proc(w: ^Window, timeout_ms: i32 = 0) {
 	w.input.pressed = {}
 	w.input.released = {}
 	w.input.scroll = 0
+	w.input.scroll_px = 0
+	w.input.scroll_x = 0
+	w.input.scroll_x_px = 0
+	w.input.scroll_end = false
 	w.input.click_count = 0
 	clear(&w.input.keys)
 	clear(&w.input.text)
@@ -558,6 +596,35 @@ window_repeat_timeout :: proc(w: ^Window) -> (ms: i32, pending: bool) {
 	return i32(max(left, 0)), true
 }
 
+// Asks the compositor to say when it wants the next frame. Called before the
+// present so the request rides on that commit; `window_frame_pending` is true
+// until the compositor answers, and an animation frame drawn before then
+// would only be dropped or shown late.
+window_request_frame :: proc(w: ^Window) {
+	if w.frame_cb != nil do return
+	w.frame_cb = wl.wl_surface_frame(w.surface)
+	frame_listener = {
+		done = proc "c" (data: rawptr, self: ^wl.wl_callback, callback_data: u32) {
+			w := cast(^Window)data
+			wl.wl_callback_destroy(self)
+			if w.frame_cb == self do w.frame_cb = nil
+		},
+	}
+	wl.wl_callback_add_listener(w.frame_cb, &frame_listener, w)
+}
+
+window_frame_pending :: proc(w: ^Window) -> bool {
+	return w.frame_cb != nil
+}
+
+// Forgets a request whose commit never happened, so it cannot hold the next
+// frame hostage.
+window_cancel_frame :: proc(w: ^Window) {
+	if w.frame_cb == nil do return
+	wl.wl_callback_destroy(w.frame_cb)
+	w.frame_cb = nil
+}
+
 window_pixel_size :: proc(w: ^Window) -> (int, int) {
 	return w.width * w.scale, w.height * w.scale
 }
@@ -568,14 +635,13 @@ window_has_input :: proc(w: ^Window) -> bool {
 		w.input.pressed != {} ||
 		w.input.released != {} ||
 		w.input.scroll != 0 ||
+		w.input.scroll_px != 0 ||
+		w.input.scroll_x != 0 ||
+		w.input.scroll_x_px != 0 ||
+		w.input.scroll_end ||
 		len(w.input.keys) > 0 ||
 		w.input.mouse != w.last_mouse \
 	)
-}
-
-window_key_pressed :: proc(w: ^Window, key: u32, mods: Mods = {}) -> bool {
-	for k in w.input.keys do if k.code == key && k.mods == mods do return true
-	return false
 }
 
 window_close :: proc(w: ^Window) {

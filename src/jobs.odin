@@ -68,6 +68,9 @@ Load_Job :: struct {
 	mu:       sync.Mutex,
 	worker:   ^thread.Thread,
 	session:  Session, // a private copy, so a rescan can't pull it away
+	// The other threads of the same task, oldest first and including the one
+	// above. Empty for a thread that is on its own.
+	group:    []Session,
 	running:  bool,
 	ready:    bool,
 	ok:       bool,
@@ -76,6 +79,7 @@ Load_Job :: struct {
 	// one is kept: clicking through five sessions should read the fifth, not
 	// all five in turn.
 	next:     Session,
+	next_group: []Session,
 	has_next: bool,
 	// Bumped on every request; a result whose token no longer matches is from
 	// a session the reader has already clicked away from.
@@ -83,14 +87,30 @@ Load_Job :: struct {
 	want:     int,
 }
 
-load_start :: proc(j: ^Load_Job, s: Session) {
+// Reads a whole task: `members` are its threads oldest first, and `s` is the
+// newest of them, which is the one the chat takes its name and id from.
+load_start_group :: proc(j: ^Load_Job, s: Session, members: []Session) {
 	sync.mutex_lock(&j.mu)
 	j.want += 1
 	session_free(&j.next)
 	j.next = session_clone(s)
+	group_free(j.next_group)
+	j.next_group = nil
+	if len(members) > 1 {
+		clones := make([]Session, len(members))
+		for m, i in members do clones[i] = session_clone(m)
+		j.next_group = clones
+	}
 	j.has_next = true
 	sync.mutex_unlock(&j.mu)
 	load_try(j)
+}
+
+@(private = "file")
+group_free :: proc(members: []Session) {
+	if members == nil do return
+	for &m in members do session_free(&m)
+	delete(members)
 }
 
 // Called once a frame: starts a request that had to wait for the previous read
@@ -116,15 +136,24 @@ load_try :: proc(j: ^Load_Job) {
 	}
 	j.token = j.want
 	session_free(&j.session)
+	group_free(j.group)
 	j.session = j.next
+	j.group = j.next_group
 	j.next = {}
+	j.next_group = nil
 	j.has_next = false
 	j.running = true
 	j.ready = false
 	sync.mutex_unlock(&j.mu)
 
 	j.worker = thread.create_and_start_with_poly_data(j, proc(j: ^Load_Job) {
-		chat, ok := session_load(&j.session)
+		chat: Chat
+		ok: bool
+		if len(j.group) > 1 {
+			chat, ok = group_load(j.group)
+		} else {
+			chat, ok = session_load(&j.session)
+		}
 		sync.mutex_lock(&j.mu)
 		chat_destroy(&j.chat) // a result nobody came back for
 		j.chat = chat
@@ -180,5 +209,7 @@ load_destroy :: proc(j: ^Load_Job) {
 	}
 	session_free(&j.session)
 	session_free(&j.next)
+	group_free(j.group)
+	group_free(j.next_group)
 	chat_destroy(&j.chat)
 }
