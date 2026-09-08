@@ -199,6 +199,11 @@ launcher_hits :: proc(app: ^App, query: string) -> []Hit {
 	if query != "" {
 		seen := make(map[string]int, context.temp_allocator)
 		for s in app.sessions {
+			// Not a card's own tree. Its name is the project with a card id on
+			// the end, so typing the project's name found it once per card ever
+			// run there and offered to narrow the grid to a directory in the
+			// cache that has nothing on it.
+			if worktree_card(s.cwd) != "" do continue
 			name := strings.to_lower(base_name(s.cwd), context.temp_allocator)
 			if !strings.contains(name, query) do continue
 			if at, has := seen[s.cwd]; has {

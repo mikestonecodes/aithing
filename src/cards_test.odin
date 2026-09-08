@@ -912,3 +912,137 @@ a_worktree_is_not_a_project :: proc(t: ^testing.T) {
 	// Anywhere else is itself, whatever it is called.
 	testing.expect_value(t, worktree_project(app, "/tmp/proj"), "/tmp/proj")
 }
+
+// --- giving a tree back -------------------------------------------------------
+
+// A real repository and a real cache, because what is being pinned below is
+// what git does: the whole of the policy about which trees may go is which
+// ones git refuses to remove, and a fake git would pin our opinion of it
+// instead.
+//
+// One test, not three, and it points AITHING_CACHE at a directory of its own.
+// The runner runs tests in parallel and the cache is named by an environment
+// variable, so two tests moving it at once would be two tests looking for
+// their checkouts in each other's directory — and the sweep walks everything
+// under it, which is a second test's trees as readily as its own.
+@(test)
+a_finished_card_gives_its_tree_back :: proc(t: ^testing.T) {
+	scratch_dir(t)
+	cache := "/tmp/aithing-test-cache"
+	repo := "/tmp/aithing-test-repo"
+	if !testing.expect(t, run(t, "rm", "-rf", cache, repo), "could not clear the scratch dirs") {
+		return
+	}
+	_ = os.set_env("AITHING_CACHE", cache)
+	os.make_directory_all(repo)
+	made :=
+		run(t, "git", "-C", repo, "init", "-q") &&
+		run(t, "git", "-C", repo, "config", "user.email", "test@example.com") &&
+		run(t, "git", "-C", repo, "config", "user.name", "test") &&
+		os.write_entire_file(strings.concatenate({repo, "/f"}, context.temp_allocator), "a") ==
+			nil &&
+		run(t, "git", "-C", repo, "add", "f") &&
+		run(t, "git", "-C", repo, "commit", "-qm", "one")
+	if !testing.expect(t, made, "git is needed for this one") do return
+
+	app := scratch_app()
+	defer scratch_free(app)
+
+	// A finished card's checkout does not sit in the cache for good. It goes,
+	// its branch goes with it while the branch has nothing in it, and asking
+	// for the card again checks it out afresh.
+	id := todos_add(&app.todos, "bake the atlas", "sess-w", repo)
+	tree, why := worktree_for(repo, id, context.temp_allocator)
+	testing.expect_value(t, why, "")
+	testing.expect(t, os.exists(tree), "the tree was not made")
+	testing.expect(t, !worktree_idle(&app.todos, id), "an open card is still working in it")
+	todo_set_state(&app.todos, id, .Done)
+	testing.expect(t, worktree_idle(&app.todos, id), "a finished card is not")
+	testing.expect(t, worktree_release(repo, id), "the tree did not go")
+	testing.expect(t, !os.exists(tree), "the tree is still there")
+	testing.expect(t, !has_branch(t, repo, id), "an empty branch was left behind")
+	again, _ := worktree_for(repo, id, context.temp_allocator)
+	testing.expect_value(t, again, tree)
+	testing.expect(t, os.exists(tree), "the tree did not come back")
+
+	// The other half of the rule: git decides, and git will not remove a tree
+	// with anything in it that is not committed. Removing them regardless was
+	// the version of this that could lose an afternoon.
+	_ = os.write_entire_file(
+		strings.concatenate({tree, "/half-done"}, context.temp_allocator),
+		"x",
+	)
+	testing.expect(t, !worktree_release(repo, id), "git should have refused")
+	testing.expect(t, os.exists(tree), "an afternoon of work was thrown away")
+
+	// Committed, and the tree may go — and the branch stays, because the
+	// commits are what makes it worth keeping, not the checkout.
+	run(t, "git", "-C", tree, "add", "half-done")
+	run(t, "git", "-C", tree, "commit", "-qm", "half")
+	testing.expect(t, worktree_release(repo, id), "a committed tree may go")
+	testing.expect(t, !os.exists(tree), "the tree is still there")
+	testing.expect(t, has_branch(t, repo, id), "the commits went with the tree")
+
+	// And the pile that built up while nothing ever removed one: a tree per
+	// card ever run. The sweep reads the card list — a tree whose card is
+	// still open is somewhere work is happening.
+	open_id := todos_add(&app.todos, "two", "s2", repo)
+	gone_id := todos_add(&app.todos, "three", "s3", repo)
+	done_tree, _ := worktree_for(repo, id, context.temp_allocator)
+	open_tree, _ := worktree_for(repo, open_id, context.temp_allocator)
+	gone_tree, _ := worktree_for(repo, gone_id, context.temp_allocator)
+	todos_dismiss(&app.todos, gone_id)
+
+	worktree_sweep(&app.todos)
+	testing.expect(t, !os.exists(done_tree), "a finished card kept its tree")
+	testing.expect(t, !os.exists(gone_tree), "a dismissed card kept its tree")
+	testing.expect(t, os.exists(open_tree), "a card still working lost its tree")
+}
+
+@(private = "file")
+has_branch :: proc(t: ^testing.T, repo, id: string) -> bool {
+	ref := strings.concatenate({"refs/heads/", worktree_branch(id)}, context.temp_allocator)
+	return run(t, "git", "-C", repo, "rev-parse", "--verify", "--quiet", ref)
+}
+
+@(private = "file")
+run :: proc(t: ^testing.T, args: ..string) -> bool {
+	state, _, _, err := os.process_exec(
+		{command = args, working_dir = "/tmp"},
+		context.temp_allocator,
+	)
+	return err == nil && state.exited && state.exit_code == 0
+}
+
+// A card's tree is where work happens, not a place you can go. Threads that
+// ran in one used to fill the launcher with a project row per card ever run —
+// `aithing-n-12`, `aithing-n-13`, every one of them the same project wearing a
+// card's id, and half of those directories given back the moment their card
+// finished. The card on the grid is the door to that thread.
+@(test)
+the_launcher_never_offers_a_tree :: proc(t: ^testing.T) {
+	scratch_dir(t)
+	_ = os.set_env("AITHING_CACHE", "/tmp/aithing-test-cache-launcher")
+	app := scratch_app()
+	defer scratch_free(app)
+
+	id := todos_add(&app.todos, "bake the atlas", "w1", "/tmp/proj")
+	tree := worktree_path("/tmp/proj", id, context.temp_allocator)
+	testing.expect_value(t, worktree_card(tree), id)
+	testing.expect_value(t, worktree_card("/tmp/proj"), "")
+
+	sessions := make([]Session, 2, context.temp_allocator)
+	sessions[0] = fake_session("a1", "one")
+	sessions[1] = fake_session("w1", "in a tree")
+	sessions[1].cwd = tree
+	app.sessions = sessions
+	// The list is the temp allocator's here, and scratch_free frees the one
+	// it is handed.
+	defer app.sessions = nil
+
+	testing.expect_value(t, len(app_visible(app)), 1)
+	// And it stays hidden when it is asked for by name: a thread that ran in
+	// a card's tree is one you reach through the card.
+	editor_set_text(&app.search, "tree")
+	testing.expect_value(t, len(app_visible(app)), 0)
+}
