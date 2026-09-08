@@ -1059,9 +1059,8 @@ app_turn_failed :: proc(app: ^App, t: ^Turn, text: string) {
 	app_turn_ended(app, t, .Failed)
 }
 
-// A turn is over. Its card is marked, the sidebar is re-read because the
-// session file has just changed, and a turn that changed this window rebuilds
-// it — the new binary takes the process over a few seconds later.
+// A turn is over. Its card is marked, and the sidebar is re-read because the
+// session file has just changed.
 @(private = "file")
 app_turn_ended :: proc(app: ^App, t: ^Turn, state: Todo_State) {
 	if t.ended do return // Failed then Done is one ending, and the first wins
@@ -1073,7 +1072,6 @@ app_turn_ended :: proc(app: ^App, t: ^Turn, state: Todo_State) {
 	if outcome == .Asked do app_note(app, t.todo, t.say)
 	app_todo_finished(app, t.todo, outcome)
 	app.rescan = true
-	reload_build(app, t.cwd)
 }
 
 // --- formatting -------------------------------------------------------------

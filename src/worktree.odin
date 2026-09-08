@@ -22,11 +22,9 @@ import "core:strings"
 // you find them. That is on purpose; deleting them on dismiss was the one
 // version of this that could lose an afternoon.
 //
-// Two things follow from a card working in a checkout of HEAD. Uncommitted
+// One thing follows from a card working in a checkout of HEAD: uncommitted
 // changes in the main tree are not in it — the agent sees the last commit,
-// not what you have open in your editor. And a turn that edits this window's
-// own source no longer rebuilds it (see reload_build): the source it changed
-// is not the source this binary was built from until you merge the branch.
+// not what you have open in your editor.
 //
 // A big repository is where this gets expensive: `git worktree add` copies out
 // every file, and a project carrying a gigabyte of assets pays that per card.

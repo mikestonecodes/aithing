@@ -11,12 +11,7 @@ import "core:strings"
 // was narrowed to, the card the cursor was on, how far down it was scrolled,
 // the model, and both half-typed boxes.
 //
-// This is the same picture the reload writes when a rebuilt binary takes the
-// process over, so there is one serializer and one restore, and a normal
-// launch picks up where the last one stopped for the same reason a reload
-// does. The reload's copy lives in the cache and is taken away as it is read
-// — a run that crashed on the way up should not keep restoring the same
-// draft — and the persistent one lives beside the archive and is rewritten
+// One serializer and one restore, writing beside the archive, rewritten
 // whenever it changes.
 
 @(private = "file")
@@ -86,11 +81,9 @@ state_save :: proc(app: ^App) {
 	_ = os.write_entire_file(config_path("state"), transmute([]byte)text)
 }
 
-// Reads a state file. `take` removes it as it is read, which is what the
-// reload wants and the persistent copy does not.
-state_read :: proc(path: string, take := false, allocator := context.allocator) -> (s: App_State) {
+// Reads a state file.
+state_read :: proc(path: string, allocator := context.allocator) -> (s: App_State) {
 	data, rerr := os.read_entire_file(path, context.temp_allocator)
-	if take do os.remove(path)
 	if rerr != nil do return
 
 	rest := string(data)
