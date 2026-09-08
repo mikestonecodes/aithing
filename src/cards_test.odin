@@ -70,6 +70,7 @@ scratch_free :: proc(app: ^App) {
 	for id in app.pending_dismiss do delete(id)
 	delete(app.todo_view)
 	delete(app.visible)
+	delete(app.open)
 	delete(app.pending_open)
 	delete(app.status)
 	turns_destroy(app)
@@ -932,6 +933,68 @@ a_later_message_takes_the_claim_back :: proc(t: ^testing.T) {
 	testing.expect_value(t, app.todos.list[0].state, Todo_State.Asked)
 }
 
+// A card you asked for never reads as one you have not. `waiting` is the word
+// for a card nothing has started, and a turn that went away without ever
+// saying Done or Failed used to be put back to it — so the grid showed a card
+// indistinguishable from one you had never touched, and nothing anywhere said
+// a turn had gone out for it at all. A turn that would not start in the first
+// place is the same rule, in app_start_todo.
+//
+// Nothing should be able to reach this: the reader thread emits Done on its
+// way out whatever happened to the process. Which is the reason to say so on
+// the card rather than tidy it into the state a card starts life in.
+@(test)
+a_card_that_was_asked_for_never_says_waiting :: proc(t: ^testing.T) {
+	scratch_dir(t)
+	app := scratch_app()
+	defer scratch_free(app)
+	app.cwd = strings.clone("/tmp")
+
+	id := todos_add(&app.todos, "bake the atlas", "", "/tmp")
+	testing.expect(t, turn_start_stub(app, id))
+	testing.expect_value(t, todo_display_state(app, app.todos.list[0]), Todo_State.Running)
+
+	// The process gone and nothing left to read out of it, with no ending
+	// ever applied: what turns_reap is the last word on.
+	for turn in app.turns do turn.runner.running = false
+	turns_reap(app)
+	testing.expect_value(t, app.todos.list[0].state, Todo_State.Failed)
+	testing.expect_value(t, app.notes[id], "the turn ended without a word")
+}
+
+// The handshake never reaches the screen. A thread read back off disk has
+// always had the marker taken off it, but a thread you had open while its turn
+// finished watched `<aithing>done</aithing>` type itself out at the bottom —
+// the transcript is written by the deltas, and nothing stripped those.
+@(test)
+the_marker_is_not_in_the_transcript :: proc(t: ^testing.T) {
+	scratch_dir(t)
+	app := scratch_app()
+	defer scratch_free(app)
+
+	at := turn_slot(app)
+	app.turns[at]^ = Turn{live = true, chat = true, cwd = strings.clone("/tmp")}
+	app.turns[at].runner.running = true
+
+	start := Event{kind = .Block_Start, block_kind = .Text}
+	defer event_destroy(&start)
+	app_apply_event_for_test(app, at, &start)
+
+	// In pieces, the way it arrives: the marker is one line and the deltas cut
+	// it wherever the bytes happened to land, which is why nothing can strip
+	// it until the block has stopped.
+	for piece in ([]string{"baked it\n\n", "<aithing>", "done</aithing>"}) {
+		d := Event{kind = .Delta, text = strings.clone(piece)}
+		app_apply_event_for_test(app, at, &d)
+		event_destroy(&d)
+	}
+	stop := Event{kind = .Block_Stop}
+	defer event_destroy(&stop)
+	app_apply_event_for_test(app, at, &stop)
+
+	testing.expect_value(t, block_text(chat_block(&app.chat, Ref{0, 0, -1})), "baked it")
+}
+
 // Reading the marker off a message. The later of the two wins, so a message
 // that quotes the instructions before using them still says what it meant.
 @(test)
@@ -1107,6 +1170,39 @@ a_finished_card_gives_its_tree_back :: proc(t: ^testing.T) {
 	testing.expect(t, !os.exists(tree), "the tree is still there")
 	testing.expect(t, has_branch(t, repo, id), "the commits went with the tree")
 
+	// Landing it, which is what a card finishing actually does: the work goes
+	// back into the branch the project is on, uncommitted or not, and only
+	// then does the tree go. Nothing ever merged one before, so a week of
+	// green cards was a week of `aithing/n-*` branches to go through by hand.
+	land := todos_add(&app.todos, "wire it up", "s-land", repo)
+	land_tree, _ := worktree_for(repo, land, context.temp_allocator)
+	_ = os.write_entire_file(join(land_tree, "wired"), "y")
+	testing.expect_value(t, worktree_land(repo, land, "wire it up"), "")
+	testing.expect(t, os.exists(join(repo, "wired")), "the work never reached the project")
+	todo_set_state(&app.todos, land, .Done)
+	testing.expect(t, worktree_release(repo, land), "a landed tree may go")
+	testing.expect(t, !has_branch(t, repo, land), "a landed branch was left behind")
+
+	// And what happens when it will not go back. Two cards cut from the same
+	// commit, both editing the same line: the first lands, the second cannot,
+	// and the second keeps everything — the whole point of resolving it on
+	// the card's branch is that there is still a tree to resolve it in.
+	one := todos_add(&app.todos, "say hello", "s-one", repo)
+	two := todos_add(&app.todos, "say goodbye", "s-two", repo)
+	one_tree, _ := worktree_for(repo, one, context.temp_allocator)
+	two_tree, _ := worktree_for(repo, two, context.temp_allocator)
+	_ = os.write_entire_file(join(one_tree, "f"), "hello")
+	_ = os.write_entire_file(join(two_tree, "f"), "goodbye")
+	testing.expect_value(t, worktree_land(repo, one, "say hello"), "")
+	testing.expect(t, worktree_land(repo, two, "say goodbye") != "", "a conflict landed anyway")
+	testing.expect(t, os.exists(two_tree), "the tree to resolve it in was taken away")
+	testing.expect(t, has_branch(t, repo, two), "the branch with the work on it went")
+	// And the project is exactly where the first card left it: a failed
+	// landing touches nothing.
+	f, _ := os.read_entire_file_from_path(join(repo, "f"), context.temp_allocator)
+	testing.expect_value(t, string(f), "hello")
+	todos_dismiss(&app.todos, two)
+
 	// And the pile that built up while nothing ever removed one: a tree per
 	// card ever run. The sweep reads the card list — a tree whose card is
 	// still open is somewhere work is happening.
@@ -1121,6 +1217,11 @@ a_finished_card_gives_its_tree_back :: proc(t: ^testing.T) {
 	testing.expect(t, !os.exists(done_tree), "a finished card kept its tree")
 	testing.expect(t, !os.exists(gone_tree), "a dismissed card kept its tree")
 	testing.expect(t, os.exists(open_tree), "a card still working lost its tree")
+}
+
+@(private = "file")
+join :: proc(dir, name: string) -> string {
+	return strings.concatenate({dir, "/", name}, context.temp_allocator)
 }
 
 @(private = "file")
@@ -1146,7 +1247,11 @@ run :: proc(t: ^testing.T, args: ..string) -> bool {
 @(test)
 the_launcher_never_offers_a_tree :: proc(t: ^testing.T) {
 	scratch_dir(t)
-	_ = os.set_env("AITHING_CACHE", "/tmp/aithing-test-cache-launcher")
+	// The shared root, like everything else that touches the cache: the
+	// environment is one variable for the whole process and the runner runs
+	// these on 32 threads, so a test with a cache root of its own is every
+	// other test's trees moving out from under it mid-run.
+	scratch_cache()
 	app := scratch_app()
 	defer scratch_free(app)
 

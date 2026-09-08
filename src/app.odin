@@ -543,10 +543,15 @@ app_start_todo :: proc(app: ^App, id: string) {
 	// With the preamble on the front: a headless turn is the one nobody is
 	// reading, so it is the one that has to say whether it finished.
 	if !turn_start(app, cwd, project, "", verdict_preamble(td.text), id, false) {
-		// Not a failure of the work: a pipe or a process this window could
-		// not get hold of just now. Saying `failed` on a card whose turn
-		// never ran — while the ones beside it carry on — is a lie the grid
-		// used to tell, so the card stays as it was and can be asked again.
+		// Not a failure of the work — a pipe or a process this window could
+		// not get hold of just now — but it is a failure of the asking, and
+		// the card has to say so. It used to be left exactly as it was, which
+		// on a card nobody had run before is `waiting`: you asked for it, the
+		// status line said something for a second, and the grid went on
+		// showing a card that looked like one you had never touched. Failed
+		// with the reason on it, and Enter asks again.
+		app_note(app, id, "could not start claude")
+		app_todo_finished(app, id, .Failed)
 		app_status(app, "could not start claude")
 		return
 	}
@@ -1016,7 +1021,22 @@ app_apply :: proc(app: ^App, at: int, e: ^Event) {
 		key := open_key(e.parent, e.index)
 		ref, has := app.open[key]
 		if has {
-			if b := chat_block(c, ref); b != nil && b.kind != .Tool do b.running = false
+			if b := chat_block(c, ref); b != nil && b.kind != .Tool {
+				b.running = false
+				// The handshake goes here, not on screen. A thread read back
+				// off disk has always had it taken off (sessions.odin), but a
+				// card whose thread you had open while it finished watched
+				// `<aithing>done</aithing>` type itself out at the bottom of
+				// the transcript. Here rather than in the deltas because the
+				// marker is one line and the deltas cut it wherever the bytes
+				// happened to arrive; a block that has stopped is whole.
+				text := strings.to_string(b.text)
+				if bare := verdict_unmark(text); len(bare) != len(text) {
+					kept := strings.clone(bare, context.temp_allocator)
+					strings.builder_reset(&b.text)
+					strings.write_string(&b.text, kept)
+				}
+			}
 			delete_key(&app.open, key)
 		}
 
@@ -1075,9 +1095,18 @@ app_turn_failed :: proc(app: ^App, t: ^Turn, text: string) {
 	app_turn_ended(app, t, .Failed)
 }
 
+// A turn that went away without a word: no Done, no Failed, no exit anything
+// noticed. Nothing should reach this — the reader thread emits Done on its way
+// out whatever happened — so a card that lands here is a card whose turn is
+// unaccounted for, and saying that is worth more than the tidiest of the
+// wrong answers.
+app_turn_vanished :: proc(app: ^App, t: ^Turn) {
+	app_note(app, t.todo, "the turn ended without a word")
+	app_turn_ended(app, t, .Failed)
+}
+
 // A turn is over. Its card is marked, and the sidebar is re-read because the
 // session file has just changed.
-@(private = "file")
 app_turn_ended :: proc(app: ^App, t: ^Turn, state: Todo_State) {
 	if t.ended do return // Failed then Done is one ending, and the first wins
 	t.ended = true
@@ -1088,22 +1117,47 @@ app_turn_ended :: proc(app: ^App, t: ^Turn, state: Todo_State) {
 	if outcome == .Asked do app_note(app, t.todo, t.say)
 	app_todo_finished(app, t.todo, outcome)
 	app.rescan = true
-	// The tree the work was done in goes back now the work is done with it.
-	// Never before git has had its say about whether anything in there was worth
-	// keeping — see worktree.odin.
-	app_release_worktree(app, t)
+	// And the work goes back into the project it came from, now, on the frame
+	// the card said it was finished — see app_land_worktree.
+	app_land_worktree(app, t)
 }
 
-// A finished card's checkout, given back. Only a card that is done and only a
-// tree nothing else is running in: a follow-up typed into the same thread
-// starts beside the turn that is ending and runs in the same directory, and
-// deleting the floor out from under a working agent is the one way this could
-// lose work that git would have said was safe to lose.
+// A finished card's work, put back into its project, and then its checkout
+// given back. Both in the one place, and in that order: a tree removed before
+// its commits were merged is a branch nobody would ever find again, and this
+// used to remove without merging at all — a week of green cards was a week of
+// `aithing/n-*` branches left for somebody to go through by hand.
+//
+// Only a card that is done, and only a tree nothing else is running in: a
+// follow-up typed into the same thread starts beside the turn that is ending
+// and runs in the same directory, and merging or deleting the floor out from
+// under a working agent is the one way this could lose work.
+//
+// A card that would not land keeps its tree, its branch and everything in it,
+// and stops being Done: it says `needs you` with git's own sentence beside
+// it, because the only place a conflict can be settled is the tree the work
+// is in, and a card that says `complete` over work that is not in the project
+// is the lie this whole path exists to stop telling.
 @(private = "file")
-app_release_worktree :: proc(app: ^App, t: ^Turn) {
+app_land_worktree :: proc(app: ^App, t: ^Turn) {
 	if t.todo == "" || t.project == "" || t.cwd == t.project do return
 	if !worktree_idle(&app.todos, t.todo) do return
 	for other in app.turns do if other != t && other.live && other.cwd == t.cwd do return
+	// A card that is no longer on the grid is not a card that finished. Its
+	// tree still goes, on git's terms, but nothing of it goes into the
+	// project: dismissing a card is saying you are done with what it was
+	// doing, and merging the work of something you threw away is the one
+	// thing here that could put code you never wanted into a branch you do.
+	at := todos_find(&app.todos, t.todo)
+	if at < 0 {
+		_ = worktree_release(t.project, t.todo)
+		return
+	}
+	if why := worktree_land(t.project, t.todo, app.todos.list[at].text); why != "" {
+		app_note(app, t.todo, why)
+		app_todo_finished(app, t.todo, .Asked)
+		return
+	}
 	_ = worktree_release(t.project, t.todo)
 }
 

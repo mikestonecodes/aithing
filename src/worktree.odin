@@ -16,16 +16,23 @@ import "core:strings"
 // `aithing/<card id>`, which is the card id and nothing else, so the same
 // card asked twice lands back in the tree it was working in.
 //
-// A tree goes back when the work in it is over: a card that is finished, or a
-// card that is no longer on the grid at all. Nothing here decides what is
-// worth keeping, because this program is a bad judge of that — git is asked
-// instead. `worktree remove` without --force refuses a tree with anything
-// modified or untracked in it, and `branch -d` refuses a branch whose commits
-// are not already in HEAD, so a card that committed its work loses the tree
-// and keeps the branch, and a card with an afternoon of uncommitted editing in
-// it keeps both. Removal used to be forbidden outright for exactly that fear,
-// and the cost of the fear was a cache full of checkouts of every card anyone
-// had ever run.
+// A card that finishes puts its work back where it came from and then gives
+// the tree up — worktree_land, then worktree_release, in that order and in
+// one place. Neither used to happen: a branch per card and nothing that ever
+// merged one, so a week of green cards was a week of `aithing/n-*` branches
+// and a cache full of checkouts that somebody had to go and find by hand,
+// and the answer to "is this card's work in the project?" was "go and look".
+// It is not written down now either — a landed card has no tree and no branch,
+// and that is the whole of the record.
+//
+// What is worth keeping, when a card did not finish, is git's call and not
+// ours, because this program is a bad judge of it. `worktree remove` without
+// --force refuses a tree with anything modified or untracked in it, and
+// `branch -d` refuses a branch whose commits are not already in HEAD, so a
+// card that committed its work loses the tree and keeps the branch, and a card
+// with an afternoon of uncommitted editing in it keeps both. Removal used to
+// be forbidden outright for exactly that fear, and the cost of the fear was a
+// cache full of checkouts of every card anyone had ever run.
 //
 // Nothing is written down about a tree that went. The path is worked out from
 // the card, so a card asked for again is checked out again — see
@@ -83,6 +90,97 @@ worktree_for :: proc(project, id: string, allocator := context.allocator) -> (di
 		return strings.clone(project, allocator), strings.clone(one_line(msg, 160), allocator)
 	}
 	return strings.clone(path, allocator), ""
+}
+
+// Puts a card's work back where it came from, the moment the card says it is
+// done. A branch per card and nothing that ever merged one meant the work was
+// finished and nowhere: `git worktree list` grew a row a card, and a week of
+// green cards was a week of branches you had to go and find by hand.
+//
+// The whole of this happens in the card's own tree until the last line. The
+// obvious way round — check out the card's branch over the project, merge,
+// check back — is the one that goes wrong, because the project is where a
+// person is working: it has files open and half-written, and the version of
+// this that stashed them, merged, and popped could hand you a conflict in
+// work you had not finished and were not thinking about.
+//
+// So: the card commits what it did, the project's branch is merged *into* the
+// card's, and then the project is fast-forwarded onto the result. A conflict
+// is resolved on the card's branch or not at all, and the only thing ever
+// done to the project's working tree is a fast-forward — which git itself
+// refuses if it would write over a file somebody has modified. Nothing here
+// stashes, resets or checks anything out.
+//
+// `why` empty is landed. Anything else is git's own sentence about what
+// stopped it, and it goes on the card: the tree stays exactly as it was, so
+// the answer to a card that would not land is to go into the tree and finish
+// it by hand.
+//
+// It waits for git, on the frame the turn ended. That is a commit and two
+// merges — milliseconds on the repositories this runs on, and the same bet
+// worktree_for already makes on the way in.
+worktree_land :: proc(project, id, subject: string) -> (why: string) {
+	if project == "" || id == "" do return ""
+	path := worktree_path(project, id)
+	if !os.exists(path) do return ""
+	branch := worktree_branch(id)
+
+	// Whatever the agent left lying about. A card is one piece of work and
+	// this is the end of it, so there is nothing to be gained by asking which
+	// of the files it touched it meant: all of them, or the card is not done.
+	if worktree_dirty(path) {
+		if ok, msg := git(path, {"add", "-A"}); !ok do return one_line(msg, 160)
+		msg := subject != "" ? one_line(subject, 72) : fmt.tprintf("card %s", id)
+		if ok, out := git(path, {"commit", "-m", msg}); !ok do return one_line(out, 160)
+	}
+
+	// Where it goes back to: the branch the project itself has checked out,
+	// which is the branch the tree was cut from. Not a name written down
+	// anywhere and not "main" — a project sitting on a release branch would
+	// have had its cards landed somewhere nobody was looking.
+	base, has_base := worktree_head(project)
+	if !has_base do return "the project is not on a branch"
+	if base == branch do return "" // its own tree is the project's; nothing to land
+
+	// Nothing of its own to give back. Not a failure: a card that read code
+	// and answered a question is done, and there is no commit in it.
+	if ahead, _ := git(path, {"merge-base", "--is-ancestor", branch, base}); ahead do return ""
+
+	// The project's branch, brought into the card's. This is where a conflict
+	// surfaces, and it surfaces in the tree the work was done in — which is
+	// the only place anyone could resolve it.
+	if ok, msg := git(path, {"merge", "--no-edit", base}); !ok {
+		_, _ = git(path, {"merge", "--abort"})
+		return one_line(msg != "" ? msg : "the card's branch conflicts with the project", 160)
+	}
+	// And now the project can only fast-forward, because the merge above made
+	// it an ancestor. --ff-only is the safety: if git will not take it, the
+	// project's tree has something in it that this must not write over.
+	if ok, msg := git(project, {"merge", "--ff-only", branch}); !ok {
+		return one_line(msg != "" ? msg : "the project would not fast-forward", 160)
+	}
+	return ""
+}
+
+// Anything at all not committed in a tree, untracked files included — the
+// same question `worktree remove` asks before it refuses.
+@(private = "file")
+worktree_dirty :: proc(path: string) -> bool {
+	ok, out := git_out(path, {"status", "--porcelain"})
+	return ok && strings.trim_space(out) != ""
+}
+
+// The branch a checkout is on, or false when it is on none. A detached HEAD
+// is a project with nowhere to land work, which is a thing to say rather than
+// a thing to guess a branch for.
+@(private = "file")
+worktree_head :: proc(path: string) -> (branch: string, ok: bool) {
+	out: string
+	out_ok := false
+	out_ok, out = git_out(path, {"symbolic-ref", "--short", "-q", "HEAD"})
+	if !out_ok do return "", false
+	name := strings.trim_space(out)
+	return name, name != ""
 }
 
 // Gives a card's tree back. What is worth keeping is git's call, not ours:
@@ -222,19 +320,39 @@ worktree_project :: proc(app: ^App, cwd: string) -> string {
 	return app.todos.list[item].cwd
 }
 
+// One git command, waited on, for its answer rather than its complaint:
+// which branch, whether anything is modified. Same run, different half of it.
+@(private = "file")
+git_out :: proc(cwd: string, args: []string) -> (ok: bool, out: string) {
+	cmd := make([dynamic]string, context.temp_allocator)
+	append(&cmd, "git", "-C", cwd)
+	append(&cmd, ..args)
+	state, outs, _, err := os.process_exec(
+		{command = cmd[:], working_dir = cwd},
+		context.temp_allocator,
+	)
+	if err != nil do return false, ""
+	if !state.exited || state.exit_code != 0 do return false, ""
+	return true, string(outs)
+}
+
 // One git command, waited on. Its stderr is what comes back, because the one
 // thing worth saying about a worktree that could not be made is git's own
-// sentence about why.
+// sentence about why — and for the merges, which say what conflicted on
+// stdout, both halves, because a merge that stops with `CONFLICT (content)`
+// and nothing on stderr used to land on a card as `failed` with no reason.
 @(private = "file")
 git :: proc(cwd: string, args: []string) -> (ok: bool, msg: string) {
 	cmd := make([dynamic]string, context.temp_allocator)
 	append(&cmd, "git", "-C", cwd)
 	append(&cmd, ..args)
-	state, _, errs, err := os.process_exec(
+	state, outs, errs, err := os.process_exec(
 		{command = cmd[:], working_dir = cwd},
 		context.temp_allocator,
 	)
 	if err != nil do return false, fmt.tprintf("cannot run git: %v", err)
 	if state.exited && state.exit_code == 0 do return true, ""
-	return false, strings.trim_space(string(errs))
+	said := strings.trim_space(string(errs))
+	if said == "" do said = strings.trim_space(string(outs))
+	return false, said
 }

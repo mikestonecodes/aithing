@@ -223,8 +223,11 @@ turns_reap :: proc(app: ^App) -> bool {
 	for t, i in app.turns {
 		if !t.live || !runner_settled(&t.runner) do continue
 		// Cards whose turn died without ever saying Done or Failed would
-		// otherwise read `processing` for good.
-		if t.todo != "" && !t.ended do app_todo_finished(app, t.todo, .Open)
+		// otherwise read `processing` for good. Failed, not Open: something
+		// did start it, and a card put back to `waiting` is a card that reads
+		// exactly like one nobody has ever asked for — you cannot tell from
+		// the grid that a turn went out at all, let alone that it vanished.
+		if t.todo != "" && !t.ended do app_turn_vanished(app, t)
 		turn_release(app, i)
 		freed = true
 	}
