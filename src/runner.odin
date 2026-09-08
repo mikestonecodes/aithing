@@ -26,6 +26,7 @@ Ev_Kind :: enum {
 	Tool_Result,
 	Tool_Input, // the tool call's finished input, once it parses
 	Verdict, // the agent's own word on whether the work is finished
+	Limits, // how much of the plan's allowance is gone: see usage.odin
 	Done,
 	Failed,
 }
@@ -34,6 +35,7 @@ Event :: struct {
 	kind:       Ev_Kind,
 	block_kind: Block_Kind,
 	verdict:    Verdict,
+	limits:     Limits,
 	index:      int,
 	text:       string, // owned by the event; the UI frees it after applying
 	name:       string,
@@ -99,7 +101,15 @@ Runner :: struct {
 	worker:  ^thread.Thread,
 	out_r:   ^os.File,
 	err_path: string,
-	cost:    f64,
+	// What this turn has spent so far. It lives here and only here until the
+	// slot is released, which is when it is banked: see usage.odin.
+	usage:   Usage,
+}
+
+runner_usage :: proc(r: ^Runner) -> Usage {
+	sync.mutex_lock(&r.mu)
+	defer sync.mutex_unlock(&r.mu)
+	return r.usage
 }
 
 runner_busy :: proc(r: ^Runner) -> bool {
@@ -410,11 +420,34 @@ runner_line :: proc(r: ^Runner, line: string) {
 			})
 		}
 
+	case "rate_limit_event":
+		// The account's own answer, not this turn's: what is left of the five
+		// hour window and of the week, which is what `/usage` reports. Any
+		// turn's stream carries it, so the newest reading is the whole of it
+		// — and it goes out as an event rather than being kept here, because
+		// a runner is thrown away with its slot and this outlives every turn.
+		info, ok := jobj(v, "rate_limit_info")
+		if !ok do return
+		windows, has_windows := jobj(info, "unifiedWindows")
+		if !has_windows do return
+		lim: Limits
+		if w, five := jobj(windows, "five_hour"); five {
+			lim.five = {util = f32(jnum(w, "utilization")), resets = i64(jint(w, "resetsAt"))}
+		}
+		if w, week := jobj(windows, "seven_day"); week {
+			lim.week = {util = f32(jnum(w, "utilization")), resets = i64(jint(w, "resetsAt"))}
+		}
+		runner_emit(r, Event{kind = .Limits, limits = lim})
+
 	case "result":
+		// The dollars, which only the harness can work out: it knows what
+		// each model charges and what it charged for the cache. A turn can
+		// report more than one of these — see below — so they add up rather
+		// than replace.
 		if cost, ok := jobj(v, "total_cost_usd"); ok {
 			if f, is_f := cost.(json.Float); is_f {
 				sync.mutex_lock(&r.mu)
-				r.cost += f64(f)
+				r.usage.cost += f64(f)
 				sync.mutex_unlock(&r.mu)
 			}
 		}
@@ -424,12 +457,43 @@ runner_line :: proc(r: ^Runner, line: string) {
 		// before the process it was watching had done the work, red, while
 		// the thread it came from went on to say the build and the tests
 		// passed.
+		// The tokens, off the same record. They used to be summed off each
+		// finished `assistant` message instead, which counts every one of
+		// them twice: the harness writes one of those per content block, all
+		// of them carrying the same message-level figures, and the numbers on
+		// them are the ones the message started with rather than the ones it
+		// ended on.
+		if usage, ok := jobj(v, "usage"); ok {
+			sync.mutex_lock(&r.mu)
+			usage_add(&r.usage, Usage{
+				input       = jint(usage, "input_tokens"),
+				output      = jint(usage, "output_tokens"),
+				cache_read  = jint(usage, "cache_read_input_tokens"),
+				cache_write = jint(usage, "cache_creation_input_tokens"),
+			})
+			sync.mutex_unlock(&r.mu)
+		}
 		sub := jstr(v, "subtype")
 		sync.mutex_lock(&r.mu)
 		delete(r.result)
 		r.result = strings.clone(sub == "success" ? "" : sub)
 		sync.mutex_unlock(&r.mu)
 	}
+}
+
+// A number that may have come back as either shape, as a float. The
+// utilizations are fractions and arrive as floats; a zero one arrives as an
+// integer.
+jnum :: proc(v: json.Value, key: string) -> f64 {
+	val, ok := jobj(v, key)
+	if !ok do return 0
+	#partial switch n in val {
+	case json.Float:
+		return f64(n)
+	case json.Integer:
+		return f64(n)
+	}
+	return 0
 }
 
 jint :: proc(v: json.Value, key: string) -> int {

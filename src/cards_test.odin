@@ -68,6 +68,7 @@ scratch_free :: proc(app: ^App) {
 	groups_destroy(&app.groups)
 	canvas_destroy(&app.canvas)
 	todos_destroy(&app.todos)
+	usage_destroy(&app.usage)
 	delete(app.sessions)
 	free(app)
 }

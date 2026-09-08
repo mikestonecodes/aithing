@@ -141,7 +141,8 @@ App :: struct {
 	chat_ver:  int,
 	total_h:   f32,
 	open:      map[u64]Ref, // stream content-block index -> where it landed
-	cost:      f64,
+	// What the harness has cost, by day: see usage.odin.
+	usage:     Ledger,
 	profile:   bool,
 
 	// The home view.
@@ -179,6 +180,7 @@ app_init :: proc(app: ^App) {
 	archive_load(&app.archive)
 	todos_load(&app.todos)
 	groups_load(&app.groups)
+	usage_load(&app.usage)
 	app.model = model_load()
 	app.profile = os.get_env("AITHING_PROFILE", context.temp_allocator) != ""
 	chat_new(app)
@@ -197,6 +199,8 @@ app_destroy :: proc(app: ^App) {
 	editor_destroy(&app.search)
 	archive_save(&app.archive)
 	archive_destroy(&app.archive)
+	usage_save(&app.usage)
+	usage_destroy(&app.usage)
 	sessions_free(app.sessions)
 	delete(app.visible)
 	for &a in app.attach do attachment_destroy(&a)
@@ -928,6 +932,13 @@ app_apply :: proc(app: ^App, at: int, e: ^Event) {
 		}
 	}
 
+	// What is left of the plan's allowance. It is the account's answer and not
+	// this turn's — every turn's stream carries the same reading — so it is
+	// taken here, before the turn is asked whether it has a transcript to
+	// draw into: nearly every turn in this window is headless, and a reading
+	// only the one on screen could deliver would almost never arrive.
+	if e.kind == .Limits do app.usage.limits = e.limits
+
 	if !t.chat || (t.session != "" && t.session != c.session_id) {
 		#partial switch e.kind {
 		case .Failed:
@@ -947,6 +958,9 @@ app_apply :: proc(app: ^App, at: int, e: ^Event) {
 	case .Verdict:
 		// Taken above too: what a turn says about its own work is the card's
 		// business whether or not anyone has the thread open.
+
+	case .Limits:
+		// Taken above as well, and for the same reason.
 
 	case .Status:
 		if e.text != "" do app_status(app, e.text)
@@ -1066,7 +1080,6 @@ app_turn_failed :: proc(app: ^App, t: ^Turn, text: string) {
 app_turn_ended :: proc(app: ^App, t: ^Turn, state: Todo_State) {
 	if t.ended do return // Failed then Done is one ending, and the first wins
 	t.ended = true
-	app.cost = t.runner.cost
 	// What the process did and what the work did are two questions, and the
 	// exit code only answers the first.
 	outcome := turn_outcome(t, state)

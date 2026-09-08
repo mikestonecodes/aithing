@@ -39,6 +39,11 @@ draw_app :: proc(app: ^App) {
 		ui.mouse = canvas_mouse
 	}
 
+	// The box along the bottom, wherever it turns out to be: the corner that
+	// says what the harness has cost sits beside it, and has to know how far
+	// in it reaches on a window too narrow to have room to its right.
+	strip := Rect{}
+
 	// The panel: a growing box, then the real thing once it has arrived. The
 	// box and its shadow only exist while it is growing — they are what makes
 	// a card look like it is lifting off the grid, and by the time it has
@@ -47,6 +52,8 @@ draw_app :: proc(app: ^App) {
 		composer_h := composer_height(app, panel.w)
 		draw_transcript(app, {panel.x, panel.y, panel.w, panel.h - composer_h})
 		draw_composer(app, {panel.x, panel.y + panel.h - composer_h, panel.w, composer_h})
+		cw := composer_width(panel.w)
+		strip = {panel.x + (panel.w - cw) / 2, panel.y + panel.h - composer_h, cw, composer_h}
 		if app.overlay == .Model do draw_model_picker(app)
 	} else if t > 0.01 {
 		ui_rect(ui, {panel.x + 2, panel.y + 8, panel.w, panel.h}, color_alpha(Color(0xff000000), 0.4 * (1 - t)), 14 * (1 - t))
@@ -54,8 +61,14 @@ draw_app :: proc(app: ^App) {
 		ui_text(ui, &ui.bold, app_chat_title(app), {panel.x + 20, panel.y + 16}, 16, color_alpha(TEXT, t))
 	} else {
 		draw_project_head(app, full)
-		if app_capture_open(app) do draw_capture(app, full)
+		if app_capture_open(app) {
+			draw_capture(app, full)
+			ch := capture_height(app, full.w)
+			cw := composer_width(full.w)
+			strip = {full.x + (full.w - cw) / 2, full.y + full.h - ch, cw, ch}
+		}
 	}
+	draw_usage(app, full, strip)
 	draw_launcher(app, full)
 	if t > 0.01 && !arrived do ui_wake_in(ui, 0)
 }

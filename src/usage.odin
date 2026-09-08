@@ -1,0 +1,398 @@
+package aithing
+
+import "core:fmt"
+import "core:math"
+import "core:os"
+import "core:strconv"
+import "core:strings"
+import "core:time"
+
+// What the harness has cost, and the corner of the screen that says so.
+//
+// Every turn this window runs is a `claude -p`, and every one of them reports
+// what it spent: token counts on each finished message, dollars on the
+// `result` record at the end. Those numbers used to be read and thrown away —
+// `app.cost` was written by whichever turn ended last and never drawn — so a
+// window that had just run forty headless turns could not say what forty
+// turns had cost.
+//
+// A turn's numbers live in one place and move once. While it runs they are in
+// its own runner and nowhere else; when its slot is released they are added
+// into the day it finished on and the runner goes. So the total on screen is
+// the day's banked figure plus a walk of the turns still running, and there
+// is no moment where a turn is counted in both or in neither.
+
+Usage :: struct {
+	cost:        f64, // US dollars, as the harness reckons them
+	input:       int,
+	output:      int,
+	cache_read:  int,
+	cache_write: int,
+	turns:       int,
+}
+
+usage_add :: proc(a: ^Usage, b: Usage) {
+	a.cost += b.cost
+	a.input += b.input
+	a.output += b.output
+	a.cache_read += b.cache_read
+	a.cache_write += b.cache_write
+	a.turns += b.turns
+}
+
+usage_tokens :: proc(u: Usage) -> int {
+	return u.input + u.output + u.cache_read + u.cache_write
+}
+
+// --- the ledger ---------------------------------------------------------------
+
+// A fortnight of days, which is more than the corner shows and is the point:
+// the file is the record of what was spent, and the day on screen is one row
+// of it. Older rows are what makes tomorrow's "today" believable after a
+// window has been closed and opened.
+USAGE_KEEP :: 14
+
+// A day is a whole number of days since the epoch, UTC. Not local: there is no
+// timezone database in core, and a day boundary that is a couple of hours out
+// is a smaller lie than a total that resets when the machine changes zone.
+Day :: struct {
+	day: int,
+	use: Usage,
+}
+
+// What the plan allows and how much of it is gone: the five hour window and
+// the week, which is what `/usage` reports. The harness writes it on a record
+// of its own in every turn's stream, and it is the account's answer rather
+// than the turn's — so the newest reading from any turn is the whole of it,
+// and there is nothing to add up.
+// Not `Window`: that is the one the program is drawn in.
+Allowance :: struct {
+	util:   f32, // 0..1 of it used
+	resets: i64, // unix seconds it rolls over at
+}
+
+Limits :: struct {
+	five: Allowance,
+	week: Allowance,
+}
+
+// A window past its reset is empty again, whoever read it and whenever. This
+// is what lets the reading be kept over a restart and still be true: the
+// number that goes stale carries the moment it stops being true beside it, so
+// nothing has to be invalidated and no clock has to tick.
+window_used :: proc(w: Allowance) -> f32 {
+	if w.resets == 0 do return 0
+	if time.time_to_unix(time.now()) >= w.resets do return 0
+	return w.util
+}
+
+// Ordered oldest first, which is the order the file keeps them in, so nothing
+// has to sort.
+Ledger :: struct {
+	days:   [dynamic]Day,
+	limits: Limits,
+	last:   string, // the text last written, so a window spending nothing writes nothing
+}
+
+usage_day_now :: proc() -> int {
+	return int(time.time_to_unix(time.now()) / (24 * 60 * 60))
+}
+
+usage_day :: proc(l: ^Ledger, day: int) -> Usage {
+	for d in l.days do if d.day == day do return d.use
+	return {}
+}
+
+// The one writer. A turn's numbers go through here on their way out of its
+// slot and nowhere else, which is what makes the day's figure a total rather
+// than a guess at one.
+usage_bank :: proc(l: ^Ledger, u: Usage) {
+	zero: Usage
+	if u == zero do return
+	day := usage_day_now()
+	for &d in l.days do if d.day == day {
+		usage_add(&d.use, u)
+		return
+	}
+	append(&l.days, Day{day = day, use = u})
+	// Days arrive in order — a window cannot run a turn yesterday — so the
+	// list stays sorted by being appended to, and the old end is trimmed.
+	if len(l.days) > USAGE_KEEP do ordered_remove(&l.days, 0)
+}
+
+usage_destroy :: proc(l: ^Ledger) {
+	delete(l.days)
+	delete(l.last)
+}
+
+@(private = "file")
+USAGE_VERSION :: "1"
+
+// One line a day: the fields in the order the struct has them. Written to the
+// same config directory everything else here remembers itself in.
+usage_text :: proc(l: ^Ledger) -> string {
+	b := strings.builder_make(context.temp_allocator)
+	fmt.sbprintfln(&b, "version %s", USAGE_VERSION)
+	fmt.sbprintfln(
+		&b,
+		"limits %.4f %d %.4f %d",
+		l.limits.five.util,
+		l.limits.five.resets,
+		l.limits.week.util,
+		l.limits.week.resets,
+	)
+	for d in l.days {
+		fmt.sbprintfln(
+			&b,
+			"day %d %.6f %d %d %d %d %d",
+			d.day,
+			d.use.cost,
+			d.use.input,
+			d.use.output,
+			d.use.cache_read,
+			d.use.cache_write,
+			d.use.turns,
+		)
+	}
+	return strings.to_string(b)
+}
+
+usage_load :: proc(l: ^Ledger) {
+	data, err := os.read_entire_file(config_path("usage"), context.temp_allocator)
+	if err != nil do return
+	lines := each_line(string(data))
+	for line in iter_next(&lines) {
+		f := strings.fields(line, context.temp_allocator)
+		if len(f) == 2 && f[0] == "version" {
+			if f[1] != USAGE_VERSION do return // written under an older shape
+			continue
+		}
+		if len(f) == 5 && f[0] == "limits" {
+			five, _ := strconv.parse_f64(f[1])
+			week, _ := strconv.parse_f64(f[3])
+			l.limits.five = {util = f32(five), resets = atoi(f[2])}
+			l.limits.week = {util = f32(week), resets = atoi(f[4])}
+			continue
+		}
+		if len(f) != 8 || f[0] != "day" do continue
+		d := Day{day = int(atoi(f[1]))}
+		d.use.cost, _ = strconv.parse_f64(f[2])
+		d.use.input = int(atoi(f[3]))
+		d.use.output = int(atoi(f[4]))
+		d.use.cache_read = int(atoi(f[5]))
+		d.use.cache_write = int(atoi(f[6]))
+		d.use.turns = int(atoi(f[7]))
+		append(&l.days, d)
+	}
+	l.last = strings.clone(usage_text(l))
+}
+
+// Called on the same slow tick the rest of what this program remembers is
+// written on, and on the way out.
+usage_save :: proc(l: ^Ledger) {
+	text := usage_text(l)
+	if text == l.last do return
+	delete(l.last)
+	l.last = strings.clone(text)
+	_ = os.write_entire_file(config_path("usage"), transmute([]byte)text)
+}
+
+@(private = "file")
+atoi :: proc(s: string) -> i64 {
+	v, _ := strconv.parse_i64(s)
+	return v
+}
+
+// --- what is on screen --------------------------------------------------------
+
+// Today, whole: what finished turns banked plus what the running ones have run
+// up so far.
+app_usage_today :: proc(app: ^App) -> Usage {
+	u := usage_day(&app.usage, usage_day_now())
+	for t in app.turns do if t.live do usage_add(&u, runner_usage(&t.runner))
+	return u
+}
+
+// A count at a glance: four figures at most, so the line under the cost does
+// not change width every time a message lands.
+usage_short :: proc(n: int) -> string {
+	switch {
+	case n >= 10_000_000:
+		return fmt.tprintf("%dM", n / 1_000_000)
+	case n >= 1_000_000:
+		return fmt.tprintf("%.1fM", f64(n) / 1_000_000)
+	case n >= 10_000:
+		return fmt.tprintf("%dk", n / 1000)
+	case n >= 1_000:
+		return fmt.tprintf("%.1fk", f64(n) / 1000)
+	}
+	return fmt.tprintf("%d", n)
+}
+
+// Money, at the size the number actually is. A turn or two costs cents, and a
+// figure rounded to the penny spends the first minute of every day reading
+// `$0.00`.
+usage_money :: proc(cost: f64) -> string {
+	if cost < 1 do return fmt.tprintf("$%.3f", cost)
+	return fmt.tprintf("$%.2f", cost)
+}
+
+// How much of an allowance is gone, in the colour that says so: the ramp runs
+// from spent-nothing to spent-it-all, and a meter that is only ever one colour
+// is a meter nobody reads twice.
+usage_meter_color :: proc(used: f32) -> Color {
+	if used < 0.5 do return color_mix(GREEN, ACCENT, used * 2)
+	return color_mix(ACCENT, RED, min((used - 0.5) * 2, 1))
+}
+
+// How long a window has left, short enough to sit beside its name.
+usage_until :: proc(resets: i64) -> string {
+	left := resets - time.time_to_unix(time.now())
+	if left <= 0 do return ""
+	if left < 60 * 60 do return fmt.tprintf("%dm", left / 60)
+	if left < 24 * 60 * 60 do return fmt.tprintf("%dh %dm", left / 3600, (left % 3600) / 60)
+	days, hours := left / 86400, (left % 86400) / 3600
+	if hours == 0 do return fmt.tprintf("%dd", days)
+	return fmt.tprintf("%dd %dh", days, hours)
+}
+
+USAGE_W :: f32(262)
+USAGE_H :: f32(128)
+@(private = "file")
+USAGE_PAD :: f32(14)
+@(private = "file")
+METER_H :: f32(7)
+
+// The corner. `strip` is the box along the bottom of the window — the composer
+// or the capture box — so that a window too narrow to have room beside it puts
+// this above it rather than on top of it.
+draw_usage :: proc(app: ^App, full: Rect, strip: Rect) {
+	ui := &app.ui
+
+	u := app_usage_today(app)
+	live := app_turns_live(app)
+	five := window_used(app.usage.limits.five)
+	week := window_used(app.usage.limits.week)
+
+	// Nothing spent, nothing running and no allowance read: an empty corner
+	// rather than a panel of zeroes. It eases in as the first turn starts.
+	show := app.overlay != .Launcher && (u.cost > 0 || live > 0 || five > 0 || week > 0)
+	a := ui_anim(ui, ui_id("usage"), show ? 1 : 0, 12)
+	if a < 0.01 do return
+
+	x := full.x + full.w - PAD - USAGE_W
+	y := full.y + full.h - PAD - USAGE_H
+	if strip.w > 0 && x < strip.x + strip.w + 12 do y = strip.y - 10 - USAGE_H
+	box := Rect{x, y + (1 - a) * 16, USAGE_W, USAGE_H}
+
+	// A halo rather than a brighter panel: the corner should catch the eye
+	// from across the room while a turn is running, and sit still when none
+	// is. The glow does not vary with time, so holding it costs no frames.
+	if live > 0 {
+		g := f32(44)
+		ui_quad(
+			ui,
+			{box.x - g, box.y - g, box.w + g * 2, box.h + g * 2},
+			{0, 0},
+			{1, 1},
+			color_alpha(ACCENT, 0.30 * a),
+			WHITE_TEX,
+			NO_ROUND,
+			.Glow,
+		)
+	}
+	ui_rect(ui, {box.x + 1, box.y + 5, box.w, box.h}, color_alpha(Color(0xff000000), 0.30 * a), 14)
+	ui_rect(ui, box, color_alpha(PANEL, 0.97 * a), 14)
+
+	// The figure counts up to where it lands rather than jumping there: a
+	// turn's cost arrives in one number at the end of it, and the point of
+	// the corner is to be worth glancing at while the work runs.
+	shown := f64(ui_anim(ui, ui_id("usage", 1), f32(u.cost), 7))
+	mw := ui_text(ui, &ui.bold, usage_money(shown), {box.x + USAGE_PAD, box.y + 12}, 26, color_alpha(TEXT, a))
+	// What the figure is of. A window left open overnight would otherwise say
+	// a number that quietly became yesterday's.
+	ui_text(ui, &ui.regular, "today", {box.x + USAGE_PAD + mw + 8, box.y + 22}, 11.5, color_alpha(FAINT, a))
+
+	// What is happening, or what happened: turns in flight while there are
+	// any, and the day's count of them once there are none.
+	if live > 0 {
+		label := fmt.tprintf("%d running", live)
+		pulse := 0.55 + 0.45 * (0.5 + 0.5 * math.sin(ui.time * 5))
+		ui.time_effects = true
+		DOT :: f32(7)
+		lw := font_width(&ui.regular, label, 11.5)
+		pill := Rect{box.x + box.w - USAGE_PAD - (DOT + 7 + lw + 20), box.y + 16, DOT + 7 + lw + 20, 20}
+		ui_rect(ui, pill, color_alpha(ACCENT, 0.16 * pulse * a), 10)
+		cx := pill.x + (pill.w - (DOT + 7 + lw)) / 2
+		ui_circle(ui, {cx + DOT / 2, pill.y + pill.h / 2}, DOT / 2, color_alpha(ACCENT, pulse * a))
+		ui_text_middle(ui, &ui.regular, label, cx + DOT + 7, pill, 11.5, color_alpha(ACCENT, pulse * a))
+	} else if u.turns > 0 {
+		label := fmt.tprintf("%d turn%s", u.turns, u.turns == 1 ? "" : "s")
+		lw := font_width(&ui.regular, label, 11.5)
+		ui_text(ui, &ui.regular, label, {box.x + box.w - USAGE_PAD - lw, box.y + 22}, 11.5, color_alpha(FAINT, a))
+	}
+
+	// Where it went. Cache reads are most of what a long turn sends and cost
+	// almost nothing, so they are said apart from the tokens that do.
+	line := fmt.tprintf("%s in · %s out · %s cached", usage_short(u.input), usage_short(u.output), usage_short(u.cache_read))
+	buf: [96]u8
+	line = font_ellipsize(&ui.regular, line, 11, box.w - USAGE_PAD * 2, buf[:])
+	ui_text(ui, &ui.regular, line, {box.x + USAGE_PAD, box.y + 48}, 11, color_alpha(MUTED, a))
+
+	// What is left of the plan. This is the number that actually stops work —
+	// dollars are what it cost, these are whether there is any more of it —
+	// so it gets the meters and the money gets the headline.
+	meter(app, box, 0, "5 hours", five, app.usage.limits.five.resets, live > 0, a)
+	meter(app, box, 1, "this week", week, app.usage.limits.week.resets, false, a)
+
+	// Read off the panel rather than printed on it: there is no room for the
+	// exact figures, and a copy with nothing selected takes this.
+	ui_hover_text(
+		ui,
+		box,
+		fmt.tprintf(
+			"today: $%.4f · %d in · %d out · %d cache read · %d cache write · %d turns · five hours %.0f%%, week %.0f%%",
+			u.cost,
+			u.input,
+			u.output,
+			u.cache_read,
+			u.cache_write,
+			u.turns,
+			five * 100,
+			week * 100,
+		),
+	)
+}
+
+// One allowance: what it is called and how long it has left on the left, how
+// much of it is gone on the right, and the bar under both.
+@(private = "file")
+meter :: proc(app: ^App, box: Rect, row: int, name: string, used: f32, resets: i64, sheen: bool, a: f32) {
+	ui := &app.ui
+	top := box.y + 68 + f32(row) * 30
+	col := usage_meter_color(used)
+
+	label := name
+	if left := usage_until(resets); left != "" do label = fmt.tprintf("%s · %s left", name, left)
+	ui_text(ui, &ui.regular, label, {box.x + USAGE_PAD, top}, 10.5, color_alpha(FAINT, a))
+
+	pct := fmt.tprintf("%.0f%%", used * 100)
+	pw := font_width(&ui.bold, pct, 11)
+	ui_text(ui, &ui.bold, pct, {box.x + box.w - USAGE_PAD - pw, top - 1}, 11, color_alpha(col, a))
+
+	track := Rect{box.x + USAGE_PAD, top + 16, box.w - USAGE_PAD * 2, METER_H}
+	ui_rect(ui, track, color_alpha(BORDER, 0.55 * a), METER_H / 2)
+	// The fill grows into place, and a reading that has just landed is worth
+	// watching arrive. An allowance barely touched still shows a stub, so the
+	// meter reads as a meter rather than as an empty slot.
+	grown := ui_anim(ui, ui_id("usage-meter", row), used, 9)
+	if grown <= 0 do return
+	fill := Rect{track.x, track.y, max(track.w * grown, METER_H), track.h}
+	ui_rect(ui, fill, color_alpha(col, a), METER_H / 2)
+	// The sheen travels along the five hour meter while a turn is running: it
+	// is the one thing here that is moving while you watch it.
+	if sheen {
+		ui_quad(ui, fill, {0, 0}, {1, 1}, color_alpha(col, 0.9 * a), WHITE_TEX, METER_H / 2, .Sheen)
+		ui.time_effects = true
+	}
+}
