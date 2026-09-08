@@ -662,11 +662,11 @@ app_drop_todo :: proc(app: ^App, id: string) {
 // Everything typed into the box under the grid: a card for each of the things
 // said in it, and a thread each.
 //
-// Where one item stops and the next begins is worked out from what was
-// written — a line, a bullet, a numbered point, a sentence. Each part is its
-// own conversation, so a card can be opened, stopped and dismissed without
-// dragging the ones typed beside it along: they used to share one thread, and
-// sharing it was what made every one of those a special case.
+// Where one item stops and the next begins is a `*` and nothing else, so a
+// job written out at length is one card. Each part is its own conversation,
+// so a card can be opened, stopped and dismissed without dragging the ones
+// typed beside it along: they used to share one thread, and sharing it was
+// what made every one of those a special case.
 app_capture :: proc(app: ^App) {
 	text := strings.trim_space(editor_text(&app.capture))
 	if text == "" do return

@@ -234,7 +234,7 @@ capture_makes_a_thread_a_part :: proc(t: ^testing.T) {
 	app := scratch_app()
 	defer scratch_free(app)
 
-	editor_set_text(&app.capture, "fix the caret\nrebake the atlas\nship it")
+	editor_set_text(&app.capture, "fix the caret * rebake the atlas * ship it")
 	app_capture(app)
 
 	testing.expect_value(t, len(app.todos.list), 3)
@@ -264,7 +264,7 @@ dismissing_a_card_leaves_the_rest :: proc(t: ^testing.T) {
 	app := scratch_app()
 	defer scratch_free(app)
 
-	editor_set_text(&app.capture, "one\ntwo")
+	editor_set_text(&app.capture, "one * two")
 	app_capture(app)
 	testing.expect_value(t, app_turns_live(app), 2)
 	first := turn_for_todo(app, app.todos.list[0].id)
@@ -603,7 +603,7 @@ dismissing_the_last_card_stops_its_turn :: proc(t: ^testing.T) {
 	defer scratch_free(app)
 	app.cwd = strings.clone("/tmp")
 
-	editor_set_text(&app.capture, "one\ntwo")
+	editor_set_text(&app.capture, "one * two")
 	app_capture(app)
 
 	// One of two: the other card's turn is its own and carries on.

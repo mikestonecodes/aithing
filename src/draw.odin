@@ -174,12 +174,11 @@ draw_capture :: proc(app: ^App, full: Rect) {
 	}
 	draw_editor(app, &app.capture, text_r, &ui.regular, CAPTURE_PX, focused, CAPTURE_LINES)
 
-	// What Enter will do with what is in the box. Where the split falls is
-	// read off the text rather than being a rule the writer has to keep to,
-	// so the only way to know a full stop just made a second card — and a
-	// second thread with it — is to be told before pressing Enter. It went
-	// away with the line above the box, and taking it away made the split
-	// look broken: two cards appeared out of one line with no warning.
+	// What Enter will do with what is in the box. A `*` is the only thing
+	// that makes a second card — and a second thread with it — and the count
+	// is what says the one just typed was read as one. It went away with the
+	// line above the box, and taking it away made the split look broken:
+	// cards appeared out of one line with no warning.
 	note := ""
 	if strings.trim_space(editor_text(&app.capture)) != "" {
 		n := len(todos_split(editor_text(&app.capture)))
