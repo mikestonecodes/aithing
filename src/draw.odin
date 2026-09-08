@@ -79,6 +79,10 @@ draw_app :: proc(app: ^App) {
 			cw := composer_width(full.w)
 			strip = {full.x + (full.w - cw) / 2, full.y + full.h - ch, cw, ch}
 		}
+		// Bottom left, clear of the capture box in the middle and of the
+		// usage corner on the right.
+		bottom := strip.h > 0 ? strip.y - 24 : full.y + full.h - PAD - 18
+		draw_status(app, {full.x + PAD, bottom, full.w / 2 - PAD, 16})
 	}
 	draw_usage(app, full, strip)
 	draw_launcher(app, full)
@@ -750,12 +754,24 @@ draw_composer :: proc(app: ^App, r: Rect) {
 	}
 	// The strip that used to carry the status is gone, so it says its piece
 	// down here instead, out of the way of the text.
-	if app.status != "" && app.status != "ready" {
-		buf: [128]u8
-		room := box.w - 220 - (app_chat_busy(app) ? 66 : 0)
-		msg := font_ellipsize(&ui.regular, app.status, 13, room, buf[:])
-		ui_text(ui, &ui.regular, msg, {box.x + 14 + (app_chat_busy(app) ? 66 : 0), chip_y + 3}, 13, FAINT)
-	}
+	left := f32(14) + (app_chat_busy(app) ? 66 : 0)
+	draw_status(app, {box.x + left, chip_y + 3, box.w - 220 - left, 16})
+}
+
+// What the window has to say for itself, wherever it is standing. This used
+// to be drawn inside the composer and nowhere else, so it existed only on the
+// thread page — and the grid is where you sit while cards run, which meant
+// "built — restart to pick it up" was said to an empty room. Every landing
+// note, every push that was refused and every finished build announced itself
+// somewhere nobody was looking, which is most of what "nothing ever seems to
+// happen" was.
+draw_status :: proc(app: ^App, at: Rect) {
+	if app.status == "" || app.status == "ready" do return
+	if at.w < 40 do return
+	ui := &app.ui
+	buf: [128]u8
+	msg := font_ellipsize(&ui.regular, app.status, 13, at.w, buf[:])
+	ui_text(ui, &ui.regular, msg, {at.x, at.y}, 13, FAINT)
 }
 
 // The picker itself: rows stacked above the chip that opened it. Both chips
