@@ -1330,6 +1330,75 @@ a_finished_card_gives_its_tree_back :: proc(t: ^testing.T) {
 	testing.expect(t, os.exists(open_tree), "a card still working lost its tree")
 }
 
+// --- and out ------------------------------------------------------------------
+
+// Landing used to end at the merge, which is a branch on one machine. This is
+// the half that was missing: a finished card's work reaches the remote without
+// anyone asking it to, and a project with no remote says nothing rather than
+// putting a failure on a card that did everything right.
+@(test)
+a_landed_card_goes_out_to_the_remote :: proc(t: ^testing.T) {
+	scratch_dir(t)
+	remote := "/tmp/aithing-test-remote.git"
+	repo := "/tmp/aithing-test-push"
+	alone := "/tmp/aithing-test-alone"
+	if !testing.expect(t, run(t, "rm", "-rf", remote, repo, alone), "could not clear the scratch dirs") {
+		return
+	}
+	os.make_directory_all(remote)
+	os.make_directory_all(repo)
+	os.make_directory_all(alone)
+	made :=
+		run(t, "git", "-C", remote, "init", "-q", "--bare") &&
+		run(t, "git", "-C", repo, "init", "-q") &&
+		run(t, "git", "-C", repo, "config", "user.email", "test@example.com") &&
+		run(t, "git", "-C", repo, "config", "user.name", "test") &&
+		os.write_entire_file(join(repo, "f"), "a") == nil &&
+		run(t, "git", "-C", repo, "add", "f") &&
+		run(t, "git", "-C", repo, "commit", "-qm", "one") &&
+		run(t, "git", "-C", repo, "remote", "add", "origin", remote)
+	if !testing.expect(t, made, "git is needed for this one") do return
+
+	testing.expect_value(t, worktree_push(repo), "")
+	head, _ := git_head(t, repo)
+	there, ok := git_head(t, remote)
+	testing.expect(t, ok, "the remote has no branch at all")
+	testing.expect_value(t, there, head)
+
+	// A second landing pushes what the first one did not — the branch carries
+	// every commit on it, which is why one push in flight can swallow the
+	// landing that arrived behind it.
+	_ = os.write_entire_file(join(repo, "g"), "b")
+	run(t, "git", "-C", repo, "add", "g")
+	run(t, "git", "-C", repo, "commit", "-qm", "two")
+	testing.expect_value(t, worktree_push(repo), "")
+	head2, _ := git_head(t, repo)
+	there2, _ := git_head(t, remote)
+	testing.expect_value(t, there2, head2)
+
+	// Nowhere to send it is not a failure. Plenty of what this runs on never
+	// leaves the machine, and a note on every card about it would be noise.
+	nothing :=
+		run(t, "git", "-C", alone, "init", "-q") &&
+		run(t, "git", "-C", alone, "config", "user.email", "test@example.com") &&
+		run(t, "git", "-C", alone, "config", "user.name", "test") &&
+		os.write_entire_file(join(alone, "f"), "a") == nil &&
+		run(t, "git", "-C", alone, "add", "f") &&
+		run(t, "git", "-C", alone, "commit", "-qm", "one")
+	if !testing.expect(t, nothing, "git is needed for this one") do return
+	testing.expect_value(t, worktree_push(alone), "")
+}
+
+@(private = "file")
+git_head :: proc(t: ^testing.T, dir: string) -> (sha: string, ok: bool) {
+	state, out, _, err := os.process_exec(
+		{command = {"git", "-C", dir, "rev-parse", "HEAD"}, working_dir = "/tmp"},
+		context.temp_allocator,
+	)
+	if err != nil || !state.exited || state.exit_code != 0 do return "", false
+	return strings.trim_space(string(out)), true
+}
+
 @(private = "file")
 join :: proc(dir, name: string) -> string {
 	return strings.concatenate({dir, "/", name}, context.temp_allocator)

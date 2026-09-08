@@ -12,7 +12,14 @@ import "core:testing"
 
 @(private = "file")
 usage_app :: proc() -> ^App {
-	dir := "/tmp/aithing-usage-test"
+	// The same directory every other test points AITHING_CONFIG at, and that
+	// is the whole reason it is written here rather than a path of its own.
+	// The variable is the process's, not the test's, and the runner runs on
+	// thirty-two threads: a test with a directory of its own is a test that
+	// moves the config out from under whatever is reading it at that moment.
+	// This is what made `effort_is_medium_until_it_is_picked` save a level
+	// into one directory and read it back out of another.
+	dir := "/tmp/aithing-test-config"
 	os.make_directory_all(dir)
 	_ = os.set_env("AITHING_CONFIG", dir)
 	app := new(App)

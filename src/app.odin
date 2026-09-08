@@ -1247,6 +1247,8 @@ app_land_worktree :: proc(app: ^App, t: ^Turn) {
 	// the source it changed is not the source this binary came from. Nothing
 	// is taken over — see build.odin.
 	build_start(app, t.project)
+	// And out, so a card that is done is done everywhere and not just here.
+	push_start(app, t.project)
 }
 
 // What a turn is given when the merge is the work. Its own thread, resumed:

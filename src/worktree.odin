@@ -245,6 +245,30 @@ worktree_head :: proc(path: string) -> (branch: string, ok: bool) {
 	return name, name != ""
 }
 
+// Where the work goes once it has landed. Landing used to end at the merge
+// into the project's branch, which is a branch on one machine: `main` sat
+// fourteen commits ahead of the remote with nothing said about it, and a card
+// whose work was finished, merged and invisible to everyone else read as a
+// card that had not been done. So the landing pushes.
+//
+// A repository with no remote is silence, not a failure — plenty of what this
+// runs on is local-only, and a note about it on every card would be noise. So
+// is a detached HEAD: there is no branch name to push. Anything else is git's
+// own sentence about why, which is the only thing worth saying about a push
+// that was refused.
+worktree_push :: proc(project: string) -> (why: string) {
+	ok, remotes := git_out(project, {"remote"})
+	if !ok do return ""
+	names := strings.fields(remotes, context.temp_allocator)
+	if len(names) == 0 do return ""
+	branch, on_one := worktree_head(project)
+	if !on_one do return ""
+	if pushed, msg := git(project, {"push", names[0], branch}); !pushed {
+		return one_line(msg != "" ? msg : "the push was refused", 160)
+	}
+	return ""
+}
+
 // Gives a card's tree back. What is worth keeping is git's call, not ours:
 // the remove is the plain one, so a tree with anything modified or untracked
 // in it stays, and the branch delete is `-d`, so a branch carrying commits
