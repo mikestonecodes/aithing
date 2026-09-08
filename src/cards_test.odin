@@ -458,6 +458,45 @@ launcher_narrows_and_esc_widens :: proc(t: ^testing.T) {
 	testing.expect_value(t, len(app_visible(app)), 2)
 }
 
+// `/` on a grid that has been narrowed to nothing offers the projects before
+// anything else, with nothing typed. It used to offer only threads until a
+// query was typed, which is the one thing the grid behind the menu is already
+// showing.
+@(test)
+launcher_opens_on_the_projects :: proc(t: ^testing.T) {
+	scratch_dir(t)
+	app := scratch_app()
+	defer scratch_free(app)
+	sessions := make([]Session, 3)
+	sessions[0] = fake_session("a1", "one")
+	sessions[1] = fake_session("b1", "two")
+	sessions[1].cwd = "/tmp/other"
+	sessions[2] = fake_session("c1", "three") // same project as a1
+	app.sessions = sessions
+	app_filter(app)
+
+	hits := launcher_hits(app, "")
+	testing.expect(t, len(hits) >= 3)
+	// One row a project, newest first, and the second of a project's threads
+	// counts towards the row rather than making another.
+	testing.expect_value(t, hits[0].session, -1)
+	testing.expect_value(t, hits[0].name, "proj")
+	testing.expect_value(t, hits[0].count, 2)
+	testing.expect_value(t, hits[1].session, -1)
+	testing.expect_value(t, hits[1].name, "other")
+	// Then the threads.
+	testing.expect(t, hits[2].session >= 0)
+
+	// Narrowed, the project you are in is not offered again: the row that
+	// widens it is what the top of the menu is for.
+	canvas_filter_project(app, "/tmp/proj")
+	hits = launcher_hits(app, "")
+	testing.expect_value(t, hits[0].name, "all projects")
+	for hit in hits {
+		testing.expect(t, !(hit.session < 0 && hit.cwd == "/tmp/proj"))
+	}
+}
+
 // A card whose thread the last scan knew nothing about — one this window made
 // itself a moment ago — still opens when it is clicked. The click used to be
 // thrown away, and clicking the card again did nothing either.
