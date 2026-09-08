@@ -1,6 +1,5 @@
 package aithing
 
-import "core:fmt"
 import "core:math"
 import "core:path/filepath"
 import "core:strings"
@@ -16,8 +15,10 @@ import "core:strings"
 //
 // The keyboard drives it. Typing goes into the box along the bottom, and what
 // is typed there becomes a card a part. `/` opens the launcher, a full-screen
-// menu in type big enough to read across the room: type to narrow, arrows to
-// choose, Enter to open a thread or to filter the grid down to one project.
+// menu in type big enough to read across the room: the projects first,
+// whether or not anything is typed, then the threads. Type to narrow, arrows
+// to choose, Enter to open a thread or to filter the grid down to one
+// project.
 
 CARD_W :: f32(300) // the width a card wants; the row stretches to fill
 CARD_H :: f32(132)
@@ -32,7 +33,6 @@ Card :: struct {
 	r:     Rect, // in content space: add the scroll offset to place it
 	head:  bool, // a section header rather than a card
 	name:  string, // the project, on a header
-	count: int,
 }
 
 Canvas :: struct {
@@ -81,7 +81,7 @@ grid_layout :: proc(app: ^App, r: Rect) -> f32 {
 	sections, _ := app_view_projects(app)
 
 	y := f32(0)
-	head, col, n := -1, 0, 0
+	col := 0
 	cwd := ""
 	for at in app.todo_view {
 		if at >= len(app.todos.list) do continue
@@ -90,20 +90,17 @@ grid_layout :: proc(app: ^App, r: Rect) -> f32 {
 			// Close the section before it off.
 			if cwd != "" {
 				if col != 0 do y += CARD_H + CARD_GAP
-				if head >= 0 do c.cards[head].count = n
 				y += SECTION_GAP
 			}
 			cwd = td.cwd
-			col, n, head = 0, 0, -1
+			col = 0
 			if sections > 1 {
-				head = len(c.cards)
 				append(&c.cards, Card{head = true, name = filepath.base(cwd), r = {GRID_PAD, y, inner, SECTION_HEAD}})
 				y += SECTION_HEAD
 			}
 		}
 		x := GRID_PAD + f32(col) * (cw + CARD_GAP)
 		append(&c.cards, Card{todo = at, r = {x, y, cw, CARD_H}})
-		n += 1
 		col += 1
 		if col == cols {
 			col = 0
@@ -112,7 +109,6 @@ grid_layout :: proc(app: ^App, r: Rect) -> f32 {
 	}
 	if cwd != "" {
 		if col != 0 do y += CARD_H + CARD_GAP
-		if head >= 0 do c.cards[head].count = n
 		y += SECTION_GAP
 	}
 	return y + GRID_PAD
@@ -186,8 +182,7 @@ draw_canvas :: proc(app: ^App, r: Rect) {
 @(private = "file")
 draw_section_head :: proc(app: ^App, card: Card, r: Rect) {
 	ui := &app.ui
-	x := ui_text(ui, &ui.bold, card.name, {r.x, r.y + 14}, 22, TEXT) + 12
-	ui_text(ui, &ui.regular, fmt.tprintf("%d", card.count), {r.x + x, r.y + 20}, 15, FAINT)
+	ui_text(ui, &ui.bold, card.name, {r.x, r.y + 14}, 22, TEXT)
 	ui_rect(ui, {r.x, r.y + r.h - 9, r.w, 1}, color_alpha(BORDER, 0.7))
 }
 
@@ -225,7 +220,11 @@ draw_card :: proc(app: ^App, card: Card, r: Rect) {
 	if current do ui_rect(ui, {r.x, r.y + 12, 3, r.h - 24}, ACCENT, 2)
 	// Work that came back clean is work you are done with: it stays on the
 	// map, drawn back, rather than shouting alongside what is still open.
-	if state == .Done do ui_rect(ui, r, color_alpha(BG, 0.28), 12)
+	// A card that is finished sits back, whether its work is still on its own
+	// branch or already in the project. Both are done as far as the grid is
+	// concerned; the chip is where the difference is said.
+	settled := state == .Done || state == .Merged
+	if settled do ui_rect(ui, r, color_alpha(BG, 0.28), 12)
 
 	tx := r.x + pad
 	ty := r.y + pad
@@ -243,7 +242,7 @@ draw_card :: proc(app: ^App, card: Card, r: Rect) {
 	// with nothing selected takes, because a card is not something that can be
 	// selected in the first place.
 	ui_hover_text(ui, r, td.text)
-	ty += draw_wrapped(ui, &ui.bold, td.text, tx, ty, tw - corner - 10, 15, state == .Done ? MUTED : TEXT, 3)
+	ty += draw_wrapped(ui, &ui.bold, td.text, tx, ty, tw - corner - 10, 15, settled ? MUTED : TEXT, 3)
 
 	// Where the work stands, in the word for it. A turn in flight pulses,
 	// whether it was started here or in another window. There used to be a

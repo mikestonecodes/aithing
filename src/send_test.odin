@@ -9,7 +9,7 @@ import "core:testing"
 // noticed; and now sent, on the spot, like every other message.
 
 @(private = "file")
-stub_spawn :: proc(r: ^Runner, cwd, session_id, prompt, model: string, slot: int) -> bool {
+stub_spawn :: proc(r: ^Runner, cwd, session_id, prompt, model, effort: string, slot: int) -> bool {
 	r.running = true
 	return true
 }

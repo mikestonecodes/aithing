@@ -50,6 +50,17 @@ Todo_State :: enum {
 	Done,
 	Failed,
 	Asked, // the turn ended without the work being finished
+	// The work is in the project. Written by the landing and by nothing else,
+	// which is what makes it a fact rather than an opinion: the one procedure
+	// that merges a card's branch is the one procedure that says so. A card
+	// that says complete and nothing more is a card whose work is still on a
+	// branch of its own — which used to be indistinguishable from one that
+	// had been merged, and was the whole of the confusion.
+	//
+	// Last in the enum on purpose: the state is written to the todos file as
+	// its number, so anything added in the middle would silently rename every
+	// card already on disk.
+	Merged,
 }
 
 Todo :: struct {
@@ -358,50 +369,30 @@ todo_matches :: proc(td: Todo, query: string) -> bool {
 
 // --- typing a list ----------------------------------------------------------
 
-// What was typed, cut into parts: a line each, with a bullet or a number in
-// front of it taken off, and a long line cut again at its full stops. One
-// part is one card and one conversation.
+// What was typed, cut into parts: a `*` is where one part ends and the next
+// begins, and nothing else is. One part is one card and one conversation.
 //
-// A sentence is a part because that is how the box gets written into. Nobody
-// types a newline between "fix the caret" and "then rebake the atlas" — they
-// type a full stop, and a grid that answered a typed list with one card was
-// the thing that made the box feel like it had not heard. The cut only counts
-// when a space follows the stop, so `1.2` and a version number stay whole.
+// The cut used to be read out of the writing — a line, a bullet, a number, a
+// full stop — and that got the ordinary case backwards. A job described in
+// two sentences, or in a paragraph with a line break in it, came back as four
+// cards and four threads, and there was no way to say the sentence belonged
+// with the one before it: the box looked like it had misheard every time
+// anyone wrote more than a few words. So the cut is a character nobody types
+// by accident, and everything else stays in the part it was written in.
+//
+// The spaces and newlines around a `*` are only there to break the text up on
+// screen, so they come off and nothing has to be typed a particular way.
 todos_split :: proc(text: string, allocator := context.temp_allocator) -> []string {
 	out := make([dynamic]string, allocator)
-	body := text
-	for raw in strings.split_lines_iterator(&body) {
-		line := strings.trim_space(raw)
-		line = strings.trim_left(line, "-*• \t")
-		// `1.` and `2)` at the head of a line are a list too.
-		digits := 0
-		for digits < len(line) && line[digits] >= '0' && line[digits] <= '9' do digits += 1
-		if digits > 0 && digits < len(line) && (line[digits] == '.' || line[digits] == ')') {
-			line = strings.trim_space(line[digits + 1:])
-		}
-		if line == "" do continue
-		// One long line with sentences in it is a list as well.
-		rest := line
-		for rest != "" {
-			cut := -1
-			for i in 0 ..< len(rest) {
-				if rest[i] != '.' && rest[i] != ';' do continue
-				// A stop with anything but a space after it is inside a
-				// word — a version, a file name, a decimal — not the end
-				// of a sentence.
-				if i + 1 < len(rest) && rest[i + 1] != ' ' do continue
-				cut = i
-				break
-			}
-			if cut < 0 {
-				append(&out, strings.trim_space(rest))
-				break
-			}
-			piece := strings.trim_space(rest[:cut])
-			if piece != "" do append(&out, piece)
-			rest = strings.trim_space(rest[cut + 1:])
-		}
+	rest := text
+	for {
+		cut := strings.index_byte(rest, '*')
+		if cut < 0 do break
+		piece := strings.trim_space(rest[:cut])
+		if piece != "" do append(&out, piece)
+		rest = rest[cut + 1:]
 	}
+	if last := strings.trim_space(rest); last != "" do append(&out, last)
 	return out[:]
 }
 
@@ -413,6 +404,8 @@ todo_state_label :: proc(state: Todo_State) -> string {
 		return "processing"
 	case .Done:
 		return "complete"
+	case .Merged:
+		return "merged"
 	case .Failed:
 		return "failed"
 	case .Asked:
@@ -427,8 +420,13 @@ todo_state_color :: proc(state: Todo_State) -> Color {
 	switch state {
 	case .Running:
 		return ACCENT
-	case .Done:
+	case .Merged:
 		return GREEN
+	case .Done:
+		// Finished, but still on a branch of its own — the same green with
+		// the confidence taken out of it, because the work is not where
+		// anyone else can see it yet.
+		return color_mix(GREEN, MUTED, 0.5)
 	case .Failed:
 		return RED
 	case .Asked:

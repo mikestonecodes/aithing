@@ -26,6 +26,7 @@ Ev_Kind :: enum {
 	Tool_Result,
 	Tool_Input, // the tool call's finished input, once it parses
 	Verdict, // the agent's own word on whether the work is finished
+	Limits, // how much of the plan's allowance is gone: see usage.odin
 	Done,
 	Failed,
 }
@@ -34,6 +35,7 @@ Event :: struct {
 	kind:       Ev_Kind,
 	block_kind: Block_Kind,
 	verdict:    Verdict,
+	limits:     Limits,
 	index:      int,
 	text:       string, // owned by the event; the UI frees it after applying
 	name:       string,
@@ -83,6 +85,44 @@ model_parse :: proc(name: string) -> (m: Model, ok: bool) {
 	return MODEL_DEFAULT, false
 }
 
+// How hard the next turn thinks. The same choice the harness calls effort,
+// and the same five words it takes on --effort, so nothing here has to map
+// one vocabulary onto another.
+Effort :: enum {
+	Low,
+	Medium,
+	High,
+	Xhigh,
+	Max,
+}
+
+// What goes on the CLI's --effort, and what the saved choice and our own
+// --effort read back.
+effort_flag := [Effort]string {
+	.Low    = "low",
+	.Medium = "medium",
+	.High   = "high",
+	.Xhigh  = "xhigh",
+	.Max    = "max",
+}
+
+effort_label := [Effort]string {
+	.Low    = "Low",
+	.Medium = "Medium",
+	.High   = "High",
+	.Xhigh  = "Xhigh",
+	.Max    = "Max",
+}
+
+// Medium is what the harness itself would have picked, so a window that has
+// never been told otherwise runs turns exactly as `claude` would.
+EFFORT_DEFAULT :: Effort.Medium
+
+effort_parse :: proc(name: string) -> (e: Effort, ok: bool) {
+	for c in Effort do if effort_flag[c] == name do return c, true
+	return EFFORT_DEFAULT, false
+}
+
 Runner :: struct {
 	mu:      sync.Mutex,
 	events:  [dynamic]Event,
@@ -99,7 +139,6 @@ Runner :: struct {
 	worker:  ^thread.Thread,
 	out_r:   ^os.File,
 	err_path: string,
-	cost:    f64,
 }
 
 runner_busy :: proc(r: ^Runner) -> bool {
@@ -116,6 +155,10 @@ runner_settled :: proc(r: ^Runner) -> bool {
 	return !r.running && len(r.events) == 0
 }
 
+// The one run that is not a turn: the probe that asks what is left of the
+// plan, which needs a stderr file of its own rather than turn zero's.
+PROBE_SLOT :: -1
+
 // Starts a turn. `session_id` empty means a brand new session.
 // `slot` only names the file this turn's stderr goes to. Turns run several at
 // a time and they all used to write one `last-stderr.log`, each truncating it
@@ -127,6 +170,7 @@ runner_start :: proc(
 	session_id: string,
 	prompt: string,
 	model: string = "",
+	effort: string = "",
 	slot := 0,
 ) -> bool {
 	if runner_busy(r) do return false
@@ -135,6 +179,7 @@ runner_start :: proc(
 	append(&args, "claude", "-p", prompt)
 	append(&args, "--output-format", "stream-json", "--include-partial-messages", "--verbose")
 	if model != "" do append(&args, "--model", model)
+	if effort != "" do append(&args, "--effort", effort)
 	if session_id != "" do append(&args, "--resume", session_id)
 
 	out_r, out_w, pipe_err := os.pipe()
@@ -145,7 +190,7 @@ runner_start :: proc(
 
 	// stderr goes to a file rather than a second pipe: nothing reads it until
 	// the process is gone, and a pipe nobody drains would eventually wedge.
-	err_path := cache_path(fmt.tprintf("turn-%d-stderr.log", slot))
+	err_path := cache_path(slot == PROBE_SLOT ? "probe-stderr.log" : fmt.tprintf("turn-%d-stderr.log", slot))
 	err_file, err_open := os.open(err_path, {.Write, .Create, .Trunc})
 	if err_open != nil do err_file = nil
 
@@ -410,14 +455,36 @@ runner_line :: proc(r: ^Runner, line: string) {
 			})
 		}
 
-	case "result":
-		if cost, ok := jobj(v, "total_cost_usd"); ok {
-			if f, is_f := cost.(json.Float); is_f {
-				sync.mutex_lock(&r.mu)
-				r.cost += f64(f)
-				sync.mutex_unlock(&r.mu)
-			}
+	case "rate_limit_event":
+		// The account's own answer, not this turn's: what is left of the five
+		// hour window and of the week, which is what `/usage` reports. Any
+		// turn's stream carries it, so the newest reading is the whole of it
+		// — and it goes out as an event rather than being kept here, because
+		// a runner is thrown away with its slot and this outlives every turn.
+		info, ok := jobj(v, "rate_limit_info")
+		if !ok do return
+		windows, has_windows := jobj(info, "unifiedWindows")
+		if !has_windows do return
+		lim: Limits
+		if w, has := jobj(windows, "five_hour"); has {
+			lim.session = {util = f32(jnum(w, "utilization")), resets = i64(jint(w, "resetsAt"))}
 		}
+		if w, has := jobj(windows, "seven_day"); has {
+			lim.week = {util = f32(jnum(w, "utilization")), resets = i64(jint(w, "resetsAt"))}
+		}
+		// Fable's own week, under the name the harness gives it. It is only on
+		// the record when the turn reading it is running on Fable — the other
+		// models are not charged against it and are not told about it — which
+		// is why the reading is merged window by window rather than assigned.
+		if w, has := jobj(windows, "seven_day_overage_included"); has {
+			lim.fable = {util = f32(jnum(w, "utilization")), resets = i64(jint(w, "resetsAt"))}
+		}
+		runner_emit(r, Event{kind = .Limits, limits = lim})
+
+	case "result":
+		// `total_cost_usd` and the token counts are on this record and are
+		// read by nobody: on a subscription the price is never charged, and
+		// what the corner says is what is left of the windows. See usage.odin.
 		// Written down, not reported. A turn that says `error_during_execution`
 		// and then picks itself back up and finishes is a turn that finished
 		// — and reporting the first of those ended the card two minutes
@@ -430,6 +497,21 @@ runner_line :: proc(r: ^Runner, line: string) {
 		r.result = strings.clone(sub == "success" ? "" : sub)
 		sync.mutex_unlock(&r.mu)
 	}
+}
+
+// A number that may have come back as either shape, as a float. The
+// utilizations are fractions and arrive as floats; a zero one arrives as an
+// integer.
+jnum :: proc(v: json.Value, key: string) -> f64 {
+	val, ok := jobj(v, key)
+	if !ok do return 0
+	#partial switch n in val {
+	case json.Float:
+		return f64(n)
+	case json.Integer:
+		return f64(n)
+	}
+	return 0
 }
 
 jint :: proc(v: json.Value, key: string) -> int {

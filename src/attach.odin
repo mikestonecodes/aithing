@@ -19,6 +19,14 @@ Attachment :: struct {
 }
 
 cache_dir :: proc(allocator := context.temp_allocator) -> string {
+	// AITHING_CACHE points the lot somewhere else, the way AITHING_CONFIG
+	// does for the saved state: the worktree tests make and remove real
+	// checkouts, and a test run must not go anywhere near the trees the
+	// window someone is using has work in.
+	if dir := os.get_env("AITHING_CACHE", context.temp_allocator); dir != "" {
+		os.make_directory_all(dir)
+		return strings.clone(dir, allocator)
+	}
 	home := os.get_env("HOME", context.temp_allocator)
 	dir, _ := filepath.join({home, ".cache", "aithing"}, allocator)
 	os.make_directory_all(dir)

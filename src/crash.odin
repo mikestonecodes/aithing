@@ -8,7 +8,7 @@ import "core:sys/posix"
 // The other half of the watchdog. A freeze reports the phase it stopped in; a
 // crash should report the stack it stopped on. A window that simply disappears
 // is the worst bug report there is — the terminal it was started from has
-// usually scrolled away, and under auto reload there may not have been one.
+// usually scrolled away, and started from the desktop file there is none.
 //
 // So every fatal signal writes a backtrace to ~/.cache/aithing/crash.log and
 // then lets the default handler finish the job. Everything below runs inside a
@@ -26,8 +26,8 @@ foreign libc {
 @(private = "file")
 g_crash_fd: c.int = -1
 
-// Appends rather than truncating: a crash is worth more than the run that
-// comes after it, and the next run starts within seconds under auto reload.
+// Appends rather than truncating: a crash is worth keeping across the runs
+// that come after it.
 crash_report_install :: proc() {
 	path := cache_path("crash.log", context.temp_allocator)
 	f, err := os.open(path, {.Write, .Create, .Append})
@@ -44,6 +44,15 @@ crash_report_install :: proc() {
 	for sig in ([?]posix.Signal{.SIGSEGV, .SIGBUS, .SIGILL, .SIGFPE, .SIGABRT}) {
 		posix.sigaction(sig, &act, nil)
 	}
+
+	// The one death this file could not report, because it is not a fault:
+	// a write to a pipe nobody is reading kills the process outright, and
+	// there is nothing to take a backtrace of. Every pipe here is somebody
+	// else's end of a conversation — a clipboard peer that gave up waiting,
+	// a `claude` that exited mid-stream — and none of them is a reason for
+	// the window to disappear. Ignored, so the write fails as EPIPE where it
+	// happens and the caller deals with it.
+	posix.sigignore(.SIGPIPE)
 }
 
 // For the deaths that are not signals. A Vulkan call that fails takes the

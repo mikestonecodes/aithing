@@ -160,6 +160,7 @@ shot_build :: proc(app: ^App, scene: Scene) {
 	app.cwd = PROJ
 	app.status = "ready"
 	app.model = .Sonnet
+	app.effort = EFFORT_DEFAULT
 	app.stick = true
 	app.scanned = true // otherwise an empty grid says it is still reading
 	app.scan_at = time.now()
@@ -172,8 +173,8 @@ shot_build :: proc(app: ^App, scene: Scene) {
 	// same on any day.
 	shot_card(app, OTHER, "snapshot every turn by build id", .Done, "s-6", 30 * time.Hour)
 	shot_card(app, OTHER, "the timeline scrubs past the last build", .Open, "", 26 * time.Hour)
-	asked := shot_card(app, PROJ, "hot reload keeps what is in the composer", .Asked, "s-5", 5 * time.Hour)
-	shot_card(app, PROJ, "one variable per question, across the canvas", .Done, "s-4", 3 * time.Hour)
+	asked := shot_card(app, PROJ, "the composer keeps what is half-typed", .Asked, "s-5", 5 * time.Hour)
+	shot_card(app, PROJ, "one variable per question, across the canvas", .Merged, "s-4", 3 * time.Hour)
 	failed := shot_card(app, PROJ, "backspace types a 1 on the second keymap", .Failed, "s-3", 40 * time.Minute)
 	running := shot_card(app, PROJ, "measure the grid at a thousand cards", .Running, "s-2", 2 * time.Minute)
 	shot_card(app, PROJ, "the composer eats the first character after a paste", .Open, "s-1", 4 * time.Minute)
@@ -198,11 +199,21 @@ shot_build :: proc(app: ^App, scene: Scene) {
 	}
 	t.runner.running = true
 
+	// An allowance part spent, so the corner has something to say. Fixed
+	// against a reset an hour and a day out, so it reads the same on any
+	// afternoon.
+	now := time.time_to_unix(time.now())
+	app.usage.limits = Limits {
+		session = {util = 0.41, resets = now + 2 * 60 * 60 + 40 * 60},
+		week    = {util = 0.68, resets = now + 3 * 24 * 60 * 60},
+		fable   = {util = 0.83, resets = now + 3 * 24 * 60 * 60},
+	}
+
 	switch scene {
 	case .Grid:
 	case .Project:
 		app.canvas.project = PROJ
-		editor_set_text(&app.capture, "split the grid measurement out of the frame\ncheck it at 1200 sessions")
+		editor_set_text(&app.capture, "split the grid measurement out of the frame\n*\ncheck it at 1200 sessions")
 	case .Thread:
 		app.canvas.project = PROJ
 		app.page = .Thread
@@ -224,7 +235,7 @@ shot_sessions :: proc() -> []Session {
 		{"s-1", "the composer eats the first character", PROJ, 4, 3},
 		{"s-3", "backspace types a 1", PROJ, 40, 9},
 		{"s-4", "one variable per question", PROJ, 180, 22},
-		{"s-5", "hot reload and the composer", PROJ, 300, 11},
+		{"s-5", "the composer draft", PROJ, 300, 11},
 		{"s-6", "snapshot every turn by build id", OTHER, 1800, 14},
 	}
 	out := make([]Session, len(rows))
