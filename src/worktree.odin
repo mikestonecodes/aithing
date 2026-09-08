@@ -123,7 +123,13 @@ worktree_for :: proc(project, id: string, allocator := context.allocator) -> (di
 worktree_land :: proc(project, id, subject: string) -> (why: string, conflicted: bool) {
 	if project == "" || id == "" do return "", false
 	path := worktree_path(project, id)
-	if !os.exists(path) do return "", false
+	// A card whose tree has already gone. This used to answer "landed" for
+	// one and do nothing, which is how a finished card ended up with its work
+	// on a branch nobody would ever merge: the sweep takes the tree of every
+	// finished card as the window opens, so by the time anything asked to
+	// land it there was no tree to land from, and the branch was the only
+	// record left that the work existed at all.
+	if !os.exists(path) do return worktree_land_treeless(project, id), false
 	branch := worktree_branch(id)
 
 	// A tree already mid-merge is a tree something has already had a go at
@@ -170,6 +176,35 @@ worktree_land :: proc(project, id, subject: string) -> (why: string, conflicted:
 		return one_line(msg != "" ? msg : "the merge would not start", 160), false
 	}
 	return worktree_fast_forward(project, branch), false
+}
+
+// Landing what is left of a card once its tree has gone: the branch, and
+// nothing else. There is nowhere to bring the project's branch into, so the
+// merge happens the other way round, in the project itself — and a conflict
+// there is put straight back, because the project's working tree is the one
+// somebody has open, not a checkout made for a card. A card that conflicts
+// this way keeps its branch and says so; the work is not lost, it is just not
+// in yet.
+@(private = "file")
+worktree_land_treeless :: proc(project, id: string) -> (why: string) {
+	branch := worktree_branch(id)
+	if !worktree_has_branch(project, branch) do return "" // nothing of it left anywhere
+	base, has_base := worktree_head(project)
+	if !has_base do return "the project is not on a branch"
+	if base == branch do return ""
+	// Already in. Not a failure, and the common answer: most finished cards
+	// were landed the moment their last turn ended.
+	if ahead, _ := git(project, {"merge-base", "--is-ancestor", branch, base}); ahead do return ""
+
+	if ok, msg := git(project, {"merge", "--no-edit", branch}); !ok {
+		// Never left mid-merge. The tree-based path leaves the markers in
+		// place on purpose, because an agent is put in that tree to settle
+		// them — there is no such tree here, and leaving a half-merge in the
+		// project would stop every card that landed after it.
+		if worktree_merging(project) do _, _ = git(project, {"merge", "--abort"})
+		return one_line(msg != "" ? msg : "the branches conflict", 160)
+	}
+	return ""
 }
 
 // The last step, and the only thing that ever touches the project's own

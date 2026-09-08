@@ -147,6 +147,10 @@ main :: proc() {
 	build_init()
 	defer build_destroy()
 	defer push_destroy()
+	// Anything finished but never landed, before the window is on screen. It
+	// runs after build_init so that a card of this program's own that lands
+	// here starts the build it needs.
+	app_land_finished(app)
 	watchdog_start()
 	defer watchdog_stop()
 	if model_set do app.model = model

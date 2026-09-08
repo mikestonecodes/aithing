@@ -1330,6 +1330,54 @@ a_finished_card_gives_its_tree_back :: proc(t: ^testing.T) {
 	testing.expect(t, os.exists(open_tree), "a card still working lost its tree")
 }
 
+// A finished card whose tree has already gone still gets its work in. This is
+// the hole the whole "I rebuilt and I still cannot see it" afternoon came out
+// of: landing only ever ran at the end of a turn, the sweep took the tree of
+// every finished card as the window opened, and worktree_land answered
+// "landed" for a card with no tree without doing anything — so the work sat on
+// a branch that nothing would ever merge.
+@(test)
+a_finished_card_lands_even_with_no_tree_left :: proc(t: ^testing.T) {
+	scratch_dir(t)
+	scratch_cache()
+	repo := "/tmp/aithing-test-treeless"
+	if !testing.expect(t, run(t, "rm", "-rf", repo), "could not clear the scratch dir") do return
+	os.make_directory_all(repo)
+	made :=
+		run(t, "git", "-C", repo, "init", "-q") &&
+		run(t, "git", "-C", repo, "config", "user.email", "test@example.com") &&
+		run(t, "git", "-C", repo, "config", "user.name", "test") &&
+		os.write_entire_file(join(repo, "f"), "a") == nil &&
+		run(t, "git", "-C", repo, "add", "f") &&
+		run(t, "git", "-C", repo, "commit", "-qm", "one")
+	if !testing.expect(t, made, "git is needed for this one") do return
+
+	app := scratch_app()
+	defer scratch_free(app)
+
+	id := todos_add(&app.todos, "leave a branch behind", "s-treeless", repo)
+	tree, _ := worktree_for(repo, id, context.temp_allocator)
+	_ = os.write_entire_file(join(tree, "landed"), "y")
+	run(t, "git", "-C", tree, "add", "landed")
+	run(t, "git", "-C", tree, "commit", "-qm", "the work")
+
+	// The tree goes first, the way the sweep takes it on the way up, and the
+	// branch is all that is left of the card.
+	todo_set_state(&app.todos, id, .Done)
+	testing.expect(t, worktree_release(repo, id), "the tree did not go")
+	testing.expect(t, !os.exists(tree), "the tree is still there")
+	testing.expect(t, has_branch(t, repo, id), "the work went with the tree")
+	testing.expect(t, !os.exists(join(repo, "landed")), "it was in the project already")
+
+	app_land_finished(app)
+	testing.expect(t, os.exists(join(repo, "landed")), "a done card's work never reached the project")
+
+	// And again, because this runs on every launch: a card already in is not
+	// a card that fails, it is a card with nothing to do.
+	app_land_finished(app)
+	testing.expect(t, os.exists(join(repo, "landed")), "landing it twice undid it")
+}
+
 // --- and out ------------------------------------------------------------------
 
 // Landing used to end at the merge, which is a branch on one machine. This is

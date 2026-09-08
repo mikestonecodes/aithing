@@ -1219,20 +1219,49 @@ app_land_worktree :: proc(app: ^App, t: ^Turn) {
 	if t.todo == "" || t.project == "" || t.cwd == t.project do return
 	if !worktree_idle(&app.todos, t.todo) do return
 	for other in app.turns do if other != t && other.live && other.cwd == t.cwd do return
+	app_land_card(app, t.project, t.todo)
+}
+
+// Every card that is finished and whose work is still on a branch of its own.
+//
+// Landing used to happen in exactly one place — the end of a turn — which is
+// one place too few. A card marked done by the last turn of a window that was
+// then closed, a card whose landing was skipped because another turn was
+// still running in its tree, a card finished by a window that crashed: all of
+// them stayed green on the grid with their work on a branch, and the sweep
+// then took the tree away, so the branch was the only thing left that knew.
+// The window opened on a grid of finished cards and a project with none of
+// their work in it, which is exactly what it looks like when a feature was
+// never written.
+//
+// Asked of git rather than written down: a card is landed when its branch is
+// gone or is already an ancestor of the project's, and worktree_land answers
+// that itself. So this can run on every launch and do nothing on all but the
+// cards that need it.
+app_land_finished :: proc(app: ^App) {
+	for todo in app.todos.list {
+		if todo.state != .Done do continue
+		if todo.cwd == "" do continue
+		app_land_card(app, todo.cwd, todo.id)
+	}
+}
+
+@(private = "file")
+app_land_card :: proc(app: ^App, project, id: string) {
 	// A card that is no longer on the grid is not a card that finished. Its
 	// tree still goes, on git's terms, but nothing of it goes into the
 	// project: dismissing a card is saying you are done with what it was
 	// doing, and merging the work of something you threw away is the one
 	// thing here that could put code you never wanted into a branch you do.
-	at := todos_find(&app.todos, t.todo)
+	at := todos_find(&app.todos, id)
 	if at < 0 {
-		_ = worktree_release(t.project, t.todo)
+		_ = worktree_release(project, id)
 		return
 	}
-	why, conflicted := worktree_land(t.project, t.todo, app.todos.list[at].text)
+	why, conflicted := worktree_land(project, id, app.todos.list[at].text)
 	if why != "" {
-		app_note(app, t.todo, why)
-		app_todo_finished(app, t.todo, .Asked)
+		app_note(app, id, why)
+		app_todo_finished(app, id, .Asked)
 		// A conflict is not the end of the asking. The tree is sitting there
 		// with the markers in it, and the thing best placed to settle them is
 		// the one that wrote one of the two sides — so it gets put back in
@@ -1244,20 +1273,20 @@ app_land_worktree :: proc(app: ^App, t: ^Turn) {
 		// Exactly one go: worktree_land refuses a tree that is already
 		// mid-merge, so a resolve turn that ends without settling it lands
 		// the card on `needs you` and stops there.
-		if conflicted && !app_resolving(app, t.todo) {
-			append(&app.pending_resolve, strings.clone(t.todo))
+		if conflicted && !app_resolving(app, id) {
+			append(&app.pending_resolve, strings.clone(id))
 		}
 		return
 	}
-	_ = worktree_release(t.project, t.todo)
+	_ = worktree_release(project, id)
 	// And if what just landed was this program, it is out of date the moment
 	// it landed. The build is started here rather than when the turn ended
 	// because a card works in a checkout of its own: until the branch goes in,
 	// the source it changed is not the source this binary came from. Nothing
 	// is taken over — see build.odin.
-	build_start(app, t.project)
+	build_start(app, project)
 	// And out, so a card that is done is done everywhere and not just here.
-	push_start(app, t.project)
+	push_start(app, project)
 }
 
 // What a turn is given when the merge is the work. Its own thread, resumed:
