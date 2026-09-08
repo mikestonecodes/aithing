@@ -282,7 +282,6 @@ main :: proc() {
 		if time.since(app.state_at) > STATE_EVERY {
 			app.state_at = time.now()
 			state_save(app)
-			usage_save(&app.usage)
 		}
 		// Not while the thread on screen is streaming: a scan lands a new
 		// session list, and the transcript should not stutter for it. Turns

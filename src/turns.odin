@@ -205,18 +205,6 @@ turn_start :: proc(app: ^App, cwd, project, session, prompt, todo: string, chat:
 // runner inside it until then.
 turn_release :: proc(app: ^App, at: int) {
 	t := app.turns[at]
-	// What it spent, on its way out of the slot it spent it in. This is the
-	// one place a turn's numbers move: they are read off the live runner
-	// until here and out of the day's total after it, so the corner of the
-	// screen can never count a turn twice or lose one.
-	// A turn that never reported anything — one that would not start, or one
-	// killed before its first message — is not a turn that spent anything,
-	// and does not become one in the count.
-	spent: Usage
-	if u := runner_usage(&t.runner); u != spent {
-		u.turns = 1
-		usage_bank(&app.usage, u)
-	}
 	runner_destroy(&t.runner)
 	delete(t.session)
 	delete(t.cwd)

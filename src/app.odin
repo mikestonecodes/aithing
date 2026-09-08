@@ -123,6 +123,10 @@ App :: struct {
 	// work asks for and never compacted, because each running turn's reader
 	// thread holds a pointer into its own slot.
 	turns:     [dynamic]^Turn,
+	// Not a turn: the one `claude -p` this window starts for itself, to ask
+	// what is left of the plan without waiting for somebody to run a card.
+	// See usage.odin.
+	probe:     Runner,
 	editor:    Editor,
 	search:    Editor,
 	capture:   Editor, // the box under the grid: what is typed there becomes cards
@@ -192,6 +196,9 @@ app_init :: proc(app: ^App) {
 	worktree_sweep(&app.todos)
 	groups_load(&app.groups)
 	usage_load(&app.usage)
+	// The saved reading is last week's until something says otherwise, so the
+	// window asks on the way up rather than standing there empty.
+	probe_start(app)
 	app.model = model_load()
 	app.effort = effort_load()
 	app.profile = os.get_env("AITHING_PROFILE", context.temp_allocator) != ""
@@ -211,7 +218,9 @@ app_destroy :: proc(app: ^App) {
 	editor_destroy(&app.search)
 	archive_save(&app.archive)
 	archive_destroy(&app.archive)
-	usage_save(&app.usage)
+	runner_destroy(&app.probe)
+	// Nothing to save on the way out: a reading is written the moment it
+	// lands, which is the only moment there is anything new to write.
 	usage_destroy(&app.usage)
 	sessions_free(app.sessions)
 	delete(app.visible)
@@ -964,7 +973,7 @@ open_key :: proc(parent: string, index: int) -> u64 {
 }
 
 app_apply_events :: proc(app: ^App) -> bool {
-	changed := false
+	changed := probe_pump(app)
 	for t, at in app.turns {
 		if !t.live do continue
 		events := runner_drain(&t.runner, context.temp_allocator)
@@ -1012,7 +1021,7 @@ app_apply :: proc(app: ^App, at: int, e: ^Event) {
 	// taken here, before the turn is asked whether it has a transcript to
 	// draw into: nearly every turn in this window is headless, and a reading
 	// only the one on screen could deliver would almost never arrive.
-	if e.kind == .Limits do limits_merge(&app.usage.limits, e.limits)
+	if e.kind == .Limits do usage_take(&app.usage, e.limits)
 
 	if !t.chat || (t.session != "" && t.session != c.session_id) {
 		#partial switch e.kind {
