@@ -95,9 +95,8 @@ app_turns_live :: proc(app: ^App) -> int {
 	return n
 }
 
-// Anything at all in flight. This is the one the frame loop and the reload
-// ask: a window with a turn running has to keep drawing, and must not exec
-// over itself.
+// Anything at all in flight. This is the one the frame loop asks: a window
+// with a turn running has to keep drawing.
 app_busy :: proc(app: ^App) -> bool {
 	for t in app.turns do if t.live && runner_busy(&t.runner) do return true
 	return false

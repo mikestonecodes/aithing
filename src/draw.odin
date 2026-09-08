@@ -705,15 +705,6 @@ draw_composer :: proc(app: ^App, r: Rect) {
 		ui_text(ui, &ui.regular, "stop", {stop.x + 22, stop.y + 3}, 13, hovered ? TEXT : MUTED)
 		if clicked do app_interrupt(app)
 	}
-	// A rebuilt window waiting for the turn to finish. It goes next to the
-	// model chip rather than in the status, which is busy saying what the
-	// turn is doing.
-	if reload_waiting() {
-		label := "update ready"
-		w := font_width(&ui.regular, label, 12) + 8
-		ui_text(ui, &ui.regular, label, {cx - w - 8, chip_y + 3}, 12, GREEN)
-	}
-
 	// The strip that used to carry the status is gone, so it says its piece
 	// down here instead, out of the way of the text.
 	if app.status != "" && app.status != "ready" {

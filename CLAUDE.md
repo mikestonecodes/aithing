@@ -61,8 +61,7 @@ frames are only drawn on input or animation.
 odin test src -define:ODIN_TEST_FANCY=false
 ```
 
-Both must pass before anything is finished. `./dev.sh` rebuilds on change and
-a running window `exec`s over itself when a newer binary lands.
+Both must pass before anything is finished.
 
 ## Comments
 

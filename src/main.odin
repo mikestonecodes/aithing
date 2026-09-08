@@ -30,7 +30,6 @@ main :: proc() {
 	crash_report_install()
 
 	open_last := true // by default, pick up where the last session left off
-	reloaded := false // this run replaced an older one that saw a new binary
 	model := MODEL_DEFAULT
 	model_set := false
 	prompt_parts := make([dynamic]string, context.temp_allocator)
@@ -83,8 +82,6 @@ main :: proc() {
 			open_last = true
 		case "--new", "-n":
 			open_last = false
-		case RELOAD_FLAG:
-			reloaded = true
 		case "--model":
 			want_model = true
 		case "--shot":
@@ -137,14 +134,10 @@ main :: proc() {
 	defer app_destroy(app)
 	watchdog_start()
 	defer watchdog_stop()
-	reload_init()
 	if model_set do app.model = model
 
-	// What the process this one replaced was in the middle of — or, on a
-	// plain launch, what the last window had on screen when it was closed.
-	// Both are the same picture written by the same serializer: see
-	// state.odin.
-	state := reloaded ? reload_restore() : state_read(config_path("state"))
+	// What the last window had on screen when it was closed: see state.odin.
+	state := state_read(config_path("state"))
 	defer state_free(&state)
 	state_restore(app, state, model_set)
 
@@ -154,8 +147,8 @@ main :: proc() {
 			app_poll_jobs(app)
 			time.sleep(4 * time.Millisecond)
 		}
-		// Newest first, so 0 is the right answer unless a reload named the
-		// session it was looking at.
+		// Newest first, so 0 is the right answer unless the state file named
+		// the session the last window was looking at.
 		open_at := 0
 		if state.session != "" {
 			for sn, i in app.sessions do if sn.id == state.session {
@@ -280,13 +273,6 @@ main :: proc() {
 			app_rescan(app)
 			needs_draw = true
 		}
-		// A rebuilt binary takes over here, between one frame and the next,
-		// but never in the middle of a turn: exec would take the pipe the
-		// answer is still arriving on with it, and anything queued behind it
-		// only exists in this process.
-		if reload_build_poll(app) do needs_draw = true
-		reload_swap(app)
-
 		watch(.Input)
 		app_input(app)
 		if app_apply_clicks(app) do needs_draw = true

@@ -8,7 +8,7 @@ import "core:sys/posix"
 // The other half of the watchdog. A freeze reports the phase it stopped in; a
 // crash should report the stack it stopped on. A window that simply disappears
 // is the worst bug report there is — the terminal it was started from has
-// usually scrolled away, and under auto reload there may not have been one.
+// usually scrolled away, and started from the desktop file there is none.
 //
 // So every fatal signal writes a backtrace to ~/.cache/aithing/crash.log and
 // then lets the default handler finish the job. Everything below runs inside a
@@ -26,8 +26,8 @@ foreign libc {
 @(private = "file")
 g_crash_fd: c.int = -1
 
-// Appends rather than truncating: a crash is worth more than the run that
-// comes after it, and the next run starts within seconds under auto reload.
+// Appends rather than truncating: a crash is worth keeping across the runs
+// that come after it.
 crash_report_install :: proc() {
 	path := cache_path("crash.log", context.temp_allocator)
 	f, err := os.open(path, {.Write, .Create, .Append})
