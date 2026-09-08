@@ -274,9 +274,13 @@ draw_usage :: proc(app: ^App, full: Rect, strip: Rect) {
 	five := window_used(app.usage.limits.five)
 	week := window_used(app.usage.limits.week)
 
-	// Nothing spent, nothing running and no allowance read: an empty corner
-	// rather than a panel of zeroes. It eases in as the first turn starts.
-	show := app.overlay != .Launcher && (u.cost > 0 || live > 0 || five > 0 || week > 0)
+	// Always there, and this is the second try at that. It used to hide until
+	// something had been spent or an allowance read, which meant a window
+	// opened on a fresh day showed nothing at all and read as a feature that
+	// had not landed. What is left of the plan is worth a corner even when the
+	// answer is "all of it" — so the panel stands, and a window not yet read
+	// says so rather than being absent.
+	show := app.overlay != .Launcher
 	a := ui_anim(ui, ui_id("usage"), show ? 1 : 0, 12)
 	if a < 0.01 do return
 
@@ -351,15 +355,15 @@ draw_usage :: proc(app: ^App, full: Rect, strip: Rect) {
 		ui,
 		box,
 		fmt.tprintf(
-			"today: $%.4f · %d in · %d out · %d cache read · %d cache write · %d turns · five hours %.0f%%, week %.0f%%",
+			"today: $%.4f · %d in · %d out · %d cache read · %d cache write · %d turns · five hours %.0f%% left, week %.0f%% left",
 			u.cost,
 			u.input,
 			u.output,
 			u.cache_read,
 			u.cache_write,
 			u.turns,
-			five * 100,
-			week * 100,
+			(1 - five) * 100,
+			(1 - week) * 100,
 		),
 	)
 }
@@ -372,21 +376,36 @@ meter :: proc(app: ^App, box: Rect, row: int, name: string, used: f32, resets: i
 	top := box.y + 68 + f32(row) * 30
 	col := usage_meter_color(used)
 
+	// A window nobody has read yet is not a window with nothing used in it.
+	// `resets` is the one variable that answers it: the harness sends a reset
+	// time with every reading, so a zero there means no turn has reported one
+	// since this window opened, and the meter says that instead of drawing a
+	// confident empty bar.
+	known := resets != 0
+
 	label := name
 	if left := usage_until(resets); left != "" do label = fmt.tprintf("%s · %s left", name, left)
+	else if !known do label = fmt.tprintf("%s · after the next turn", name)
 	ui_text(ui, &ui.regular, label, {box.x + USAGE_PAD, top}, 10.5, color_alpha(FAINT, a))
 
-	pct := fmt.tprintf("%.0f%%", used * 100)
+	// What is left, not what is gone. Both are the same number and this is
+	// the one that answers the question the corner is glanced at to answer.
+	pct := known ? fmt.tprintf("%.0f%% left", (1 - used) * 100) : "—"
 	pw := font_width(&ui.bold, pct, 11)
-	ui_text(ui, &ui.bold, pct, {box.x + box.w - USAGE_PAD - pw, top - 1}, 11, color_alpha(col, a))
+	ui_text(ui, &ui.bold, pct, {box.x + box.w - USAGE_PAD - pw, top - 1}, 11, color_alpha(known ? col : FAINT, a))
 
 	track := Rect{box.x + USAGE_PAD, top + 16, box.w - USAGE_PAD * 2, METER_H}
 	ui_rect(ui, track, color_alpha(BORDER, 0.55 * a), METER_H / 2)
-	// The fill grows into place, and a reading that has just landed is worth
-	// watching arrive. An allowance barely touched still shows a stub, so the
+	// The bar is what is left, because the figure beside it is: a bar drawn
+	// to what was spent under a number reading "59% left" is two answers to
+	// one question and the eye takes the wrong one. It drains rather than
+	// fills as the window goes, which is the shape the thing actually has.
+	//
+	// The fill eases into place, and a reading that has just landed is worth
+	// watching arrive. An allowance nearly gone still shows a stub, so the
 	// meter reads as a meter rather than as an empty slot.
-	grown := ui_anim(ui, ui_id("usage-meter", row), used, 9)
-	if grown <= 0 do return
+	grown := ui_anim(ui, ui_id("usage-meter", row), 1 - used, 9)
+	if grown <= 0 || !known do return
 	fill := Rect{track.x, track.y, max(track.w * grown, METER_H), track.h}
 	ui_rect(ui, fill, color_alpha(col, a), METER_H / 2)
 	// The sheen travels along the five hour meter while a turn is running: it
