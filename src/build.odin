@@ -36,9 +36,8 @@ Build :: struct {
 	ok:      bool,
 	// Where this binary sits, which is the root of the repo it was built
 	// from. Resolved once at startup: /proc/self/exe is not read later
-	// because a linker that
-	// replaces the file rather than rewriting it leaves that link pointing at
-	// the deleted inode.
+	// because a linker that replaces the file rather than rewriting it
+	// leaves that link pointing at the deleted inode.
 	repo:    string,
 	// The newest thing under src/ as of the last build that worked, and as of
 	// the one under way. A card that read the code without changing it does
