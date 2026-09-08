@@ -1279,6 +1279,9 @@ app_land_card :: proc(app: ^App, project, id: string) {
 		return
 	}
 	_ = worktree_release(project, id)
+	// Said on the card, because it is the card's question: complete is what
+	// the agent finished, merged is where the work went.
+	todo_set_state(&app.todos, id, .Merged)
 	// And if what just landed was this program, it is out of date the moment
 	// it landed. The build is started here rather than when the turn ended
 	// because a card works in a checkout of its own: until the branch goes in,

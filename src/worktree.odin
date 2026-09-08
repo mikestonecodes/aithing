@@ -347,7 +347,7 @@ worktree_restore :: proc(app: ^App, cwd: string) -> string {
 // — the caller checks the turns, which is the only thing that knows.
 worktree_idle :: proc(t: ^Todos, id: string) -> bool {
 	at := todos_find(t, id)
-	return at < 0 || t.list[at].state == .Done
+	return at < 0 || t.list[at].state == .Done || t.list[at].state == .Merged
 }
 
 // Every tree in the cache that no card is working in, given back at once.

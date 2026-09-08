@@ -174,7 +174,7 @@ shot_build :: proc(app: ^App, scene: Scene) {
 	shot_card(app, OTHER, "snapshot every turn by build id", .Done, "s-6", 30 * time.Hour)
 	shot_card(app, OTHER, "the timeline scrubs past the last build", .Open, "", 26 * time.Hour)
 	asked := shot_card(app, PROJ, "the composer keeps what is half-typed", .Asked, "s-5", 5 * time.Hour)
-	shot_card(app, PROJ, "one variable per question, across the canvas", .Done, "s-4", 3 * time.Hour)
+	shot_card(app, PROJ, "one variable per question, across the canvas", .Merged, "s-4", 3 * time.Hour)
 	failed := shot_card(app, PROJ, "backspace types a 1 on the second keymap", .Failed, "s-3", 40 * time.Minute)
 	running := shot_card(app, PROJ, "measure the grid at a thousand cards", .Running, "s-2", 2 * time.Minute)
 	shot_card(app, PROJ, "the composer eats the first character after a paste", .Open, "s-1", 4 * time.Minute)

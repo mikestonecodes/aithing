@@ -1371,6 +1371,10 @@ a_finished_card_lands_even_with_no_tree_left :: proc(t: ^testing.T) {
 
 	app_land_finished(app)
 	testing.expect(t, os.exists(join(repo, "landed")), "a done card's work never reached the project")
+	// And the card says which of the two it is. Complete and merged read the
+	// same on the grid before this, so a card whose work was still sitting on
+	// a branch looked exactly like one that had gone in.
+	testing.expect_value(t, app.todos.list[todos_find(&app.todos, id)].state, Todo_State.Merged)
 
 	// And again, because this runs on every launch: a card already in is not
 	// a card that fails, it is a card with nothing to do.

@@ -50,6 +50,17 @@ Todo_State :: enum {
 	Done,
 	Failed,
 	Asked, // the turn ended without the work being finished
+	// The work is in the project. Written by the landing and by nothing else,
+	// which is what makes it a fact rather than an opinion: the one procedure
+	// that merges a card's branch is the one procedure that says so. A card
+	// that says complete and nothing more is a card whose work is still on a
+	// branch of its own — which used to be indistinguishable from one that
+	// had been merged, and was the whole of the confusion.
+	//
+	// Last in the enum on purpose: the state is written to the todos file as
+	// its number, so anything added in the middle would silently rename every
+	// card already on disk.
+	Merged,
 }
 
 Todo :: struct {
@@ -393,6 +404,8 @@ todo_state_label :: proc(state: Todo_State) -> string {
 		return "processing"
 	case .Done:
 		return "complete"
+	case .Merged:
+		return "merged"
 	case .Failed:
 		return "failed"
 	case .Asked:
@@ -407,8 +420,13 @@ todo_state_color :: proc(state: Todo_State) -> Color {
 	switch state {
 	case .Running:
 		return ACCENT
-	case .Done:
+	case .Merged:
 		return GREEN
+	case .Done:
+		// Finished, but still on a branch of its own — the same green with
+		// the confidence taken out of it, because the work is not where
+		// anyone else can see it yet.
+		return color_mix(GREEN, MUTED, 0.5)
 	case .Failed:
 		return RED
 	case .Asked:

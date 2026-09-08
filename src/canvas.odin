@@ -220,7 +220,11 @@ draw_card :: proc(app: ^App, card: Card, r: Rect) {
 	if current do ui_rect(ui, {r.x, r.y + 12, 3, r.h - 24}, ACCENT, 2)
 	// Work that came back clean is work you are done with: it stays on the
 	// map, drawn back, rather than shouting alongside what is still open.
-	if state == .Done do ui_rect(ui, r, color_alpha(BG, 0.28), 12)
+	// A card that is finished sits back, whether its work is still on its own
+	// branch or already in the project. Both are done as far as the grid is
+	// concerned; the chip is where the difference is said.
+	settled := state == .Done || state == .Merged
+	if settled do ui_rect(ui, r, color_alpha(BG, 0.28), 12)
 
 	tx := r.x + pad
 	ty := r.y + pad
@@ -238,7 +242,7 @@ draw_card :: proc(app: ^App, card: Card, r: Rect) {
 	// with nothing selected takes, because a card is not something that can be
 	// selected in the first place.
 	ui_hover_text(ui, r, td.text)
-	ty += draw_wrapped(ui, &ui.bold, td.text, tx, ty, tw - corner - 10, 15, state == .Done ? MUTED : TEXT, 3)
+	ty += draw_wrapped(ui, &ui.bold, td.text, tx, ty, tw - corner - 10, 15, settled ? MUTED : TEXT, 3)
 
 	// Where the work stands, in the word for it. A turn in flight pulses,
 	// whether it was started here or in another window. There used to be a
