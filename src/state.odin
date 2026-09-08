@@ -30,6 +30,7 @@ App_State :: struct {
 	draft:        string, // the composer, inside the open thread
 	capture:      string, // the box under the grid
 	model:        Model,
+	effort:       Effort,
 	opened:       bool,
 	scroll:       f32,
 	ok:           bool,
@@ -59,6 +60,7 @@ state_text :: proc(app: ^App) -> string {
 	fmt.sbprintfln(&b, "version %s", STATE_VERSION)
 	fmt.sbprintfln(&b, "session %s", app.chat.session_id)
 	fmt.sbprintfln(&b, "model %s", model_short[app.model])
+	fmt.sbprintfln(&b, "effort %s", effort_flag[app.effort])
 	fmt.sbprintfln(&b, "cwd %s", app.cwd)
 	fmt.sbprintfln(&b, "project %s", app.canvas.project)
 	fmt.sbprintfln(&b, "sel %s", app.canvas.sel)
@@ -118,6 +120,8 @@ state_read :: proc(path: string, take := false, allocator := context.allocator) 
 			// turn slots. Read and dropped, so those files still restore.
 		case "model":
 			s.model, _ = model_parse(value)
+		case "effort":
+			s.effort, _ = effort_parse(value)
 		case "opened":
 			s.opened = value == "1"
 		case "archive":
@@ -150,9 +154,10 @@ state_free :: proc(s: ^App_State) {
 
 // Everything that does not need the session list: the rest of the restore is
 // in main, once the first scan has landed and there are threads to open.
-state_restore :: proc(app: ^App, s: App_State, model_set: bool) {
+state_restore :: proc(app: ^App, s: App_State, model_set: bool, effort_set := false) {
 	if !s.ok do return
 	if !model_set do app.model = s.model
+	if !effort_set do app.effort = s.effort
 	if s.cwd != "" {
 		delete(app.cwd)
 		app.cwd = strings.clone(s.cwd)
