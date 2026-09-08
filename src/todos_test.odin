@@ -4,51 +4,54 @@ import "core:os"
 import "core:testing"
 
 // What a typed list cuts into: the split is what the grid is made of, and it
-// is made on the spot with nothing asked of a model.
+// is made on the spot with nothing asked of a model. A `*` is the whole of
+// the rule.
 
 @(test)
-split_by_line :: proc(t: ^testing.T) {
-	parts := todos_split("fix the caret\n- rebake the atlas\n2) ship it")
+split_on_stars :: proc(t: ^testing.T) {
+	parts := todos_split("fix the caret * rebake the atlas * ship it")
 	testing.expect_value(t, len(parts), 3)
 	testing.expect_value(t, parts[0], "fix the caret")
 	testing.expect_value(t, parts[1], "rebake the atlas")
 	testing.expect_value(t, parts[2], "ship it")
 }
 
-// A full stop in the middle of a line is where the next card starts. Typing
-// two things on one line and getting one card back was what made the box look
-// like it had not heard.
+// The spaces and newlines around a star are text breakup, not part of what
+// was asked for, so a star on a line of its own reads the same as one typed
+// mid-sentence.
 @(test)
-split_by_sentence :: proc(t: ^testing.T) {
-	parts := todos_split("fix the caret. rebake the atlas; ship it")
+split_takes_the_spacing_off :: proc(t: ^testing.T) {
+	parts := todos_split("fix the caret\n\n*\n\nrebake the atlas*ship it")
 	testing.expect_value(t, len(parts), 3)
 	testing.expect_value(t, parts[0], "fix the caret")
 	testing.expect_value(t, parts[1], "rebake the atlas")
 	testing.expect_value(t, parts[2], "ship it")
 }
 
-// A stop with no space after it is inside a word, not the end of a sentence.
+// A paragraph is one job. Lines, bullets, numbers and full stops all used to
+// cut, which answered anything written at length with a card per sentence.
 @(test)
-split_keeps_a_version_whole :: proc(t: ^testing.T) {
-	parts := todos_split("bump to 1.2 in build.sh and tag it")
+split_keeps_a_paragraph_whole :: proc(t: ^testing.T) {
+	text := "bump to 1.2 in build.sh and tag it. check it at 1200 sessions\n- and again after the atlas rebake\n2) then ship it"
+	parts := todos_split(text)
 	testing.expect_value(t, len(parts), 1)
-	testing.expect_value(t, parts[0], "bump to 1.2 in build.sh and tag it")
+	testing.expect_value(t, parts[0], text)
 }
 
-// A line that ends in a full stop is one card, not one and an empty one.
-@(test)
-split_ignores_a_trailing_stop :: proc(t: ^testing.T) {
-	parts := todos_split("rebake the atlas.")
-	testing.expect_value(t, len(parts), 1)
-	testing.expect_value(t, parts[0], "rebake the atlas")
-}
-
-// A version number is not two items, and a lone line is not none.
+// A lone line is one card, and the box's own trailing whitespace is none.
 @(test)
 split_keeps_one :: proc(t: ^testing.T) {
 	parts := todos_split("  bump to 1.2 everywhere  ")
 	testing.expect_value(t, len(parts), 1)
 	testing.expect_value(t, parts[0], "bump to 1.2 everywhere")
+}
+
+// A star with nothing on one side of it is not an empty card.
+@(test)
+split_drops_the_empty_parts :: proc(t: ^testing.T) {
+	parts := todos_split("* rebake the atlas **")
+	testing.expect_value(t, len(parts), 1)
+	testing.expect_value(t, parts[0], "rebake the atlas")
 }
 
 // The state file has to survive a draft with newlines in it.

@@ -220,7 +220,7 @@ shot_build :: proc(app: ^App, scene: Scene) {
 	case .Grid:
 	case .Project:
 		app.canvas.project = PROJ
-		editor_set_text(&app.capture, "split the grid measurement out of the frame\ncheck it at 1200 sessions")
+		editor_set_text(&app.capture, "split the grid measurement out of the frame\n*\ncheck it at 1200 sessions")
 	case .Thread:
 		app.canvas.project = PROJ
 		app.page = .Thread
