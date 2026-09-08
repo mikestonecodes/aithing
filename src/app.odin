@@ -178,6 +178,9 @@ app_init :: proc(app: ^App) {
 	app.status = strings.clone("ready")
 	archive_load(&app.archive)
 	todos_load(&app.todos)
+	// Every tree left behind by a card that is finished or gone, before
+	// anything can start running in one.
+	worktree_sweep(&app.todos)
 	groups_load(&app.groups)
 	app.model = model_load()
 	app.profile = os.get_env("AITHING_PROFILE", context.temp_allocator) != ""
@@ -373,6 +376,13 @@ app_filter :: proc(app: ^App) {
 	clear(&app.visible)
 	query := strings.to_lower(strings.trim_space(editor_text(&app.search)), context.temp_allocator)
 	for s, i in app.sessions {
+		// A card's own tree is not a place you browse to. Threads that ran in
+		// one filled the launcher with a project per card ever run —
+		// `aithing-n-12`, `aithing-n-13` — every one of them the same project
+		// wearing a card's id, and half of them directories that have since
+		// been given back. The card on the grid is the door to that thread,
+		// and it is the only one that stays true.
+		if worktree_card(s.cwd) != "" do continue
 		if app.canvas.project != "" && s.cwd != app.canvas.project do continue
 		if query != "" {
 			// Searching looks everywhere: the archive and the abandoned
@@ -853,7 +863,9 @@ app_submit :: proc(app: ^App, text, prompt: string) -> bool {
 	clear(&app.attach) // the blocks own the attachments now
 	app.chat_ver += 1
 
-	cwd := app_chat_cwd(app)
+	// The thread's own directory, checked out again if it was a card's tree
+	// and the card has since finished with it.
+	cwd := worktree_restore(app, app_chat_cwd(app))
 	route_clear(app)
 
 	// A turn already running in this thread is no reason to hold this one:
@@ -1074,6 +1086,24 @@ app_turn_ended :: proc(app: ^App, t: ^Turn, state: Todo_State) {
 	app_todo_finished(app, t.todo, outcome)
 	app.rescan = true
 	reload_build(app, t.cwd)
+	// The tree the work was done in goes back now the work is done with it.
+	// After the build, which reads the source the turn changed, and never
+	// before git has had its say about whether anything in there was worth
+	// keeping — see worktree.odin.
+	app_release_worktree(app, t)
+}
+
+// A finished card's checkout, given back. Only a card that is done and only a
+// tree nothing else is running in: a follow-up typed into the same thread
+// starts beside the turn that is ending and runs in the same directory, and
+// deleting the floor out from under a working agent is the one way this could
+// lose work that git would have said was safe to lose.
+@(private = "file")
+app_release_worktree :: proc(app: ^App, t: ^Turn) {
+	if t.todo == "" || t.project == "" || t.cwd == t.project do return
+	if !worktree_idle(&app.todos, t.todo) do return
+	for other in app.turns do if other != t && other.live && other.cwd == t.cwd do return
+	_ = worktree_release(t.project, t.todo)
 }
 
 // --- formatting -------------------------------------------------------------
