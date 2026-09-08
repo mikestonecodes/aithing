@@ -18,6 +18,19 @@ scratch_dir :: proc(t: ^testing.T) {
 	_ = os.set_env("AITHING_CONFIG", dir)
 }
 
+// Where the tests' checkouts go, and it is one fixed path rather than a path
+// per test on purpose: the runner runs tests in parallel and the cache is
+// named by an environment variable, so two tests pointing it at two different
+// directories at once is one of them looking for its trees in the other's.
+// Every test that touches the cache sets it to this, and they all agree.
+@(private = "file")
+SCRATCH_CACHE :: "/tmp/aithing-test-cache"
+
+@(private = "file")
+scratch_cache :: proc() {
+	_ = os.set_env("AITHING_CACHE", SCRATCH_CACHE)
+}
+
 @(private = "file")
 fake_session :: proc(id, title: string) -> Session {
 	return Session{id = id, title = title, cwd = "/tmp/proj", mtime = time.now(), size = 100}
@@ -903,6 +916,7 @@ the_last_marker_is_the_verdict :: proc(t: ^testing.T) {
 @(test)
 a_worktree_is_not_a_project :: proc(t: ^testing.T) {
 	scratch_dir(t)
+	scratch_cache()
 	app := scratch_app()
 	defer scratch_free(app)
 
@@ -920,20 +934,18 @@ a_worktree_is_not_a_project :: proc(t: ^testing.T) {
 // ones git refuses to remove, and a fake git would pin our opinion of it
 // instead.
 //
-// One test, not three, and it points AITHING_CACHE at a directory of its own.
-// The runner runs tests in parallel and the cache is named by an environment
-// variable, so two tests moving it at once would be two tests looking for
-// their checkouts in each other's directory — and the sweep walks everything
-// under it, which is a second test's trees as readily as its own.
+// One test, not three: the sweep walks everything under the cache root, and
+// the tests share one — a second test's trees would be swept as readily as
+// its own.
 @(test)
 a_finished_card_gives_its_tree_back :: proc(t: ^testing.T) {
 	scratch_dir(t)
-	cache := "/tmp/aithing-test-cache"
+	scratch_cache()
+	cache := SCRATCH_CACHE
 	repo := "/tmp/aithing-test-repo"
 	if !testing.expect(t, run(t, "rm", "-rf", cache, repo), "could not clear the scratch dirs") {
 		return
 	}
-	_ = os.set_env("AITHING_CACHE", cache)
 	os.make_directory_all(repo)
 	made :=
 		run(t, "git", "-C", repo, "init", "-q") &&
