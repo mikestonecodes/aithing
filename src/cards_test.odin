@@ -1182,7 +1182,8 @@ a_finished_card_gives_its_tree_back :: proc(t: ^testing.T) {
 	land := todos_add(&app.todos, "wire it up", "s-land", repo)
 	land_tree, _ := worktree_for(repo, land, context.temp_allocator)
 	_ = os.write_entire_file(join(land_tree, "wired"), "y")
-	testing.expect_value(t, worktree_land(repo, land, "wire it up"), "")
+	landed, _ := worktree_land(repo, land, "wire it up")
+	testing.expect_value(t, landed, "")
 	testing.expect(t, os.exists(join(repo, "wired")), "the work never reached the project")
 	todo_set_state(&app.todos, land, .Done)
 	testing.expect(t, worktree_release(repo, land), "a landed tree may go")
@@ -1198,15 +1199,63 @@ a_finished_card_gives_its_tree_back :: proc(t: ^testing.T) {
 	two_tree, _ := worktree_for(repo, two, context.temp_allocator)
 	_ = os.write_entire_file(join(one_tree, "f"), "hello")
 	_ = os.write_entire_file(join(two_tree, "f"), "goodbye")
-	testing.expect_value(t, worktree_land(repo, one, "say hello"), "")
-	testing.expect(t, worktree_land(repo, two, "say goodbye") != "", "a conflict landed anyway")
+	first, _ := worktree_land(repo, one, "say hello")
+	testing.expect_value(t, first, "")
+	second, conflicted := worktree_land(repo, two, "say goodbye")
+	testing.expect(t, second != "", "a conflict landed anyway")
+	// And it is left mid-merge on purpose: the markers in the files are what
+	// an agent is put in there to settle, and aborting was the version of
+	// this that made a card that had done its work into a chore.
+	testing.expect(t, conflicted, "the conflict was not offered to anyone")
+	testing.expect(t, worktree_merging(two_tree), "the merge was thrown away")
 	testing.expect(t, os.exists(two_tree), "the tree to resolve it in was taken away")
 	testing.expect(t, has_branch(t, repo, two), "the branch with the work on it went")
+	// Exactly one go. A tree still mid-merge is one something has already
+	// tried, so asking again says so rather than starting the merge over —
+	// which is what keeps a card that cannot be landed from going round for
+	// ever.
+	retry, twice := worktree_land(repo, two, "say goodbye")
+	testing.expect_value(t, retry, "the merge was left unresolved")
+	testing.expect(t, !twice, "it offered the same conflict a second time")
 	// And the project is exactly where the first card left it: a failed
 	// landing touches nothing.
 	f, _ := os.read_entire_file_from_path(join(repo, "f"), context.temp_allocator)
 	testing.expect_value(t, string(f), "hello")
 	todos_dismiss(&app.todos, two)
+
+	// A card that did its work perfectly, and an unrelated file open in the
+	// project that git will not fast-forward over. Refusing to land on that
+	// is a card held up by something that has nothing to do with it, so the
+	// work is put aside, the fast-forward taken, and the work put back.
+	lines := strings.builder_make(context.temp_allocator)
+	for i in 0 ..< 20 do strings.write_string(&lines, "keep\n")
+	_ = os.write_entire_file(join(repo, "big"), transmute([]byte)strings.to_string(lines))
+	run(t, "git", "-C", repo, "add", "big")
+	run(t, "git", "-C", repo, "commit", "-qm", "big")
+
+	three := todos_add(&app.todos, "change the end", "s-three", repo)
+	three_tree, _ := worktree_for(repo, three, context.temp_allocator)
+	_ = os.write_entire_file(join(three_tree, "big"), transmute([]byte)strings.concatenate(
+		{strings.to_string(lines)[:len("keep\n") * 19], "the card was here\n"},
+		context.temp_allocator,
+	))
+	// And the same file open in the project, edited at the other end of it.
+	mine := strings.concatenate(
+		{"i was in the middle of this\n", strings.to_string(lines)[len("keep\n"):]},
+		context.temp_allocator,
+	)
+	_ = os.write_entire_file(join(repo, "big"), transmute([]byte)mine)
+
+	blocked, _ := worktree_land(repo, three, "change the end")
+	testing.expect_value(t, blocked, "")
+	got, _ := os.read_entire_file_from_path(join(repo, "big"), context.temp_allocator)
+	// The card's work is in, and so is the line that was never committed:
+	// nothing was taken off the project's tree and left off it.
+	testing.expect(t, strings.contains(string(got), "the card was here"), "the card did not land")
+	testing.expect(t, strings.contains(string(got), "i was in the middle of this"), "work was stashed and never given back")
+	todo_set_state(&app.todos, three, .Done)
+	testing.expect(t, worktree_release(repo, three), "a landed tree may go")
+	run(t, "git", "-C", repo, "checkout", "-q", "--", "big")
 
 	// And the pile that built up while nothing ever removed one: a tree per
 	// card ever run. The sweep reads the card list — a tree whose card is

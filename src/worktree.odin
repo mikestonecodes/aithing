@@ -112,26 +112,34 @@ worktree_for :: proc(project, id: string, allocator := context.allocator) -> (di
 // stashes, resets or checks anything out.
 //
 // `why` empty is landed. Anything else is git's own sentence about what
-// stopped it, and it goes on the card: the tree stays exactly as it was, so
-// the answer to a card that would not land is to go into the tree and finish
-// it by hand.
+// stopped it, and it goes on the card. `conflicted` says the tree has been
+// left mid-merge, markers and MERGE_HEAD and all — which is not a mess to be
+// cleaned up but the one thing an agent needs to fix it, so the caller starts
+// a turn in there rather than giving up (see app_land_worktree).
 //
 // It waits for git, on the frame the turn ended. That is a commit and two
 // merges — milliseconds on the repositories this runs on, and the same bet
 // worktree_for already makes on the way in.
-worktree_land :: proc(project, id, subject: string) -> (why: string) {
-	if project == "" || id == "" do return ""
+worktree_land :: proc(project, id, subject: string) -> (why: string, conflicted: bool) {
+	if project == "" || id == "" do return "", false
 	path := worktree_path(project, id)
-	if !os.exists(path) do return ""
+	if !os.exists(path) do return "", false
 	branch := worktree_branch(id)
+
+	// A tree already mid-merge is a tree something has already had a go at
+	// resolving and did not finish. Saying so, rather than starting the merge
+	// over, is the whole of what stops a card that cannot be landed going
+	// round for ever — and it needs nothing written down, because a tree with
+	// MERGE_HEAD in it is the record.
+	if worktree_merging(path) do return "the merge was left unresolved", false
 
 	// Whatever the agent left lying about. A card is one piece of work and
 	// this is the end of it, so there is nothing to be gained by asking which
 	// of the files it touched it meant: all of them, or the card is not done.
 	if worktree_dirty(path) {
-		if ok, msg := git(path, {"add", "-A"}); !ok do return one_line(msg, 160)
+		if ok, msg := git(path, {"add", "-A"}); !ok do return one_line(msg, 160), false
 		msg := subject != "" ? one_line(subject, 72) : fmt.tprintf("card %s", id)
-		if ok, out := git(path, {"commit", "-m", msg}); !ok do return one_line(out, 160)
+		if ok, out := git(path, {"commit", "-m", msg}); !ok do return one_line(out, 160), false
 	}
 
 	// Where it goes back to: the branch the project itself has checked out,
@@ -139,27 +147,81 @@ worktree_land :: proc(project, id, subject: string) -> (why: string) {
 	// anywhere and not "main" — a project sitting on a release branch would
 	// have had its cards landed somewhere nobody was looking.
 	base, has_base := worktree_head(project)
-	if !has_base do return "the project is not on a branch"
-	if base == branch do return "" // its own tree is the project's; nothing to land
+	if !has_base do return "the project is not on a branch", false
+	if base == branch do return "", false // its own tree is the project's; nothing to land
 
 	// Nothing of its own to give back. Not a failure: a card that read code
 	// and answered a question is done, and there is no commit in it.
-	if ahead, _ := git(path, {"merge-base", "--is-ancestor", branch, base}); ahead do return ""
+	if ahead, _ := git(path, {"merge-base", "--is-ancestor", branch, base}); ahead do return "", false
 
 	// The project's branch, brought into the card's. This is where a conflict
 	// surfaces, and it surfaces in the tree the work was done in — which is
 	// the only place anyone could resolve it.
+	//
+	// Not aborted. This used to `merge --abort` and hand the card back saying
+	// the branches conflict, which is a card that has stopped on the one job
+	// the thing that did the work is best placed to finish: it wrote both
+	// sides of half of it. The markers stay in the files and MERGE_HEAD stays
+	// set, and the caller puts an agent in the tree.
 	if ok, msg := git(path, {"merge", "--no-edit", base}); !ok {
-		_, _ = git(path, {"merge", "--abort"})
-		return one_line(msg != "" ? msg : "the card's branch conflicts with the project", 160)
+		if worktree_merging(path) {
+			return one_line(msg != "" ? msg : "the branches conflict", 160), true
+		}
+		return one_line(msg != "" ? msg : "the merge would not start", 160), false
 	}
-	// And now the project can only fast-forward, because the merge above made
-	// it an ancestor. --ff-only is the safety: if git will not take it, the
-	// project's tree has something in it that this must not write over.
-	if ok, msg := git(project, {"merge", "--ff-only", branch}); !ok {
-		return one_line(msg != "" ? msg : "the project would not fast-forward", 160)
+	return worktree_fast_forward(project, branch), false
+}
+
+// The last step, and the only thing that ever touches the project's own
+// working tree. The merge above made the card's branch a descendant, so this
+// can only be a fast-forward — and --ff-only is the safety, because git will
+// not take one that would write over a file somebody has modified.
+//
+// Which is the case worth going further on, and the one thing borrowed from
+// the dashboard this replaces: when the only thing in the way is uncommitted
+// work in the project, put it aside, take the fast-forward, and put it back.
+// Refusing instead means a card that did its work perfectly does not land
+// because of an unrelated file you happen to have open.
+//
+// The stash is only ever popped when this is the call that made it. `git
+// stash push` with nothing to save exits zero and saves nothing, so a pop
+// after it is a pop of whatever somebody stashed last week — which is why the
+// ref is read either side rather than the exit code being trusted.
+@(private = "file")
+worktree_fast_forward :: proc(project, branch: string) -> (why: string) {
+	ok, msg := git(project, {"merge", "--ff-only", branch})
+	if ok do return ""
+	if !worktree_dirty(project) do return one_line(msg != "" ? msg : "the project would not fast-forward", 160)
+
+	before := worktree_stash(project)
+	_, _ = git(project, {"stash", "push", "-u", "-m", fmt.tprintf("aithing: landing %s", branch)})
+	ours := worktree_stash(project) != before
+	ok2, msg2 := git(project, {"merge", "--ff-only", branch})
+	if ours {
+		// Back before anything else is said about it, landed or not: work
+		// taken off somebody's tree without being asked has to go back on it
+		// on every path out of here.
+		if popped, pop_msg := git(project, {"stash", "pop"}); !popped {
+			return one_line(fmt.tprintf("landed, but your own changes are stuck in git stash: %s", pop_msg), 160)
+		}
 	}
+	if !ok2 do return one_line(msg2 != "" ? msg2 : "the project would not fast-forward", 160)
 	return ""
+}
+
+// A tree stopped in the middle of a merge, which is the only record that
+// anything has tried to resolve one here.
+worktree_merging :: proc(path: string) -> bool {
+	ok, _ := git_out(path, {"rev-parse", "-q", "--verify", "MERGE_HEAD"})
+	return ok
+}
+
+// What the top of the stash is, or "" for an empty one. Read either side of a
+// push to find out whether the push was ours to pop.
+@(private = "file")
+worktree_stash :: proc(project: string) -> string {
+	_, out := git_out(project, {"rev-parse", "-q", "--verify", "refs/stash"})
+	return strings.trim_space(out)
 }
 
 // Anything at all not committed in a tree, untracked files included — the

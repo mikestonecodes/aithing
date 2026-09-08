@@ -112,6 +112,11 @@ App :: struct {
 	// after it in a list the grid is in the middle of walking, so the press is
 	// recorded here and acted on once the frame is over.
 	pending_dismiss: [dynamic;32]string,
+	// Cards whose work would not go back into the project on its own, waiting
+	// for an agent to be put in the tree to settle it. Recorded rather than
+	// started where it is decided: that is inside the walk over app.turns, and
+	// taking a slot can grow the list the walk is holding a pointer into.
+	pending_resolve: [dynamic;32]string,
 
 	chat:      Chat,
 	// Every turn in flight, one slot each: see turns.odin. Grown as far as the
@@ -219,6 +224,7 @@ app_destroy :: proc(app: ^App) {
 	delete(app.todo_view)
 	app_notes_destroy(app)
 	for id in app.pending_dismiss do delete(id)
+	for id in app.pending_resolve do delete(id)
 	delete(app.state_last)
 	groups_destroy(&app.groups)
 	canvas_destroy(&app.canvas)
@@ -234,7 +240,12 @@ app_rescan :: proc(app: ^App) {
 // Called once a frame: takes whatever the workers have finished.
 // Applies whatever the last frame's clicks asked for.
 app_apply_clicks :: proc(app: ^App) -> bool {
-	acted := app.pending_open != "" || len(app.pending_dismiss) > 0
+	acted := app.pending_open != "" || len(app.pending_dismiss) > 0 || len(app.pending_resolve) > 0
+	for id in app.pending_resolve {
+		app_start_resolve(app, id)
+		delete(id)
+	}
+	clear(&app.pending_resolve)
 	if len(app.pending_dismiss) > 0 {
 		for id in app.pending_dismiss {
 			app_drop_todo(app, id)
@@ -1153,12 +1164,67 @@ app_land_worktree :: proc(app: ^App, t: ^Turn) {
 		_ = worktree_release(t.project, t.todo)
 		return
 	}
-	if why := worktree_land(t.project, t.todo, app.todos.list[at].text); why != "" {
+	why, conflicted := worktree_land(t.project, t.todo, app.todos.list[at].text)
+	if why != "" {
 		app_note(app, t.todo, why)
 		app_todo_finished(app, t.todo, .Asked)
+		// A conflict is not the end of the asking. The tree is sitting there
+		// with the markers in it, and the thing best placed to settle them is
+		// the one that wrote one of the two sides — so it gets put back in
+		// there to finish the job, and the card goes on saying `processing`
+		// while it does. Handing a merge conflict to a person was the whole
+		// of the answer before, and it made a card that had done its work
+		// perfectly into a chore.
+		//
+		// Exactly one go: worktree_land refuses a tree that is already
+		// mid-merge, so a resolve turn that ends without settling it lands
+		// the card on `needs you` and stops there.
+		if conflicted && !app_resolving(app, t.todo) {
+			append(&app.pending_resolve, strings.clone(t.todo))
+		}
 		return
 	}
 	_ = worktree_release(t.project, t.todo)
+}
+
+// What a turn is given when the merge is the work. Its own thread, resumed:
+// the agent that did the card is the one that wrote one side of the conflict,
+// and starting a stranger in a tree full of markers throws that away.
+RESOLVE_PROMPT :: "Your work is being merged back into the project and it conflicts. The merge is already started in this working directory — the conflicting files have markers in them and MERGE_HEAD is set. Resolve every conflict, keeping what your work was for and what the project has moved on to, check it still builds and its tests still pass, and commit the merge. Do not abort it and do not touch any other repository.\n\nThe work was:\n\n"
+
+// Puts an agent back in a card's tree to settle the merge. Once the frame is
+// over rather than where it is decided, and through the ordinary turn path —
+// a resolve is a turn on the card like any other, so the card says
+// `processing`, the thread it writes to is the card's own, and stopping or
+// dismissing the card stops it.
+@(private = "file")
+app_start_resolve :: proc(app: ^App, id: string) {
+	at := todos_find(&app.todos, id)
+	if at < 0 do return
+	td := app.todos.list[at]
+	if turn_for_todo(app, id) >= 0 do return
+	project := td.cwd != "" ? td.cwd : app.cwd
+	tree := worktree_path(project, id, context.temp_allocator)
+	if !worktree_merging(tree) do return
+	prompt := verdict_preamble(strings.concatenate({RESOLVE_PROMPT, td.text}, context.temp_allocator))
+	if !turn_start(app, tree, project, td.session, prompt, id, false) {
+		app_note(app, id, "could not start claude to resolve the merge")
+		app_todo_finished(app, id, .Failed)
+		return
+	}
+	app_note_clear(app, id)
+	app_status(app, "resolving the merge")
+}
+
+// Whether a card's tree is already stopped in a merge. Read off the tree, so
+// there is nothing to keep in step: a card gets one go at resolving because
+// the second attempt finds MERGE_HEAD still there.
+@(private = "file")
+app_resolving :: proc(app: ^App, id: string) -> bool {
+	at := todos_find(&app.todos, id)
+	if at < 0 do return false
+	project := app.todos.list[at].cwd != "" ? app.todos.list[at].cwd : app.cwd
+	return worktree_merging(worktree_path(project, id, context.temp_allocator))
 }
 
 // --- formatting -------------------------------------------------------------
