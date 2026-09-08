@@ -139,15 +139,6 @@ Runner :: struct {
 	worker:  ^thread.Thread,
 	out_r:   ^os.File,
 	err_path: string,
-	// What this turn has spent so far. It lives here and only here until the
-	// slot is released, which is when it is banked: see usage.odin.
-	usage:   Usage,
-}
-
-runner_usage :: proc(r: ^Runner) -> Usage {
-	sync.mutex_lock(&r.mu)
-	defer sync.mutex_unlock(&r.mu)
-	return r.usage
 }
 
 runner_busy :: proc(r: ^Runner) -> bool {
@@ -163,6 +154,10 @@ runner_settled :: proc(r: ^Runner) -> bool {
 	defer sync.mutex_unlock(&r.mu)
 	return !r.running && len(r.events) == 0
 }
+
+// The one run that is not a turn: the probe that asks what is left of the
+// plan, which needs a stderr file of its own rather than turn zero's.
+PROBE_SLOT :: -1
 
 // Starts a turn. `session_id` empty means a brand new session.
 // `slot` only names the file this turn's stderr goes to. Turns run several at
@@ -195,7 +190,7 @@ runner_start :: proc(
 
 	// stderr goes to a file rather than a second pipe: nothing reads it until
 	// the process is gone, and a pipe nobody drains would eventually wedge.
-	err_path := cache_path(fmt.tprintf("turn-%d-stderr.log", slot))
+	err_path := cache_path(slot == PROBE_SLOT ? "probe-stderr.log" : fmt.tprintf("turn-%d-stderr.log", slot))
 	err_file, err_open := os.open(err_path, {.Write, .Create, .Trunc})
 	if err_open != nil do err_file = nil
 
@@ -487,31 +482,15 @@ runner_line :: proc(r: ^Runner, line: string) {
 		runner_emit(r, Event{kind = .Limits, limits = lim})
 
 	case "result":
-		// `total_cost_usd` is on this record and is read by nobody: on a
-		// subscription it is a price that is never charged, and the corner
-		// says what is left of the windows instead. See usage.odin.
+		// `total_cost_usd` and the token counts are on this record and are
+		// read by nobody: on a subscription the price is never charged, and
+		// what the corner says is what is left of the windows. See usage.odin.
 		// Written down, not reported. A turn that says `error_during_execution`
 		// and then picks itself back up and finishes is a turn that finished
 		// — and reporting the first of those ended the card two minutes
 		// before the process it was watching had done the work, red, while
 		// the thread it came from went on to say the build and the tests
 		// passed.
-		// The tokens, off the same record. They used to be summed off each
-		// finished `assistant` message instead, which counts every one of
-		// them twice: the harness writes one of those per content block, all
-		// of them carrying the same message-level figures, and the numbers on
-		// them are the ones the message started with rather than the ones it
-		// ended on.
-		if usage, ok := jobj(v, "usage"); ok {
-			sync.mutex_lock(&r.mu)
-			usage_add(&r.usage, Usage{
-				input       = jint(usage, "input_tokens"),
-				output      = jint(usage, "output_tokens"),
-				cache_read  = jint(usage, "cache_read_input_tokens"),
-				cache_write = jint(usage, "cache_creation_input_tokens"),
-			})
-			sync.mutex_unlock(&r.mu)
-		}
 		sub := jstr(v, "subtype")
 		sync.mutex_lock(&r.mu)
 		delete(r.result)

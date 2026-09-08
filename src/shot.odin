@@ -198,18 +198,11 @@ shot_build :: proc(app: ^App, scene: Scene) {
 		arg     = "src/canvas.odin",
 	}
 	t.runner.running = true
-	// What it has run up so far, which the corner adds to the day's total the
-	// same way a live turn does in a real window.
-	t.runner.usage = Usage{input = 3_100, output = 9_400, cache_read = 402_000, cache_write = 21_000}
 
-	// A day's work banked behind it and an allowance part spent, so the corner
-	// has something to say. Fixed against a reset an hour and a day out, so
-	// the meters read the same on any afternoon.
+	// An allowance part spent, so the corner has something to say. Fixed
+	// against a reset an hour and a day out, so it reads the same on any
+	// afternoon.
 	now := time.time_to_unix(time.now())
-	append(&app.usage.days, Day{
-		day = usage_day_now(),
-		use = Usage{input = 28_800, output = 81_600, cache_read = 3_720_000, cache_write = 216_000, turns = 12},
-	})
 	app.usage.limits = Limits {
 		session = {util = 0.41, resets = now + 2 * 60 * 60 + 40 * 60},
 		week    = {util = 0.68, resets = now + 3 * 24 * 60 * 60},
