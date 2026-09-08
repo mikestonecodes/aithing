@@ -1148,6 +1148,22 @@ a_worktree_is_not_a_project :: proc(t: ^testing.T) {
 	testing.expect_value(t, worktree_project(app, "/tmp/proj"), "/tmp/proj")
 }
 
+// Only this program's own repository is worth a build, and the answer comes
+// off where the binary sits rather than off anything written down. A window
+// run out of one checkout and asked about another used to be the same
+// question as "did a turn just finish", which every landing anywhere answered
+// yes to.
+@(test)
+only_this_windows_own_project_is_rebuilt :: proc(t: ^testing.T) {
+	build_init()
+	defer build_destroy()
+	// The test binary sits in a directory of its own, and that is the repo as
+	// far as this is concerned: what matters is that it is exactly one place
+	// and that nowhere else matches it.
+	testing.expect(t, !build_is_own("/tmp/proj"), "a stranger's project asked for a build")
+	testing.expect(t, !build_is_own(""), "nowhere at all asked for a build")
+}
+
 // --- giving a tree back -------------------------------------------------------
 
 // A real repository and a real cache, because what is being pinned below is

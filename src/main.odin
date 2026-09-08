@@ -143,6 +143,9 @@ main :: proc() {
 
 	app_init(app)
 	defer app_destroy(app)
+	// Work that lands in this repository rebuilds this program: see build.odin.
+	build_init()
+	defer build_destroy()
 	watchdog_start()
 	defer watchdog_stop()
 	if model_set do app.model = model
@@ -265,6 +268,7 @@ main :: proc() {
 		if app_apply_events(app) do needs_draw = true
 		watch(.Jobs)
 		if app_poll_jobs(app) do needs_draw = true
+		if build_poll(app) do needs_draw = true
 		// The map keeps itself current. Threads are re-read on a slow tick,
 		// so a run that finished in another window, or work that has been
 		// checked since, turns up on its own. Far enough apart to be free —

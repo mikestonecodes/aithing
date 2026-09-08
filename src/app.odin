@@ -1241,6 +1241,12 @@ app_land_worktree :: proc(app: ^App, t: ^Turn) {
 		return
 	}
 	_ = worktree_release(t.project, t.todo)
+	// And if what just landed was this program, it is out of date the moment
+	// it landed. The build is started here rather than when the turn ended
+	// because a card works in a checkout of its own: until the branch goes in,
+	// the source it changed is not the source this binary came from. Nothing
+	// is taken over — see build.odin.
+	build_start(app, t.project)
 }
 
 // What a turn is given when the merge is the work. Its own thread, resumed:
