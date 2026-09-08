@@ -127,3 +127,28 @@ test_usage_fable_week_survives_other_models :: proc(t: ^testing.T) {
 	testing.expect_value(t, window_used(app.usage.limits.session), 0.25)
 	testing.expect_value(t, window_used(app.usage.limits.fable), 0.8)
 }
+
+// A reading is on disk as soon as it is read, which is what the next window to
+// open draws before its own probe comes back. It used to wait for the slow
+// tick everything else is saved on, so a window killed in between opened with
+// three dashes and had to ask again.
+@(test)
+test_usage_cached_when_read :: proc(t: ^testing.T) {
+	app := usage_app()
+	defer usage_free(app)
+	os.remove(config_path("usage"))
+
+	now := time.time_to_unix(time.now())
+	usage_take(&app.usage, Limits {
+		session = {util = 0.2, resets = now + 600},
+		week    = {util = 0.5, resets = now + 6000},
+		fable   = {util = 0.8, resets = now + 6000},
+	})
+
+	back: Ledger
+	defer usage_destroy(&back)
+	usage_load(&back)
+	testing.expect_value(t, window_used(back.limits.fable), 0.8)
+	testing.expect_value(t, window_used(back.limits.session), 0.2)
+	testing.expect(t, back.limits.read_at != 0, "a cached reading with no time on it")
+}

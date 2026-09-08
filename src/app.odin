@@ -219,7 +219,8 @@ app_destroy :: proc(app: ^App) {
 	archive_save(&app.archive)
 	archive_destroy(&app.archive)
 	runner_destroy(&app.probe)
-	usage_save(&app.usage)
+	// Nothing to save on the way out: a reading is written the moment it
+	// lands, which is the only moment there is anything new to write.
 	usage_destroy(&app.usage)
 	sessions_free(app.sessions)
 	delete(app.visible)
