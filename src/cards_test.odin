@@ -665,30 +665,35 @@ a_card_lands_in_the_project_you_are_in :: proc(t: ^testing.T) {
 	scratch_dir(t)
 	app := scratch_app()
 	defer scratch_free(app)
-	app.cwd = strings.clone("/home/mike/Source/aithing")
+	// Directories that are nobody's repository. A card asked for is a card
+	// started, and starting one cuts it a worktree in whatever project it is
+	// filed under — so this test, which is only about which project that is,
+	// used to leave a branch and a checkout in the repository it names every
+	// time the suite ran.
+	app.cwd = strings.clone("/tmp/proj-a")
 	sessions := make([]Session, 1)
 	sessions[0] = fake_session("tmm-1", "playback tree")
-	sessions[0].cwd = "/home/mike/Source/toomanymachines"
+	sessions[0].cwd = "/tmp/proj-b"
 	app.sessions = sessions
 
 	// Typed with nothing open: it goes where the window was launched.
 	editor_set_text(&app.capture, "one")
 	app_capture(app)
-	testing.expect_value(t, app.todos.list[0].cwd, "/home/mike/Source/aithing")
+	testing.expect_value(t, app.todos.list[0].cwd, "/tmp/proj-a")
 
 	// Now a thread in another project is opened, which is where the work is.
 	app_open(app, 0)
-	testing.expect_value(t, app.cwd, "/home/mike/Source/toomanymachines")
+	testing.expect_value(t, app.cwd, "/tmp/proj-b")
 	editor_set_text(&app.capture, "two")
 	app_capture(app)
-	testing.expect_value(t, app.todos.list[1].cwd, "/home/mike/Source/toomanymachines")
+	testing.expect_value(t, app.todos.list[1].cwd, "/tmp/proj-b")
 
 	// The grid narrowed to a project still wins: it is the more recent thing
 	// said about where you are.
-	canvas_filter_project(app, "/home/mike/Source/aithing")
+	canvas_filter_project(app, "/tmp/proj-a")
 	editor_set_text(&app.capture, "three")
 	app_capture(app)
-	testing.expect_value(t, app.todos.list[2].cwd, "/home/mike/Source/aithing")
+	testing.expect_value(t, app.todos.list[2].cwd, "/tmp/proj-a")
 }
 
 // One variable says what is on screen, and Esc walks it back one step at a
@@ -1095,9 +1100,9 @@ a_worktree_is_not_a_project :: proc(t: ^testing.T) {
 	app := scratch_app()
 	defer scratch_free(app)
 
-	id := todos_add(&app.todos, "bake the atlas", "sess-w", "/home/mike/Source/aithing")
-	tree := worktree_path("/home/mike/Source/aithing", id, context.temp_allocator)
-	testing.expect_value(t, worktree_project(app, tree), "/home/mike/Source/aithing")
+	id := todos_add(&app.todos, "bake the atlas", "sess-w", "/tmp/proj")
+	tree := worktree_path("/tmp/proj", id, context.temp_allocator)
+	testing.expect_value(t, worktree_project(app, tree), "/tmp/proj")
 	// Anywhere else is itself, whatever it is called.
 	testing.expect_value(t, worktree_project(app, "/tmp/proj"), "/tmp/proj")
 }
