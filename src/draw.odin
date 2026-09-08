@@ -148,8 +148,18 @@ Hit :: struct {
 
 LAUNCH_ROWS :: 8
 
+// How many of those rows the projects may take. They come first and, with
+// nothing typed, there is one for every project on disk — a cap is what keeps
+// the threads from being pushed off the bottom by a long list of them.
+LAUNCH_PROJECTS :: 4
+
 // Everything the typed text finds: the projects first, because narrowing to
 // one is the commonest thing to want, then the threads themselves.
+//
+// First and always, not only once something is typed. `/` on a fresh grid used
+// to offer nothing but threads, which is the one thing the grid behind it is
+// already showing; the projects are what it cannot say, so they are what the
+// menu opens on. Newest first, because the sessions are.
 launcher_hits :: proc(app: ^App, query: string) -> []Hit {
 	out := make([dynamic]Hit, context.temp_allocator)
 	// The way back out of a narrowed grid, offered where the narrowing was
@@ -158,18 +168,22 @@ launcher_hits :: proc(app: ^App, query: string) -> []Hit {
 	if app.canvas.project != "" {
 		append(&out, Hit{session = -1, cwd = "", name = "all projects", sub = "everything"})
 	}
-	if query != "" {
-		seen := make(map[string]int, context.temp_allocator)
-		for s in app.sessions {
+	seen := make(map[string]int, context.temp_allocator)
+	for s in app.sessions {
+		// The project the grid is already narrowed to is not offered: the row
+		// above widens it, and narrowing to where you are does nothing.
+		if app.canvas.project != "" && s.cwd == app.canvas.project do continue
+		if query != "" {
 			name := strings.to_lower(base_name(s.cwd), context.temp_allocator)
 			if !strings.contains(name, query) do continue
-			if at, has := seen[s.cwd]; has {
-				out[at].count += 1
-				continue
-			}
-			seen[s.cwd] = len(out)
-			append(&out, Hit{session = -1, cwd = s.cwd, name = base_name(s.cwd), sub = "project", count = 1})
 		}
+		if at, has := seen[s.cwd]; has {
+			out[at].count += 1
+			continue
+		}
+		if len(seen) >= LAUNCH_PROJECTS do continue
+		seen[s.cwd] = len(out)
+		append(&out, Hit{session = -1, cwd = s.cwd, name = base_name(s.cwd), sub = "project", count = 1})
 	}
 	// Threads: the filtered list is already in newest-first order and already
 	// matches the query, archived and abandoned ones included.

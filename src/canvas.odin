@@ -17,8 +17,10 @@ import "core:strings"
 //
 // The keyboard drives it. Typing goes into the box along the bottom, and what
 // is typed there becomes a card a part. `/` opens the launcher, a full-screen
-// menu in type big enough to read across the room: type to narrow, arrows to
-// choose, Enter to open a thread or to filter the grid down to one project.
+// menu in type big enough to read across the room: the projects first,
+// whether or not anything is typed, then the threads. Type to narrow, arrows
+// to choose, Enter to open a thread or to filter the grid down to one
+// project.
 
 CARD_W :: f32(300) // the width a card wants; the row stretches to fill
 CARD_H :: f32(132)
