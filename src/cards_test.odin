@@ -72,11 +72,26 @@ scratch_free :: proc(app: ^App) {
 	free(app)
 }
 
+// A merge without a repository behind it. Every finished card merges its
+// branch now, and a test suite that did it for real would need a git
+// repository per card. Stateless, like stub_spawn: the tests run in parallel
+// threads over one set of globals, so what this answers has to come out of
+// what it was asked — a card whose wording says `conflict` is the one git
+// refuses.
+@(private = "file")
+MERGE_REFUSED :: "CONFLICT (content): Merge conflict in src/app.odin"
+
+@(private = "file")
+stub_merge :: proc(project, cwd, id, text: string) -> string {
+	return strings.contains(text, "conflict") ? MERGE_REFUSED : ""
+}
+
 @(private = "file")
 scratch_app :: proc() -> ^App {
 	app := new(App)
 	app.cwd = strings.clone("")
 	turn_spawn = stub_spawn
+	worktree_merge = stub_merge
 	return app
 }
 
@@ -911,4 +926,69 @@ a_worktree_is_not_a_project :: proc(t: ^testing.T) {
 	testing.expect_value(t, worktree_project(app, tree), "/home/mike/Source/aithing")
 	// Anywhere else is itself, whatever it is called.
 	testing.expect_value(t, worktree_project(app, "/tmp/proj"), "/tmp/proj")
+}
+
+// --- merging -----------------------------------------------------------------
+
+// A card that finishes puts its work back in the project. It used to stop at
+// the branch: the card went green, the commits stayed in a tree under the
+// cache, and the next card cut its own tree from a HEAD that had never seen
+// them — so two cards asked to build on one another both started from before
+// either.
+@(test)
+a_finished_card_merges_its_branch :: proc(t: ^testing.T) {
+	scratch_dir(t)
+	app := scratch_app()
+	defer scratch_free(app)
+	app.cwd = strings.clone("/tmp/proj")
+
+	editor_set_text(&app.capture, "bake the atlas")
+	app_capture(app)
+
+	say := Event{kind = .Verdict, verdict = .Done, text = strings.clone("baked it")}
+	defer event_destroy(&say)
+	app_apply_event_for_test(app, 0, &say)
+	done := Event{kind = .Done}
+	defer event_destroy(&done)
+	app_apply_event_for_test(app, 0, &done)
+
+	testing.expect_value(t, app.todos.list[0].state, Todo_State.Done)
+}
+
+// And a merge git will not do is not a finished card. The commit is on the
+// branch and not in the project, so `done` would be the grid saying the work
+// landed while it sits in the cache waiting for someone to resolve it.
+@(test)
+a_merge_git_refuses_needs_you :: proc(t: ^testing.T) {
+	scratch_dir(t)
+	app := scratch_app()
+	defer scratch_free(app)
+	app.cwd = strings.clone("/tmp/proj")
+
+	// The card the stub refuses, which is also how this checks the card's own
+	// wording is what gets handed to the merge.
+	editor_set_text(&app.capture, "bake the atlas conflict")
+	app_capture(app)
+	id := app.todos.list[0].id
+
+	say := Event{kind = .Verdict, verdict = .Done, text = strings.clone("baked it")}
+	defer event_destroy(&say)
+	app_apply_event_for_test(app, 0, &say)
+	done := Event{kind = .Done}
+	defer event_destroy(&done)
+	app_apply_event_for_test(app, 0, &done)
+
+	testing.expect_value(t, app.todos.list[0].state, Todo_State.Asked)
+	// Git's own sentence, not the agent's sign-off: what needs doing is the
+	// merge, and "baked it" says nothing about it.
+	testing.expect_value(t, app.notes[id], MERGE_REFUSED)
+}
+
+// Nothing to merge when the card ran where it always ran: a project git knows
+// nothing about has no branch and no tree, and asking git about it would be a
+// failure reported over work that was done.
+@(test)
+a_card_without_a_tree_merges_nothing :: proc(t: ^testing.T) {
+	testing.expect_value(t, worktree_merge_git("/tmp/proj", "/tmp/proj", "n-1", "x"), "")
+	testing.expect_value(t, worktree_merge_git("", "", "n-1", "x"), "")
 }

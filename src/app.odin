@@ -1070,10 +1070,36 @@ app_turn_ended :: proc(app: ^App, t: ^Turn, state: Todo_State) {
 	// What the process did and what the work did are two questions, and the
 	// exit code only answers the first.
 	outcome := turn_outcome(t, state)
-	if outcome == .Asked do app_note(app, t.todo, t.say)
+	// Finished work goes back to the project it was cut from. A card that
+	// said `done` used to leave its commits on a branch in the cache, which
+	// meant the next card started from a HEAD that had never seen them —
+	// done on the grid and nowhere in the repository.
+	merged := false
+	if outcome == .Done {
+		if why := worktree_merge(t.project, t.cwd, t.todo, app_todo_text(app, t.todo));
+		   why != "" {
+			// The work is in the branch and not in the project, and no card
+			// on the grid can say `done` about that. `needs you` with git's
+			// sentence under it is what there is to act on.
+			app_note(app, t.todo, why)
+			outcome = .Asked
+		} else {
+			merged = true
+		}
+	}
+	if outcome == .Asked && app.notes[t.todo] == "" do app_note(app, t.todo, t.say)
 	app_todo_finished(app, t.todo, outcome)
 	app.rescan = true
-	reload_build(app, t.cwd)
+	// The project, not the tree: once the branch is in, the source a turn
+	// changed is the source this binary was built from again.
+	reload_build(app, merged ? t.project : t.cwd)
+}
+
+// What a card says, for anything that needs its wording rather than its id.
+@(private = "file")
+app_todo_text :: proc(app: ^App, id: string) -> string {
+	at := todos_find(&app.todos, id)
+	return at < 0 ? "" : app.todos.list[at].text
 }
 
 // --- formatting -------------------------------------------------------------
