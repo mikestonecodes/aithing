@@ -346,6 +346,12 @@ app_chat_title :: proc(app: ^App) -> string {
 	if at := session_index(app, app.chat.session_id); at >= 0 && app.sessions[at].title != "" {
 		return app.sessions[at].title
 	}
+	// A thread this window has just made is not in the scan yet — the harness
+	// writes a title only once there is something to write one from — and the
+	// card that asked for it says what the work is meanwhile.
+	if app.chat.session_id != "" {
+		for td in app.todos.list do if td.session == app.chat.session_id do return td.text
+	}
 	return app.chat.title
 }
 
@@ -738,11 +744,45 @@ app_cancel :: proc(app: ^App) -> bool {
 	return false
 }
 
-// Only records what was clicked; app_apply_clicks acts on it once the frame
-// that is walking the grid is over.
+// Asking for a thread. The page moves to it in the same breath, so the chat
+// under it has to move now as well — the reading of the file is what waits.
+//
+// It used to be only the request that was recorded, and the transcript stayed
+// on whatever was last open until the scan came round and named the new one.
+// A card's thread is not in the scan the moment it is made: the scan skips a
+// file with nothing in it worth a title, which is exactly what a turn that has
+// just started has written. So clicking a running card sat you in the last
+// conversation you had open, wearing its title, for as long as that took — and
+// anything typed there went to that thread.
 app_select :: proc(app: ^App, id: string) {
 	delete(app.pending_open)
 	app.pending_open = strings.clone(id)
+	if id == "" || app.chat.session_id == id do return
+
+	// The thread, named and empty. Everything here is what app_open sets from
+	// the session list; the list is the one thing missing, so the id and the
+	// cwd are taken from whoever does know — the turn writing it, or the card
+	// that asked for it — and the transcript arrives when it arrives.
+	chat_destroy(&app.chat)
+	clear(&app.open)
+	app.chat.session_id = strings.clone(id)
+	app.chat.cwd = strings.clone(app_session_cwd(app, id))
+	app.cur_msg = -1
+	app.stick = true
+	app.chat_ver += 1
+	app.transcript.offset = 0
+	app.transcript.target = 0
+	turns_rebind(app)
+	app_status(app, "loading...")
+}
+
+// Where a thread runs, for a thread the scan has not listed yet: the turn
+// writing it knows, and failing that the card that asked for it does.
+app_session_cwd :: proc(app: ^App, id: string) -> string {
+	if at := session_index(app, id); at >= 0 do return app.sessions[at].cwd
+	if at := turn_for_session(app, id); at >= 0 do return app.turns[at].cwd
+	for td in app.todos.list do if td.session == id do return td.cwd
+	return ""
 }
 
 chat_new :: proc(app: ^App) {
@@ -762,7 +802,10 @@ chat_new :: proc(app: ^App) {
 // lands instantly even on a session file that runs to tens of megabytes.
 app_open :: proc(app: ^App, index: int) {
 	if index < 0 || index >= len(app.sessions) do return
-	if app.chat.session_id == app.sessions[index].id && !load_busy(&app.load) do return
+	// Already open and already read. The path is what says it was read: a
+	// thread named by a click but never found on disk has none, and the guard
+	// used to turn that into "you are looking at it" and never load a thing.
+	if app.chat.session_id == app.sessions[index].id && app.chat.path != "" && !load_busy(&app.load) do return
 
 	s := &app.sessions[index]
 	chat_destroy(&app.chat)

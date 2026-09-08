@@ -475,6 +475,46 @@ clicking_a_brand_new_thread_opens_it :: proc(t: ^testing.T) {
 	testing.expect_value(t, app.chat.session_id, "sess-fresh")
 }
 
+// Clicking a card puts you in that card's thread and nothing else, even
+// before the scan has heard of it. The page moved on the click and the
+// transcript waited for the scan, so a card whose turn had just started —
+// which is a file the scan skips, having nothing in it worth a title — left
+// the last conversation you had open sitting there under the new card's
+// click, wearing its own title, and a message typed into it went there.
+@(test)
+opening_a_card_leaves_no_other_thread_on_screen :: proc(t: ^testing.T) {
+	scratch_dir(t)
+	app := scratch_app()
+	defer scratch_free(app)
+
+	sessions := make([]Session, 1)
+	sessions[0] = fake_session("sess-old", "the last thing read")
+	app.sessions = sessions
+
+	// A thread is open and read.
+	app_open(app, 0)
+	testing.expect_value(t, app.chat.session_id, "sess-old")
+
+	// Now a card whose thread nothing has scanned.
+	id := todos_add(&app.todos, "bake the atlas", "sess-fresh", "/tmp/proj")
+	app_open_todo(app, id)
+	testing.expect_value(t, app.chat.session_id, "sess-fresh")
+	testing.expect_value(t, len(app.chat.msgs), 0)
+	testing.expect_value(t, app_chat_title(app), "bake the atlas")
+
+	// And when the scan does land, the transcript is read: the empty chat put
+	// up on the click must not be mistaken for one already open.
+	_ = app_apply_clicks(app)
+	testing.expect_value(t, app.pending_open, "sess-fresh")
+	delete(app.sessions)
+	fresh := make([]Session, 1)
+	fresh[0] = fake_session("sess-fresh", "bake the atlas")
+	app.sessions = fresh
+	_ = app_apply_clicks(app)
+	testing.expect_value(t, app.pending_open, "")
+	testing.expect(t, load_busy(&app.load))
+}
+
 // Esc on the grid does not stop work. It used to fall through to stopping
 // every turn in flight, and a killed `claude` exits non-zero, which arrives
 // as a failure — so a press that found nothing else to give up turned four
