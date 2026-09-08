@@ -471,26 +471,25 @@ runner_line :: proc(r: ^Runner, line: string) {
 		windows, has_windows := jobj(info, "unifiedWindows")
 		if !has_windows do return
 		lim: Limits
-		if w, five := jobj(windows, "five_hour"); five {
-			lim.five = {util = f32(jnum(w, "utilization")), resets = i64(jint(w, "resetsAt"))}
+		if w, has := jobj(windows, "five_hour"); has {
+			lim.session = {util = f32(jnum(w, "utilization")), resets = i64(jint(w, "resetsAt"))}
 		}
-		if w, week := jobj(windows, "seven_day"); week {
+		if w, has := jobj(windows, "seven_day"); has {
 			lim.week = {util = f32(jnum(w, "utilization")), resets = i64(jint(w, "resetsAt"))}
+		}
+		// Fable's own week, under the name the harness gives it. It is only on
+		// the record when the turn reading it is running on Fable — the other
+		// models are not charged against it and are not told about it — which
+		// is why the reading is merged window by window rather than assigned.
+		if w, has := jobj(windows, "seven_day_overage_included"); has {
+			lim.fable = {util = f32(jnum(w, "utilization")), resets = i64(jint(w, "resetsAt"))}
 		}
 		runner_emit(r, Event{kind = .Limits, limits = lim})
 
 	case "result":
-		// The dollars, which only the harness can work out: it knows what
-		// each model charges and what it charged for the cache. A turn can
-		// report more than one of these — see below — so they add up rather
-		// than replace.
-		if cost, ok := jobj(v, "total_cost_usd"); ok {
-			if f, is_f := cost.(json.Float); is_f {
-				sync.mutex_lock(&r.mu)
-				r.usage.cost += f64(f)
-				sync.mutex_unlock(&r.mu)
-			}
-		}
+		// `total_cost_usd` is on this record and is read by nobody: on a
+		// subscription it is a price that is never charged, and the corner
+		// says what is left of the windows instead. See usage.odin.
 		// Written down, not reported. A turn that says `error_during_execution`
 		// and then picks itself back up and finishes is a turn that finished
 		// — and reporting the first of those ended the card two minutes

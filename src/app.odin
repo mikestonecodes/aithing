@@ -1012,7 +1012,7 @@ app_apply :: proc(app: ^App, at: int, e: ^Event) {
 	// taken here, before the turn is asked whether it has a transcript to
 	// draw into: nearly every turn in this window is headless, and a reading
 	// only the one on screen could deliver would almost never arrive.
-	if e.kind == .Limits do app.usage.limits = e.limits
+	if e.kind == .Limits do limits_merge(&app.usage.limits, e.limits)
 
 	if !t.chat || (t.session != "" && t.session != c.session_id) {
 		#partial switch e.kind {

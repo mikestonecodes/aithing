@@ -45,20 +45,18 @@ test_usage_counted_once :: proc(t: ^testing.T) {
 	app := usage_app()
 	defer usage_free(app)
 
-	spend := Usage{cost = 0.25, input = 10, output = 20, cache_read = 30}
+	spend := Usage{input = 10, output = 20, cache_read = 30}
 	at := live_turn(app, spend)
 
 	// Running: read off the turn, and nowhere else.
 	live := app_usage_today(app)
-	testing.expect_value(t, live.cost, 0.25)
 	testing.expect_value(t, live.input, 10)
-	testing.expect_value(t, usage_day(&app.usage, usage_day_now()).cost, 0)
+	testing.expect_value(t, usage_day(&app.usage, usage_day_now()).input, 0)
 
 	// Released: the same total, banked instead. Not twice, and not lost.
 	app.turns[at].runner.running = false
 	turn_release(app, at)
 	after := app_usage_today(app)
-	testing.expect_value(t, after.cost, 0.25)
 	testing.expect_value(t, after.input, 10)
 	testing.expect_value(t, after.output, 20)
 	testing.expect_value(t, after.cache_read, 30)
@@ -86,14 +84,13 @@ test_usage_parallel_turns :: proc(t: ^testing.T) {
 	app := usage_app()
 	defer usage_free(app)
 
-	a := live_turn(app, Usage{cost = 0.10, output = 5})
-	live_turn(app, Usage{cost = 0.30, output = 7})
-	testing.expect_value(t, app_usage_today(app).cost, 0.40)
+	a := live_turn(app, Usage{output = 5})
+	live_turn(app, Usage{output = 7})
+	testing.expect_value(t, app_usage_today(app).output, 12)
 
 	app.turns[a].runner.running = false
 	turn_release(app, a)
 	total := app_usage_today(app)
-	testing.expect_value(t, total.cost, 0.40)
 	testing.expect_value(t, total.output, 12)
 	testing.expect_value(t, total.turns, 1) // only the one that finished
 }
@@ -106,13 +103,13 @@ test_usage_day_kept_apart :: proc(t: ^testing.T) {
 	defer usage_free(app)
 
 	today := usage_day_now()
-	append(&app.usage.days, Day{day = today - 1, use = Usage{cost = 2, turns = 4}})
-	usage_bank(&app.usage, Usage{cost = 1, turns = 1})
+	append(&app.usage.days, Day{day = today - 1, use = Usage{output = 2, turns = 4}})
+	usage_bank(&app.usage, Usage{output = 1, turns = 1})
 
 	testing.expect_value(t, len(app.usage.days), 2)
-	testing.expect_value(t, usage_day(&app.usage, today - 1).cost, 2)
-	testing.expect_value(t, usage_day(&app.usage, today).cost, 1)
-	testing.expect_value(t, usage_day(&app.usage, today - 5).cost, 0)
+	testing.expect_value(t, usage_day(&app.usage, today - 1).output, 2)
+	testing.expect_value(t, usage_day(&app.usage, today).output, 1)
+	testing.expect_value(t, usage_day(&app.usage, today - 5).output, 0)
 }
 
 @(test)
@@ -121,9 +118,13 @@ test_usage_round_trip :: proc(t: ^testing.T) {
 	defer usage_free(app)
 
 	today := usage_day_now()
-	app.usage.limits = Limits{five = {util = 0.25, resets = 1_788_922_800}, week = {util = 0.5, resets = 1_789_426_800}}
-	append(&app.usage.days, Day{day = today - 2, use = Usage{cost = 1.5, input = 3, output = 4, cache_read = 5, cache_write = 6, turns = 7}})
-	usage_bank(&app.usage, Usage{cost = 0.125, turns = 2})
+	app.usage.limits = Limits {
+		session = {util = 0.25, resets = 1_788_922_800},
+		week    = {util = 0.5, resets = 1_789_426_800},
+		fable   = {util = 0.75, resets = 1_789_426_800},
+	}
+	append(&app.usage.days, Day{day = today - 2, use = Usage{input = 3, output = 4, cache_read = 5, cache_write = 6, turns = 7}})
+	usage_bank(&app.usage, Usage{output = 9, turns = 2})
 	usage_save(&app.usage)
 
 	back: Ledger
@@ -132,9 +133,11 @@ test_usage_round_trip :: proc(t: ^testing.T) {
 	testing.expect_value(t, len(back.days), 2)
 	testing.expect_value(t, usage_day(&back, today - 2).input, 3)
 	testing.expect_value(t, usage_day(&back, today - 2).turns, 7)
-	testing.expect_value(t, usage_day(&back, today).cost, 0.125)
+	testing.expect_value(t, usage_day(&back, today).output, 9)
 	testing.expect_value(t, back.limits.week.util, 0.5)
 	testing.expect_value(t, back.limits.week.resets, app.usage.limits.week.resets)
+	testing.expect_value(t, back.limits.fable.util, 0.75)
+	testing.expect_value(t, back.limits.session.util, 0.25)
 
 	// Nothing changed, so nothing is written: a window sitting still must not
 	// rewrite the file on every tick.
@@ -164,18 +167,47 @@ test_usage_limits_from_a_headless_turn :: proc(t: ^testing.T) {
 	at := live_turn(app, Usage{})
 	app.turns[at].chat = false
 	now := time.time_to_unix(time.now())
-	e := Event{kind = .Limits, limits = Limits{five = {util = 0.2, resets = now + 600}, week = {util = 0.5, resets = now + 6000}}}
+	e := Event{kind = .Limits, limits = Limits{session = {util = 0.2, resets = now + 600}, week = {util = 0.5, resets = now + 6000}}}
 	app_apply_event_for_test(app, at, &e)
-	testing.expect_value(t, window_used(app.usage.limits.five), 0.2)
+	testing.expect_value(t, window_used(app.usage.limits.session), 0.2)
 
-	e2 := Event{kind = .Limits, limits = Limits{five = {util = 0.3, resets = now + 600}, week = {util = 0.5, resets = now + 6000}}}
+	e2 := Event{kind = .Limits, limits = Limits{session = {util = 0.3, resets = now + 600}, week = {util = 0.5, resets = now + 6000}}}
 	app_apply_event_for_test(app, at, &e2)
-	testing.expect_value(t, window_used(app.usage.limits.five), 0.3)
+	testing.expect_value(t, window_used(app.usage.limits.session), 0.3)
 
 	app.turns[at].runner.running = false
 	turn_release(app, at)
 	// The turn is gone and the reading is not: it was never the turn's.
-	testing.expect_value(t, window_used(app.usage.limits.five), 0.3)
+	testing.expect_value(t, window_used(app.usage.limits.session), 0.3)
+}
+
+// Only a Fable turn is told about the Fable week. Every other turn's reading
+// is silent about it, and a silence is not a zero — the meter used to be
+// wiped back to unread by the next Haiku turn that happened to report.
+@(test)
+test_usage_fable_week_survives_other_models :: proc(t: ^testing.T) {
+	app := usage_app()
+	defer usage_free(app)
+
+	at := live_turn(app, Usage{})
+	now := time.time_to_unix(time.now())
+	fable := Event{kind = .Limits, limits = Limits {
+		session = {util = 0.2, resets = now + 600},
+		week    = {util = 0.5, resets = now + 6000},
+		fable   = {util = 0.8, resets = now + 6000},
+	}}
+	app_apply_event_for_test(app, at, &fable)
+	testing.expect_value(t, window_used(app.usage.limits.fable), 0.8)
+
+	// A turn on any other model: the same two windows, and nothing about
+	// Fable's.
+	other := Event{kind = .Limits, limits = Limits {
+		session = {util = 0.25, resets = now + 600},
+		week    = {util = 0.55, resets = now + 6000},
+	}}
+	app_apply_event_for_test(app, at, &other)
+	testing.expect_value(t, window_used(app.usage.limits.session), 0.25)
+	testing.expect_value(t, window_used(app.usage.limits.fable), 0.8)
 }
 
 @(test)
@@ -185,7 +217,4 @@ test_usage_reads_as_numbers :: proc(t: ^testing.T) {
 	testing.expect_value(t, usage_short(42_400), "42k")
 	testing.expect_value(t, usage_short(4_120_000), "4.1M")
 	testing.expect_value(t, usage_short(12_400_000), "12M")
-	// Cents matter on the first turn of the day and stop mattering after it.
-	testing.expect_value(t, usage_money(0.042), "$0.042")
-	testing.expect_value(t, usage_money(12.5), "$12.50")
 }

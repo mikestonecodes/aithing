@@ -7,14 +7,15 @@ import "core:strconv"
 import "core:strings"
 import "core:time"
 
-// What the harness has cost, and the corner of the screen that says so.
+// What the harness has run through, and the corner of the screen that says so.
 //
-// Every turn this window runs is a `claude -p`, and every one of them reports
-// what it spent: token counts on each finished message, dollars on the
-// `result` record at the end. Those numbers used to be read and thrown away —
-// `app.cost` was written by whichever turn ended last and never drawn — so a
-// window that had just run forty headless turns could not say what forty
-// turns had cost.
+// The corner used to lead with dollars — the `total_cost_usd` the harness puts
+// on every `result` record. On a subscription that is a price nobody pays: the
+// thing that actually stops work at four in the afternoon is an allowance
+// window, and a window at 3% left says nothing about how many dollars went
+// into it. So the money is gone from here entirely, field and all, rather than
+// kept around unread — the three windows are the answer, and tokens and turns
+// are the size of the day underneath them.
 //
 // A turn's numbers live in one place and move once. While it runs they are in
 // its own runner and nowhere else; when its slot is released they are added
@@ -23,7 +24,6 @@ import "core:time"
 // is no moment where a turn is counted in both or in neither.
 
 Usage :: struct {
-	cost:        f64, // US dollars, as the harness reckons them
 	input:       int,
 	output:      int,
 	cache_read:  int,
@@ -32,7 +32,6 @@ Usage :: struct {
 }
 
 usage_add :: proc(a: ^Usage, b: Usage) {
-	a.cost += b.cost
 	a.input += b.input
 	a.output += b.output
 	a.cache_read += b.cache_read
@@ -60,11 +59,12 @@ Day :: struct {
 	use: Usage,
 }
 
-// What the plan allows and how much of it is gone: the five hour window and
-// the week, which is what `/usage` reports. The harness writes it on a record
-// of its own in every turn's stream, and it is the account's answer rather
-// than the turn's — so the newest reading from any turn is the whole of it,
-// and there is nothing to add up.
+// What the plan allows and how much of it is gone: the session, the week, and
+// the week's separate allowance for Fable — the three windows `/usage`
+// reports. The harness writes them on a record of its own in every turn's
+// stream, and it is the account's answer rather than the turn's — so the
+// newest reading from any turn is the whole of it, and there is nothing to
+// add up.
 // Not `Window`: that is the one the program is drawn in.
 Allowance :: struct {
 	util:   f32, // 0..1 of it used
@@ -72,8 +72,21 @@ Allowance :: struct {
 }
 
 Limits :: struct {
-	five: Allowance,
-	week: Allowance,
+	session: Allowance,
+	week:    Allowance,
+	fable:   Allowance,
+}
+
+// A reading is per window, not per event. Only a turn running on Fable is told
+// about the Fable week — a Haiku turn's record carries the session and the
+// week and stops — so assigning the whole struct wiped the Fable meter back to
+// unread every time anything else in the window took a turn, which is most of
+// them. A window nobody reported is a window nobody reported: it keeps what it
+// last said rather than being told it is unknown.
+limits_merge :: proc(l: ^Limits, read: Limits) {
+	if read.session.resets != 0 do l.session = read.session
+	if read.week.resets != 0 do l.week = read.week
+	if read.fable.resets != 0 do l.fable = read.fable
 }
 
 // A window past its reset is empty again, whoever read it and whenever. This
@@ -126,7 +139,7 @@ usage_destroy :: proc(l: ^Ledger) {
 }
 
 @(private = "file")
-USAGE_VERSION :: "1"
+USAGE_VERSION :: "2"
 
 // One line a day: the fields in the order the struct has them. Written to the
 // same config directory everything else here remembers itself in.
@@ -135,18 +148,19 @@ usage_text :: proc(l: ^Ledger) -> string {
 	fmt.sbprintfln(&b, "version %s", USAGE_VERSION)
 	fmt.sbprintfln(
 		&b,
-		"limits %.4f %d %.4f %d",
-		l.limits.five.util,
-		l.limits.five.resets,
+		"limits %.4f %d %.4f %d %.4f %d",
+		l.limits.session.util,
+		l.limits.session.resets,
 		l.limits.week.util,
 		l.limits.week.resets,
+		l.limits.fable.util,
+		l.limits.fable.resets,
 	)
 	for d in l.days {
 		fmt.sbprintfln(
 			&b,
-			"day %d %.6f %d %d %d %d %d",
+			"day %d %d %d %d %d %d",
 			d.day,
-			d.use.cost,
 			d.use.input,
 			d.use.output,
 			d.use.cache_read,
@@ -167,21 +181,22 @@ usage_load :: proc(l: ^Ledger) {
 			if f[1] != USAGE_VERSION do return // written under an older shape
 			continue
 		}
-		if len(f) == 5 && f[0] == "limits" {
-			five, _ := strconv.parse_f64(f[1])
+		if len(f) == 7 && f[0] == "limits" {
+			session, _ := strconv.parse_f64(f[1])
 			week, _ := strconv.parse_f64(f[3])
-			l.limits.five = {util = f32(five), resets = atoi(f[2])}
+			fable, _ := strconv.parse_f64(f[5])
+			l.limits.session = {util = f32(session), resets = atoi(f[2])}
 			l.limits.week = {util = f32(week), resets = atoi(f[4])}
+			l.limits.fable = {util = f32(fable), resets = atoi(f[6])}
 			continue
 		}
-		if len(f) != 8 || f[0] != "day" do continue
+		if len(f) != 7 || f[0] != "day" do continue
 		d := Day{day = int(atoi(f[1]))}
-		d.use.cost, _ = strconv.parse_f64(f[2])
-		d.use.input = int(atoi(f[3]))
-		d.use.output = int(atoi(f[4]))
-		d.use.cache_read = int(atoi(f[5]))
-		d.use.cache_write = int(atoi(f[6]))
-		d.use.turns = int(atoi(f[7]))
+		d.use.input = int(atoi(f[2]))
+		d.use.output = int(atoi(f[3]))
+		d.use.cache_read = int(atoi(f[4]))
+		d.use.cache_write = int(atoi(f[5]))
+		d.use.turns = int(atoi(f[6]))
 		append(&l.days, d)
 	}
 	l.last = strings.clone(usage_text(l))
@@ -213,8 +228,8 @@ app_usage_today :: proc(app: ^App) -> Usage {
 	return u
 }
 
-// A count at a glance: four figures at most, so the line under the cost does
-// not change width every time a message lands.
+// A count at a glance: four figures at most, so the line of tokens does not
+// change width every time a message lands.
 usage_short :: proc(n: int) -> string {
 	switch {
 	case n >= 10_000_000:
@@ -227,14 +242,6 @@ usage_short :: proc(n: int) -> string {
 		return fmt.tprintf("%.1fk", f64(n) / 1000)
 	}
 	return fmt.tprintf("%d", n)
-}
-
-// Money, at the size the number actually is. A turn or two costs cents, and a
-// figure rounded to the penny spends the first minute of every day reading
-// `$0.00`.
-usage_money :: proc(cost: f64) -> string {
-	if cost < 1 do return fmt.tprintf("$%.3f", cost)
-	return fmt.tprintf("$%.2f", cost)
 }
 
 // How much of an allowance is gone, in the colour that says so: the ramp runs
@@ -256,12 +263,19 @@ usage_until :: proc(resets: i64) -> string {
 	return fmt.tprintf("%dd %dh", days, hours)
 }
 
-USAGE_W :: f32(262)
-USAGE_H :: f32(128)
+// Wider and taller than it was, because it says three things now rather than
+// two and they are the point of the panel: at the old size the meters were a
+// footnote under a dollar figure, and the figure is gone.
+USAGE_W :: f32(310)
+USAGE_H :: f32(190)
 @(private = "file")
-USAGE_PAD :: f32(14)
+USAGE_PAD :: f32(16)
 @(private = "file")
-METER_H :: f32(7)
+METER_H :: f32(8)
+@(private = "file")
+METER_TOP :: f32(74)
+@(private = "file")
+METER_ROW :: f32(38)
 
 // The corner. `strip` is the box along the bottom of the window — the composer
 // or the capture box — so that a window too narrow to have room beside it puts
@@ -271,8 +285,6 @@ draw_usage :: proc(app: ^App, full: Rect, strip: Rect) {
 
 	u := app_usage_today(app)
 	live := app_turns_live(app)
-	five := window_used(app.usage.limits.five)
-	week := window_used(app.usage.limits.week)
 
 	// Always there, and this is the second try at that. It used to hide until
 	// something had been spent or an allowance read, which meant a window
@@ -308,46 +320,49 @@ draw_usage :: proc(app: ^App, full: Rect, strip: Rect) {
 	ui_rect(ui, {box.x + 1, box.y + 5, box.w, box.h}, color_alpha(Color(0xff000000), 0.30 * a), 14)
 	ui_rect(ui, box, color_alpha(PANEL, 0.97 * a), 14)
 
-	// The figure counts up to where it lands rather than jumping there: a
-	// turn's cost arrives in one number at the end of it, and the point of
-	// the corner is to be worth glancing at while the work runs.
-	shown := f64(ui_anim(ui, ui_id("usage", 1), f32(u.cost), 7))
-	mw := ui_text(ui, &ui.bold, usage_money(shown), {box.x + USAGE_PAD, box.y + 12}, 26, color_alpha(TEXT, a))
-	// What the figure is of. A window left open overnight would otherwise say
-	// a number that quietly became yesterday's.
-	ui_text(ui, &ui.regular, "today", {box.x + USAGE_PAD + mw + 8, box.y + 22}, 11.5, color_alpha(FAINT, a))
+	// The size of the day, which is what the dollars were standing in for. It
+	// counts up rather than jumping, because turns land one at a time and the
+	// point of the corner is to be worth glancing at while the work runs.
+	shown := int(ui_anim(ui, ui_id("usage", 1), f32(u.turns), 7) + 0.5)
+	head := shown == 1 ? "1 turn" : fmt.tprintf("%d turns", shown)
+	hw := ui_text(ui, &ui.bold, head, {box.x + USAGE_PAD, box.y + 14}, 20, color_alpha(TEXT, a))
+	// What the count is of. A window left open overnight would otherwise say a
+	// number that quietly became yesterday's.
+	ui_text(ui, &ui.regular, "today", {box.x + USAGE_PAD + hw + 8, box.y + 22}, 12, color_alpha(FAINT, a))
 
-	// What is happening, or what happened: turns in flight while there are
-	// any, and the day's count of them once there are none.
+	// What is happening, while anything is. Nothing takes its place when the
+	// window is idle: the count above already said what the day came to.
 	if live > 0 {
 		label := fmt.tprintf("%d running", live)
 		pulse := 0.55 + 0.45 * (0.5 + 0.5 * math.sin(ui.time * 5))
 		ui.time_effects = true
 		DOT :: f32(7)
-		lw := font_width(&ui.regular, label, 11.5)
-		pill := Rect{box.x + box.w - USAGE_PAD - (DOT + 7 + lw + 20), box.y + 16, DOT + 7 + lw + 20, 20}
-		ui_rect(ui, pill, color_alpha(ACCENT, 0.16 * pulse * a), 10)
+		lw := font_width(&ui.regular, label, 12)
+		pill := Rect{box.x + box.w - USAGE_PAD - (DOT + 7 + lw + 20), box.y + 16, DOT + 7 + lw + 20, 22}
+		ui_rect(ui, pill, color_alpha(ACCENT, 0.16 * pulse * a), 11)
 		cx := pill.x + (pill.w - (DOT + 7 + lw)) / 2
 		ui_circle(ui, {cx + DOT / 2, pill.y + pill.h / 2}, DOT / 2, color_alpha(ACCENT, pulse * a))
-		ui_text_middle(ui, &ui.regular, label, cx + DOT + 7, pill, 11.5, color_alpha(ACCENT, pulse * a))
-	} else if u.turns > 0 {
-		label := fmt.tprintf("%d turn%s", u.turns, u.turns == 1 ? "" : "s")
-		lw := font_width(&ui.regular, label, 11.5)
-		ui_text(ui, &ui.regular, label, {box.x + box.w - USAGE_PAD - lw, box.y + 22}, 11.5, color_alpha(FAINT, a))
+		ui_text_middle(ui, &ui.regular, label, cx + DOT + 7, pill, 12, color_alpha(ACCENT, pulse * a))
 	}
 
 	// Where it went. Cache reads are most of what a long turn sends and cost
 	// almost nothing, so they are said apart from the tokens that do.
 	line := fmt.tprintf("%s in · %s out · %s cached", usage_short(u.input), usage_short(u.output), usage_short(u.cache_read))
 	buf: [96]u8
-	line = font_ellipsize(&ui.regular, line, 11, box.w - USAGE_PAD * 2, buf[:])
-	ui_text(ui, &ui.regular, line, {box.x + USAGE_PAD, box.y + 48}, 11, color_alpha(MUTED, a))
+	line = font_ellipsize(&ui.regular, line, 11.5, box.w - USAGE_PAD * 2, buf[:])
+	ui_text(ui, &ui.regular, line, {box.x + USAGE_PAD, box.y + 48}, 11.5, color_alpha(MUTED, a))
 
-	// What is left of the plan. This is the number that actually stops work —
-	// dollars are what it cost, these are whether there is any more of it —
-	// so it gets the meters and the money gets the headline.
-	meter(app, box, 0, "5 hours", five, app.usage.limits.five.resets, live > 0, a)
-	meter(app, box, 1, "this week", week, app.usage.limits.week.resets, false, a)
+	// What is left of the plan, which is the whole of why the corner is here.
+	// Three windows and not two: Fable has a week of its own, it is what this
+	// window runs on by default, and it is the one that runs out first — a
+	// panel that only knew the shared week said everything was fine on an
+	// afternoon when the next turn would not start.
+	session := window_used(app.usage.limits.session)
+	week := window_used(app.usage.limits.week)
+	fable := window_used(app.usage.limits.fable)
+	meter(app, box, 0, "session", session, app.usage.limits.session.resets, live > 0, a)
+	meter(app, box, 1, "week", week, app.usage.limits.week.resets, false, a)
+	meter(app, box, 2, "fable week", fable, app.usage.limits.fable.resets, false, a)
 
 	// Read off the panel rather than printed on it: there is no room for the
 	// exact figures, and a copy with nothing selected takes this.
@@ -355,15 +370,15 @@ draw_usage :: proc(app: ^App, full: Rect, strip: Rect) {
 		ui,
 		box,
 		fmt.tprintf(
-			"today: $%.4f · %d in · %d out · %d cache read · %d cache write · %d turns · five hours %.0f%% left, week %.0f%% left",
-			u.cost,
+			"today: %d in · %d out · %d cache read · %d cache write · %d turns · session %.0f%% left, week %.0f%% left, fable week %.0f%% left",
 			u.input,
 			u.output,
 			u.cache_read,
 			u.cache_write,
 			u.turns,
-			(1 - five) * 100,
+			(1 - session) * 100,
 			(1 - week) * 100,
+			(1 - fable) * 100,
 		),
 	)
 }
@@ -373,7 +388,7 @@ draw_usage :: proc(app: ^App, full: Rect, strip: Rect) {
 @(private = "file")
 meter :: proc(app: ^App, box: Rect, row: int, name: string, used: f32, resets: i64, sheen: bool, a: f32) {
 	ui := &app.ui
-	top := box.y + 68 + f32(row) * 30
+	top := box.y + METER_TOP + f32(row) * METER_ROW
 	col := usage_meter_color(used)
 
 	// A window nobody has read yet is not a window with nothing used in it.
@@ -386,15 +401,15 @@ meter :: proc(app: ^App, box: Rect, row: int, name: string, used: f32, resets: i
 	label := name
 	if left := usage_until(resets); left != "" do label = fmt.tprintf("%s · %s left", name, left)
 	else if !known do label = fmt.tprintf("%s · after the next turn", name)
-	ui_text(ui, &ui.regular, label, {box.x + USAGE_PAD, top}, 10.5, color_alpha(FAINT, a))
+	ui_text(ui, &ui.regular, label, {box.x + USAGE_PAD, top}, 11.5, color_alpha(FAINT, a))
 
 	// What is left, not what is gone. Both are the same number and this is
 	// the one that answers the question the corner is glanced at to answer.
 	pct := known ? fmt.tprintf("%.0f%% left", (1 - used) * 100) : "—"
-	pw := font_width(&ui.bold, pct, 11)
-	ui_text(ui, &ui.bold, pct, {box.x + box.w - USAGE_PAD - pw, top - 1}, 11, color_alpha(known ? col : FAINT, a))
+	pw := font_width(&ui.bold, pct, 12.5)
+	ui_text(ui, &ui.bold, pct, {box.x + box.w - USAGE_PAD - pw, top - 1}, 12.5, color_alpha(known ? col : FAINT, a))
 
-	track := Rect{box.x + USAGE_PAD, top + 16, box.w - USAGE_PAD * 2, METER_H}
+	track := Rect{box.x + USAGE_PAD, top + 18, box.w - USAGE_PAD * 2, METER_H}
 	ui_rect(ui, track, color_alpha(BORDER, 0.55 * a), METER_H / 2)
 	// The bar is what is left, because the figure beside it is: a bar drawn
 	// to what was spent under a number reading "59% left" is two answers to
@@ -408,7 +423,7 @@ meter :: proc(app: ^App, box: Rect, row: int, name: string, used: f32, resets: i
 	if grown <= 0 || !known do return
 	fill := Rect{track.x, track.y, max(track.w * grown, METER_H), track.h}
 	ui_rect(ui, fill, color_alpha(col, a), METER_H / 2)
-	// The sheen travels along the five hour meter while a turn is running: it
+	// The sheen travels along the session meter while a turn is running: it
 	// is the one thing here that is moving while you watch it.
 	if sheen {
 		ui_quad(ui, fill, {0, 0}, {1, 1}, color_alpha(col, 0.9 * a), WHITE_TEX, METER_H / 2, .Sheen)
