@@ -3,6 +3,7 @@ package aithing
 import "core:fmt"
 import "core:math"
 import "core:time"
+import "core:slice"
 import "core:strings"
 
 // Everything on screen, rebuilt from the app state every frame. Measurement
@@ -47,7 +48,18 @@ draw_app :: proc(app: ^App) {
 		composer_h := composer_height(app, panel.w)
 		draw_transcript(app, {panel.x, panel.y, panel.w, panel.h - composer_h})
 		draw_composer(app, {panel.x, panel.y + panel.h - composer_h, panel.w, composer_h})
-		if app.overlay == .Model do draw_model_picker(app)
+		if app.overlay == .Model {
+			if m, picked := draw_picker(app, app.model_chip, slice.enumerated_array(&model_label), int(app.model), "model"); picked {
+				app.model = Model(m)
+				model_save(app.model)
+			}
+		}
+		if app.overlay == .Effort {
+			if e, picked := draw_picker(app, app.effort_chip, slice.enumerated_array(&effort_label), int(app.effort), "effort"); picked {
+				app.effort = Effort(e)
+				effort_save(app.effort)
+			}
+		}
 	} else if t > 0.01 {
 		ui_rect(ui, {panel.x + 2, panel.y + 8, panel.w, panel.h}, color_alpha(Color(0xff000000), 0.4 * (1 - t)), 14 * (1 - t))
 		ui_rect(ui, panel, BG, 14 * (1 - t))
@@ -704,12 +716,17 @@ draw_composer :: proc(app: ^App, r: Rect) {
 	}
 	draw_editor(app, &app.editor, text_r, &ui.regular, COMPOSER_PX, focused, COMPOSER_LINES)
 
-	// The only control in the window: which model answers. Permissions are
-	// whatever the harness is already configured to do.
+	// The only two controls in the window: which model answers and how hard
+	// it thinks. Permissions are whatever the harness is already configured
+	// to do.
 	chip_y := box.y + box.h - COMPOSER_CHIPS / 2 - 8
 	cx := draw_chip(app, ui_id("model-chip"), box.x + box.w - 12, chip_y, model_label[app.model], MUTED)
 	if ui.pressed && ui.hot == ui_id("model-chip") do app.overlay = app.overlay == .Model ? .None : .Model
 	app.model_chip = Rect{cx, chip_y - 5, box.x + box.w - 12 - cx, 26}
+	ex := draw_chip(app, ui_id("effort-chip"), cx - 8, chip_y, effort_label[app.effort], MUTED)
+	if ui.pressed && ui.hot == ui_id("effort-chip") do app.overlay = app.overlay == .Effort ? .None : .Effort
+	app.effort_chip = Rect{ex, chip_y - 5, cx - 8 - ex, 26}
+	cx = ex
 	if app_chat_busy(app) {
 		// While a turn is in flight the same corner says so, and stops it.
 		stop := Rect{box.x + 14, chip_y - 3, 58, 22}
@@ -729,38 +746,46 @@ draw_composer :: proc(app: ^App, r: Rect) {
 	}
 }
 
-// The picker itself: the models, stacked above the chip that opened it.
+// The picker itself: rows stacked above the chip that opened it. Both chips
+// share it — the model's and the effort's are the same popup with a different
+// list, and a second copy of this is a second popup to keep in step.
 @(private = "file")
-draw_model_picker :: proc(app: ^App) {
+draw_picker :: proc(
+	app: ^App,
+	chip: Rect,
+	labels: []string,
+	at: int,
+	tag: string,
+) -> (choice: int, picked: bool) {
 	ui := &app.ui
 	row_h := f32(34)
-	w := max(app.model_chip.w, 150)
-	h := row_h * f32(len(Model)) + 10
-	r := Rect{app.model_chip.x + app.model_chip.w - w, app.model_chip.y - h - 6, w, h}
+	w := max(chip.w, 150)
+	h := row_h * f32(len(labels)) + 10
+	r := Rect{chip.x + chip.w - w, chip.y - h - 6, w, h}
 
 	// Anywhere else closes it.
-	if ui.pressed && !rect_contains(r, ui.mouse) && !rect_contains(app.model_chip, ui.mouse) {
+	if ui.pressed && !rect_contains(r, ui.mouse) && !rect_contains(chip, ui.mouse) {
 		app.overlay = .None
-		return
+		return 0, false
 	}
 
 	ui_rect(ui, {r.x + 2, r.y + 3, r.w, r.h}, Color(0x50000000), 12)
 	ui_rect(ui, r, PANEL_HI, 12)
 
 	y := r.y + 5
-	for m in Model {
+	for label, i in labels {
 		row := Rect{r.x + 5, y, r.w - 10, row_h}
-		clicked, hovered := ui_invisible_button(ui, ui_id("model", int(m)), row)
+		clicked, hovered := ui_invisible_button(ui, ui_id(tag, i), row)
 		if hovered do ui_rect(ui, row, PANEL, 8)
-		if m == app.model do ui_circle(ui, {row.x + 14, row.y + row_h / 2}, 3.5, ACCENT)
-		ui_text(ui, &ui.regular, model_label[m], {row.x + 26, y + 8}, 15, m == app.model ? TEXT : MUTED)
+		if i == at do ui_circle(ui, {row.x + 14, row.y + row_h / 2}, 3.5, ACCENT)
+		ui_text(ui, &ui.regular, label, {row.x + 26, y + 8}, 15, i == at ? TEXT : MUTED)
 		if clicked {
-			app.model = m
-			model_save(m)
 			app.overlay = .None
+			return i, true
 		}
 		y += row_h
 	}
+	return 0, false
 }
 
 // A small text chip, right-aligned at `right`. Returns its left edge.

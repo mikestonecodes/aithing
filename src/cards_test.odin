@@ -40,7 +40,7 @@ fake_session :: proc(id, title: string) -> Session {
 // for now, so every test that types into the capture box would otherwise run
 // a real `claude` per card; this is what turn_spawn is pointed at instead.
 @(private = "file")
-stub_spawn :: proc(r: ^Runner, cwd, session_id, prompt, model: string, slot: int) -> bool {
+stub_spawn :: proc(r: ^Runner, cwd, session_id, prompt, model, effort: string, slot: int) -> bool {
 	r.running = true
 	return true
 }
@@ -1169,4 +1169,25 @@ the_launcher_never_offers_a_tree :: proc(t: ^testing.T) {
 	// a card's tree is one you reach through the card.
 	editor_set_text(&app.search, "tree")
 	testing.expect_value(t, len(app_visible(app)), 0)
+}
+
+// A window nobody has told otherwise thinks as hard as the harness would on
+// its own, and the word it saves is the word the CLI takes. The chip used to
+// be able to show a level the flag did not spell the same way, because the
+// label and the flag were two lists.
+@(test)
+effort_is_medium_until_it_is_picked :: proc(t: ^testing.T) {
+	scratch_dir(t)
+	os.remove(config_path("effort"))
+	testing.expect_value(t, effort_load(), EFFORT_DEFAULT)
+	testing.expect_value(t, EFFORT_DEFAULT, Effort.Medium)
+
+	effort_save(.Xhigh)
+	testing.expect_value(t, effort_load(), Effort.Xhigh)
+
+	// Anything that is not one of the five is the default again, not a level
+	// the harness would reject.
+	e, ok := effort_parse("thorough")
+	testing.expect(t, !ok)
+	testing.expect_value(t, e, EFFORT_DEFAULT)
 }

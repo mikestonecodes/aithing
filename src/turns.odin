@@ -193,7 +193,7 @@ turn_start :: proc(app: ^App, cwd, project, session, prompt, todo: string, chat:
 		todo    = strings.clone(todo),
 		chat    = chat,
 	}
-	if !turn_spawn(&t.runner, cwd, session, prompt, model_flag[app.model], at) {
+	if !turn_spawn(&t.runner, cwd, session, prompt, model_flag[app.model], effort_flag[app.effort], at) {
 		turn_release(app, at)
 		return false
 	}

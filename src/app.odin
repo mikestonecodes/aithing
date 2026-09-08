@@ -46,6 +46,7 @@ Overlay :: enum {
 	None,
 	Launcher, // the big menu
 	Model, // the picker, over the composer
+	Effort, // how hard it thinks, in the picker beside it
 }
 
 Focus :: enum {
@@ -131,6 +132,8 @@ App :: struct {
 	status:    string,
 	model:     Model,
 	model_chip: Rect, // where it opens from
+	effort:    Effort,
+	effort_chip: Rect,
 	cwd:       string, // where a new chat runs
 	cur_msg:   int,
 	// Message heights, cached: measuring a long transcript every frame is what
@@ -183,6 +186,7 @@ app_init :: proc(app: ^App) {
 	worktree_sweep(&app.todos)
 	groups_load(&app.groups)
 	app.model = model_load()
+	app.effort = effort_load()
 	app.profile = os.get_env("AITHING_PROFILE", context.temp_allocator) != ""
 	chat_new(app)
 	app_rescan(app)
@@ -727,7 +731,7 @@ app_cancel :: proc(app: ^App) -> bool {
 		app_launcher(app, false)
 		return true
 
-	case app.overlay == .Model:
+	case app.overlay == .Model || app.overlay == .Effort:
 		app.overlay = .None
 
 	case app.page == .Thread:

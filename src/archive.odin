@@ -72,6 +72,18 @@ model_save :: proc(m: Model) {
 	_ = os.write_entire_file(config_path("model"), transmute([]byte)model_short[m])
 }
 
+// And the effort beside the model, for the same reason and in the same shape.
+effort_load :: proc() -> Effort {
+	data, err := os.read_entire_file_from_path(config_path("effort"), context.temp_allocator)
+	if err != nil do return EFFORT_DEFAULT
+	e, _ := effort_parse(strings.trim_space(string(data)))
+	return e
+}
+
+effort_save :: proc(e: Effort) {
+	_ = os.write_entire_file(config_path("effort"), transmute([]byte)effort_flag[e])
+}
+
 archive_destroy :: proc(a: ^Archive) {
 	for id in a.filed do delete(id)
 	delete(a.filed)

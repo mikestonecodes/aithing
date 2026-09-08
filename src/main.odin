@@ -32,8 +32,11 @@ main :: proc() {
 	open_last := true // by default, pick up where the last session left off
 	model := MODEL_DEFAULT
 	model_set := false
+	effort := EFFORT_DEFAULT
+	effort_set := false
 	prompt_parts := make([dynamic]string, context.temp_allocator)
 	want_model := false
+	want_effort := false
 	// A run that draws one frame into a file and exits: see shot.odin.
 	shot_path, shot_scene := "", "grid"
 	shot_w, shot_h := 1180, 800
@@ -42,6 +45,11 @@ main :: proc() {
 		if want_model {
 			want_model = false
 			model, model_set = model_parse(arg)
+			continue
+		}
+		if want_effort {
+			want_effort = false
+			effort, effort_set = effort_parse(arg)
 			continue
 		}
 		if want_shot {
@@ -70,6 +78,7 @@ main :: proc() {
 			fmt.println("  aithing                 reopen the most recent session")
 			fmt.println("  aithing --new           start a blank chat instead")
 			fmt.println("  aithing --model haiku   pick the model for this run")
+			fmt.println("  aithing --effort high   how hard it thinks, this run")
 			fmt.println("  aithing <prompt...>     a new chat, sent straight away")
 			fmt.printfln("  aithing --shot out.png [--scene %s] [--size 1180x800]", scene_list())
 			fmt.println("                          draw one frame of a built-up scene, no window")
@@ -84,6 +93,8 @@ main :: proc() {
 			open_last = false
 		case "--model":
 			want_model = true
+		case "--effort":
+			want_effort = true
 		case "--shot":
 			want_shot = true
 		case "--scene":
@@ -135,11 +146,12 @@ main :: proc() {
 	watchdog_start()
 	defer watchdog_stop()
 	if model_set do app.model = model
+	if effort_set do app.effort = effort
 
 	// What the last window had on screen when it was closed: see state.odin.
 	state := state_read(config_path("state"))
 	defer state_free(&state)
-	state_restore(app, state, model_set)
+	state_restore(app, state, model_set, effort_set)
 
 	if open_last {
 		// The scan is on a worker thread; wait for it just this once.
@@ -450,6 +462,10 @@ app_input :: proc(app: ^App) {
 			case KEY_M:
 				app.model = Model((int(app.model) + 1) % len(Model))
 				model_save(app.model)
+				continue
+			case KEY_E:
+				app.effort = Effort((int(app.effort) + 1) % len(Effort))
+				effort_save(app.effort)
 				continue
 			}
 		}

@@ -160,6 +160,7 @@ shot_build :: proc(app: ^App, scene: Scene) {
 	app.cwd = PROJ
 	app.status = "ready"
 	app.model = .Sonnet
+	app.effort = EFFORT_DEFAULT
 	app.stick = true
 	app.scanned = true // otherwise an empty grid says it is still reading
 	app.scan_at = time.now()
