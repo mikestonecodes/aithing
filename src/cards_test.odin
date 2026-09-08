@@ -897,6 +897,79 @@ the_last_marker_is_the_verdict :: proc(t: ^testing.T) {
 	testing.expect_value(t, said, "msdf or sdf?")
 }
 
+// The preamble is ours, not the card's. Claude Code writes the prompt it was
+// handed straight into the session file, so every read of that file that ends
+// up on screen — the thread's title, the row under it, the transcript — was
+// showing the instructions this program wrote to itself.
+@(test)
+the_preamble_is_not_what_was_typed :: proc(t: ^testing.T) {
+	sent := verdict_preamble("bake the msdf atlas")
+	testing.expect_value(t, verdict_unwrap(sent), "bake the msdf atlas")
+	// Anything that did not come from us is left exactly as it is, markers
+	// quoted inside it and all.
+	testing.expect_value(t, verdict_unwrap("just a prompt"), "just a prompt")
+	testing.expect_value(t, verdict_unwrap(DONE_MARK), DONE_MARK)
+	// The handshake at the end of an answer is not part of the answer.
+	testing.expect_value(t, verdict_unmark("built it\n\n" + DONE_MARK), "built it")
+	testing.expect_value(t, verdict_unmark("which one?\n" + BLOCK_MARK), "which one?")
+	testing.expect_value(t, verdict_unmark("nothing to strip"), "nothing to strip")
+}
+
+// The same read end to end, off a file shaped like the one the harness
+// writes: the transcript of a card's thread shows what was typed on the card,
+// with our half of the conversation out of the way at both ends.
+@(test)
+a_card_thread_reads_as_the_card :: proc(t: ^testing.T) {
+	path := "/tmp/aithing-test-preamble.jsonl"
+	body := strings.concatenate(
+		{
+			`{"type":"user","cwd":"/tmp/proj","message":{"role":"user","content":`,
+			json_quote(verdict_preamble("bake the msdf atlas")),
+			"}}\n",
+			`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":`,
+			json_quote("baked it\n\n" + DONE_MARK),
+			"}]}}\n",
+		},
+		context.temp_allocator,
+	)
+	_ = os.write_entire_file(path, transmute([]byte)body)
+	defer os.remove(path)
+
+	s := Session {
+		id   = "sess-p",
+		path = path,
+		size = i64(len(body)),
+	}
+	chat, ok := session_load(&s)
+	defer chat_destroy(&chat)
+	testing.expect(t, ok)
+	testing.expect_value(t, len(chat.msgs), 2)
+	testing.expect_value(t, block_text(chat_block(&chat, Ref{0, 0, -1})), "bake the msdf atlas")
+	testing.expect_value(t, block_text(chat_block(&chat, Ref{1, 0, -1})), "baked it")
+}
+
+// JSON string literal, for the fixture above: the preamble is several lines
+// with quotes in it, and a session file holds it as one.
+@(private = "file")
+json_quote :: proc(text: string) -> string {
+	b := strings.builder_make(context.temp_allocator)
+	strings.write_byte(&b, '"')
+	for i in 0 ..< len(text) {
+		switch c := text[i]; c {
+		case '"':
+			strings.write_string(&b, `\"`)
+		case '\\':
+			strings.write_string(&b, `\\`)
+		case '\n':
+			strings.write_string(&b, `\n`)
+		case:
+			strings.write_byte(&b, c)
+		}
+	}
+	strings.write_byte(&b, '"')
+	return strings.to_string(b)
+}
+
 // A card whose turn ran in a worktree still belongs to the project the tree
 // was cut from. Filing it under the tree put the work in a directory under
 // the cache that nothing else on the grid shared.

@@ -24,6 +24,9 @@ Verdict :: enum {
 	Blocked,
 }
 
+PREAMBLE_OPEN :: "<aithing>\n"
+PREAMBLE_CLOSE :: "</aithing>\n"
+
 DONE_MARK :: "<aithing>done</aithing>"
 BLOCK_MARK :: "<aithing>blocked</aithing>"
 
@@ -48,6 +51,30 @@ verdict_preamble :: proc(text: string, allocator := context.temp_allocator) -> s
 		},
 		allocator,
 	)
+}
+
+// A stored prompt as a person should see it. The preamble goes on in one
+// place, so it comes off in one: every read of what was sent that ends up on
+// screen. The harness writes the prompt it was handed straight into the
+// session file, so the card's thread was titled `<aithing>` and its transcript
+// opened on the instructions we wrote to ourselves — the card's own wording,
+// the only part anybody typed, was three paragraphs down and off the end of
+// the line.
+verdict_unwrap :: proc(text: string) -> string {
+	if !strings.has_prefix(text, PREAMBLE_OPEN) do return text
+	at := strings.index(text, PREAMBLE_CLOSE)
+	if at < 0 do return text
+	return strings.trim_left_space(text[at + len(PREAMBLE_CLOSE):])
+}
+
+// The same for what comes back. The marker is a word between this program and
+// the agent, and a transcript that ends `<aithing>done</aithing>` is showing
+// the reader a handshake, not an answer.
+verdict_unmark :: proc(text: string) -> string {
+	out := strings.trim_space(text)
+	if strings.has_suffix(out, DONE_MARK) do out = out[:len(out) - len(DONE_MARK)]
+	else if strings.has_suffix(out, BLOCK_MARK) do out = out[:len(out) - len(BLOCK_MARK)]
+	return strings.trim_space(out)
 }
 
 // The agent's last word, off the text of one message. The later of the two

@@ -154,7 +154,7 @@ session_read_summary :: proc(s: ^Session, allocator: runtime.Allocator) {
 				}
 				if s.preview == "" && jstr(v, "type") == "user" {
 					if msg, ok := jobj(v, "message"); ok {
-						if txt := content_first_text(msg); txt != "" {
+						if txt := verdict_unwrap(content_first_text(msg)); txt != "" {
 							s.preview = strings.clone(one_line(txt, 200), allocator)
 						}
 					}
@@ -213,7 +213,7 @@ session_read_summary :: proc(s: ^Session, allocator: runtime.Allocator) {
 				ai_title = strings.clone(jstr(v, "aiTitle"), allocator)
 			case "last-prompt":
 				delete(last_prompt, allocator)
-				last_prompt = strings.clone(jstr(v, "lastPrompt"), allocator)
+				last_prompt = strings.clone(verdict_unwrap(jstr(v, "lastPrompt")), allocator)
 			}
 		}
 		free_all(context.temp_allocator)
@@ -451,7 +451,7 @@ load_user_message :: proc(chat: ^Chat, msg: json.Value, sidechain: bool, task: R
 		if sidechain do return // the subagent's own prompt, already shown as the Task arg
 		m := chat_append(chat, .User)
 		ref := msg_append_block(chat, m, Block{kind = .Text})
-		strings.write_string(&chat_block(chat, ref).text, string(txt))
+		strings.write_string(&chat_block(chat, ref).text, verdict_unwrap(string(txt)))
 		return
 	}
 
@@ -463,7 +463,7 @@ load_user_message :: proc(chat: ^Chat, msg: json.Value, sidechain: bool, task: R
 			if sidechain do continue
 			m := chat_append(chat, .User)
 			ref := msg_append_block(chat, m, Block{kind = .Text})
-			strings.write_string(&chat_block(chat, ref).text, jstr(item, "text"))
+			strings.write_string(&chat_block(chat, ref).text, verdict_unwrap(jstr(item, "text")))
 		case "tool_result":
 			target := chat_block(chat, chat_find_tool(chat, jstr(item, "tool_use_id")))
 			if target == nil do continue
@@ -516,8 +516,8 @@ load_assistant_message :: proc(
 		block: Block
 		switch jstr(item, "type") {
 		case "text":
-			t := jstr(item, "text")
-			if strings.trim_space(t) == "" do continue
+			t := verdict_unmark(jstr(item, "text"))
+			if t == "" do continue
 			block = Block{kind = .Text}
 			strings.write_string(&block.text, t)
 		case "thinking":

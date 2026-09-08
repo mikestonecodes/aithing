@@ -44,6 +44,15 @@ crash_report_install :: proc() {
 	for sig in ([?]posix.Signal{.SIGSEGV, .SIGBUS, .SIGILL, .SIGFPE, .SIGABRT}) {
 		posix.sigaction(sig, &act, nil)
 	}
+
+	// The one death this file could not report, because it is not a fault:
+	// a write to a pipe nobody is reading kills the process outright, and
+	// there is nothing to take a backtrace of. Every pipe here is somebody
+	// else's end of a conversation — a clipboard peer that gave up waiting,
+	// a `claude` that exited mid-stream — and none of them is a reason for
+	// the window to disappear. Ignored, so the write fails as EPIPE where it
+	// happens and the caller deals with it.
+	posix.sigignore(.SIGPIPE)
 }
 
 // For the deaths that are not signals. A Vulkan call that fails takes the
