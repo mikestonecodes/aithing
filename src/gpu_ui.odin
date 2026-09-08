@@ -194,27 +194,33 @@ gpu_draw :: proc(g: ^Gpu, ui: ^UI, clear_color: Color) -> bool {
 	g.frame_skipped = true
 	if vk.WaitForFences(g.device, 1, &f.fence, true, FRAME_WAIT) == .TIMEOUT do return true
 
+	// Offscreen there is one image, it is ours, and nobody has to hand it over:
+	// no acquire, no semaphores, and nothing that can time out. See
+	// gpu_offscreen.
 	image_index: u32
-	res := vk.AcquireNextImageKHR(
-		g.device,
-		g.swapchain,
-		FRAME_WAIT,
-		f.acquire,
-		0,
-		&image_index,
-	)
-	if res == .TIMEOUT || res == .NOT_READY do return true
-	if res == .ERROR_OUT_OF_DATE_KHR do return false
-	if res == .ERROR_SURFACE_LOST_KHR {
-		// The compositor is gone. Rebuilding the swapchain would fail on the
-		// same surface, so this is the end of the run, not an error to die on.
-		g.surface_lost = true
-		return true
+	if !gpu_offscreen(g) {
+		res := vk.AcquireNextImageKHR(
+			g.device,
+			g.swapchain,
+			FRAME_WAIT,
+			f.acquire,
+			0,
+			&image_index,
+		)
+		if res == .TIMEOUT || res == .NOT_READY do return true
+		if res == .ERROR_OUT_OF_DATE_KHR do return false
+		if res == .ERROR_SURFACE_LOST_KHR {
+			// The compositor is gone. Rebuilding the swapchain would fail on
+			// the same surface, so this is the end of the run, not an error to
+			// die on.
+			g.surface_lost = true
+			return true
+		}
+		if res != .SUCCESS && res != .SUBOPTIMAL_KHR {
+			vk_check(res, "AcquireNextImageKHR")
+		}
 	}
 	g.frame_skipped = false
-	if res != .SUCCESS && res != .SUBOPTIMAL_KHR {
-		vk_check(res, "AcquireNextImageKHR")
-	}
 	vk.ResetFences(g.device, 1, &f.fence)
 
 	if vbytes > 0 do mem.copy(f.vmapped, raw_data(ui.verts), vbytes)
@@ -304,7 +310,10 @@ gpu_draw :: proc(g: ^Gpu, ui: ^UI, clear_color: Color) -> bool {
 	}
 
 	vk.CmdEndRendering(cmd)
-	swap_barrier(cmd, g.images[image_index], .COLOR_ATTACHMENT_OPTIMAL, .PRESENT_SRC_KHR)
+	// A frame nobody presents is a frame somebody reads: gpu_capture copies it
+	// straight out of the layout this leaves it in.
+	done := gpu_offscreen(g) ? vk.ImageLayout.TRANSFER_SRC_OPTIMAL : .PRESENT_SRC_KHR
+	swap_barrier(cmd, g.images[image_index], .COLOR_ATTACHMENT_OPTIMAL, done)
 	vk.EndCommandBuffer(cmd)
 
 	wait := vk.SemaphoreSubmitInfo {
@@ -312,11 +321,13 @@ gpu_draw :: proc(g: ^Gpu, ui: ^UI, clear_color: Color) -> bool {
 		semaphore = f.acquire,
 		stageMask = {.COLOR_ATTACHMENT_OUTPUT},
 	}
+	// Offscreen there is no present semaphore to signal, and no array to read
+	// one out of: the submit below drops both halves.
 	signal := vk.SemaphoreSubmitInfo {
 		sType     = .SEMAPHORE_SUBMIT_INFO,
-		semaphore = g.present_sems[image_index],
 		stageMask = {.ALL_GRAPHICS},
 	}
+	if !gpu_offscreen(g) do signal.semaphore = g.present_sems[image_index]
 	cmd_info := vk.CommandBufferSubmitInfo {
 		sType         = .COMMAND_BUFFER_SUBMIT_INFO,
 		commandBuffer = cmd,
@@ -330,7 +341,16 @@ gpu_draw :: proc(g: ^Gpu, ui: ^UI, clear_color: Color) -> bool {
 		signalSemaphoreInfoCount = 1,
 		pSignalSemaphoreInfos    = &signal,
 	}
+	if gpu_offscreen(g) {
+		submit.waitSemaphoreInfoCount = 0
+		submit.signalSemaphoreInfoCount = 0
+	}
 	vk_check(vk.QueueSubmit2(g.queue, 1, &submit, f.fence), "QueueSubmit2")
+
+	if gpu_offscreen(g) {
+		g.frame_index = (g.frame_index + 1) % MAX_FRAMES
+		return true
+	}
 
 	present_sem := g.present_sems[image_index]
 	swapchain := g.swapchain

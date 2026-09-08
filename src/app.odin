@@ -25,13 +25,64 @@ CODE_BG :: Color(0xff18191a)
 CODE_TEXT :: Color(0xffa0c4e8)
 GREEN :: Color(0xff69b07f)
 RED :: Color(0xff5a6ce0)
+AMBER :: Color(0xff5ac0e0)
 
 CONTENT_MAX :: f32(880)
 
+// What is on screen. One variable says it, every frame reads it, and a click
+// changes it — there is no second copy to fall out of step with the first.
+// It used to be four booleans that had to agree (a thread open, the launcher
+// up, the picker down, and where the caret was), kept in step by hand at six
+// call sites, and every disagreement between them was a bug you could see.
+Page :: enum {
+	Grid, // the map of cards
+	Thread, // one thread, zoomed open over it
+}
+
+// What is over the page. Orthogonal to it: the launcher and the picker are
+// each shut by going back to the page underneath, whichever it is, so neither
+// has to remember where it came from.
+Overlay :: enum {
+	None,
+	Launcher, // the big menu
+	Model, // the picker, over the composer
+}
+
 Focus :: enum {
+	None, // a grid of every project: there is nothing on it to type into
 	Composer,
 	Search,
 	Capture, // the box under the grid, where a todo list is typed
+}
+
+// Where the caret is: not a thing anyone sets, a thing the page already
+// decides. The launcher's query while it is up, the composer inside a thread,
+// the box under the grid while the grid is narrowed to one project — and
+// nowhere at all when it is not.
+//
+// Nowhere is a real answer, and it is the one a grid of every project gets. A
+// card typed there has no project to belong to, and both ways round that have
+// now been tried and thrown out: taking the answer from the last thread
+// worked in sent a task written while reading one project quietly into
+// another, and printing the answer over the box asked the writer to read a
+// line above the caret before every list they wrote. Narrowing the grid is
+// how you say where work goes, and the box is there exactly when you have
+// said it.
+app_focus :: proc(app: ^App) -> Focus {
+	if app.overlay == .Launcher do return .Search
+	if app.page == .Thread do return .Composer
+	if app_capture_open(app) do return .Capture
+	return .None
+}
+
+// Whether the box under the grid is there at all. The layout asks it to keep
+// room clear and the draw asks it before drawing anything, and app_focus is
+// the same answer — one question, so the box and the caret cannot disagree
+// about whether you can type. It does not ask about the launcher: the menu
+// goes over the grid without changing what the grid is, and a box that
+// vanished under it would move the cards while they are being read.
+app_capture_open :: proc(app: ^App) -> bool {
+	return app.page == .Grid && app.canvas.project != ""
 }
 
 App :: struct {
@@ -42,7 +93,6 @@ App :: struct {
 	sessions:  []Session,
 	visible:   [dynamic]int, // the sessions the launcher offers, after the search
 	archive:   Archive,
-	selected:  int, // index into sessions; -1 while composing a new chat
 	rescan:    bool,
 	scan_at:   time.Time, // when the last scan was started: see the idle tick
 	scan:      Scan_Job, // the sidebar, read on a worker thread
@@ -63,14 +113,15 @@ App :: struct {
 	pending_dismiss: [dynamic;32]string,
 
 	chat:      Chat,
-	// Every turn in flight, one slot each: see turns.odin. A fixed array and
-	// never compacted, because each running turn's reader thread holds a
-	// pointer into its own slot.
-	turns:     [MAX_TURNS]Turn,
+	// Every turn in flight, one slot each: see turns.odin. Grown as far as the
+	// work asks for and never compacted, because each running turn's reader
+	// thread holds a pointer into its own slot.
+	turns:     [dynamic]^Turn,
 	editor:    Editor,
 	search:    Editor,
 	capture:   Editor, // the box under the grid: what is typed there becomes cards
-	focus:     Focus,
+	page:      Page,
+	overlay:   Overlay,
 
 	attach:    [dynamic;8]Attachment,
 	transcript: Scroll,
@@ -79,15 +130,9 @@ App :: struct {
 
 	status:    string,
 	model:     Model,
-	model_open: bool, // the picker, open over the composer
 	model_chip: Rect, // where it opens from
 	cwd:       string, // where a new chat runs
 	cur_msg:   int,
-	// Messages typed into a thread while a turn was already running in it.
-	// Two turns in one thread would be two `--resume`s of the same session
-	// racing, so a follow-up waits here and goes out when the turn it was
-	// typed over finishes.
-	queue:       [dynamic;32]Pending,
 	// Message heights, cached: measuring a long transcript every frame is what
 	// would make typing feel heavy. Rebuilt when the width or the chat change.
 	heights:   [dynamic]f32,
@@ -102,24 +147,21 @@ App :: struct {
 	// The home view.
 	canvas:    Canvas,
 	groups:    Groups,
-	layout_v:  int, // bumped whenever the set of nodes changes
-	// The todos version app.todo_view was built from. Different means the
-	// view indexes a list that has moved under it, and must be rebuilt.
-	view_v:    int,
 
-	// Why a batch failed, by batch. A card's turn is headless, so the message
+	// Why a card failed, by card. A card's turn is headless, so the message
 	// the harness gave has nowhere else to go and used to be dropped on the
 	// floor — leaving a card that said `failed` and nothing more.
 	notes:     map[string]string,
 	// The grid is todo items, not threads: see todos.odin. `todo_view` is
 	// what the grid draws, in the order it draws it.
 	todos:     Todos,
-	todo_view: [dynamic]Card_Ref,
-	// Cards asked to run, in the order they were asked for. Up to MAX_TURNS
-	// of them go out at once, each in a thread of its own; the rest wait here.
-	// Enter puts a card in it whether or not anything is running — one path,
-	// so the key always does the same thing — and Esc empties it.
-	run_queue: [dynamic;64]string,
+	todo_view: [dynamic]int,
+	// How far back through what has already been typed into the box under the
+	// grid it is showing: 0 is whatever is being written now, 1 the last thing
+	// written, and so on. There is no list beside it — the cards in the order
+	// they were made are the history — so nothing can drift out of step with
+	// what is actually on the grid.
+	history_at: int,
 	// An item names a message in its own thread, so opening one opens that
 	// thread alone rather than every thread of its task end to end.
 	open_single:  bool,
@@ -129,23 +171,7 @@ App :: struct {
 	state_at:   time.Time,
 }
 
-// A message waiting for the turn ahead of it.
-Pending :: struct {
-	prompt:  string,
-	session: string, // "" when the chat had not been given an id yet
-	cwd:     string,
-	msg:     int, // where it sits in the transcript, so it can stop looking queued
-}
-
-@(private = "file")
-pending_destroy :: proc(p: ^Pending) {
-	delete(p.prompt)
-	delete(p.session)
-	delete(p.cwd)
-}
-
 app_init :: proc(app: ^App) {
-	app.selected = -1
 	app.stick = true
 	cwd, _ := os.get_working_directory(context.allocator)
 	app.cwd = cwd
@@ -180,13 +206,11 @@ app_destroy :: proc(app: ^App) {
 	delete(app.route_text)
 	delete(app.cwd)
 	delete(app.pending_open)
-	for &p in app.queue do pending_destroy(&p)
 	editor_destroy(&app.capture)
 	todos_save(&app.todos)
 	todos_destroy(&app.todos)
 	delete(app.todo_view)
 	app_notes_destroy(app)
-	for id in app.run_queue do delete(id)
 	for id in app.pending_dismiss do delete(id)
 	delete(app.state_last)
 	groups_destroy(&app.groups)
@@ -212,7 +236,6 @@ app_apply_clicks :: proc(app: ^App) -> bool {
 		clear(&app.pending_dismiss)
 		todos_save(&app.todos)
 		archive_save(&app.archive)
-		app_filter(app)
 	}
 	if id := app.pending_open; id != "" {
 		at := session_index(app, id)
@@ -227,7 +250,6 @@ app_apply_clicks :: proc(app: ^App) -> bool {
 			delete(id)
 			app.pending_open = ""
 			app_open(app, at)
-			app_filter(app) // an opened session belongs in the working list
 		}
 	}
 	return acted
@@ -245,48 +267,24 @@ app_poll_jobs :: proc(app: ^App) -> bool {
 	load_reap(&app.load)
 	load_poll(&app.load)
 	// Slots whose process has gone and whose last event has been read go back
-	// in the pool, and this is what frees both queues. Before them, not after:
-	// a turn that dies without ever saying Done or Failed would otherwise
-	// leave its card reading `processing` for good.
+	// in the pool. Before the rest of this: a turn that dies without ever
+	// saying Done or Failed would otherwise leave its card reading
+	// `processing` for good.
 	if turns_reap(app) do changed = true
-	// Every frame rather than off the Done event: a turn that dies without
-	// finishing cleanly still frees the slot, and whatever was waiting on it
-	// should go out either way.
-	app_pump_queue(app)
-	if app_pump_todos(app) do changed = true
 
 	if list, ok := scan_take(&app.scan); ok {
-		// Remember the open session by id: a rescan can shift every index.
-		keep: string
-		if app.selected >= 0 && app.selected < len(app.sessions) {
-			keep = strings.clone(app.sessions[app.selected].id, context.temp_allocator)
-		} else if app.chat.session_id != "" {
-			keep = strings.clone(app.chat.session_id, context.temp_allocator)
-		}
-
+		// The thread on screen is the one app.chat names, and nothing else
+		// records it. There used to be an index into this list beside it,
+		// carried across every rescan by hand — a list that had just been
+		// swapped out under it, which is the whole reason the index kept
+		// having to be found again.
 		sessions_free(app.sessions)
 		app.sessions = list
 		app.scanned = true
-		app.selected = -1
-		if keep != "" {
-			for s, i in app.sessions {
-				if s.id != keep do continue
-				app.selected = i
-				// A new session has its title written by the harness a moment
-				// after the first turn; adopt it so the header stops saying
-				// "New chat" once there is something better to call it.
-				if s.title != "" && s.title != app.chat.title {
-					delete(app.chat.title)
-					app.chat.title = strings.clone(s.title)
-				}
-				break
-			}
-		}
 		// The threads that arrived since the last scan are the only ones
 		// without a task; the rest keep the one they were given.
 		groups_assign(&app.groups, app.sessions)
 		groups_save(&app.groups)
-		app_filter(app)
 		// Every thread on the map has a card, and the ones that have moved
 		// since the agent last read them are queued to be read again.
 		app_sync_todos(app)
@@ -315,11 +313,40 @@ app_poll_jobs :: proc(app: ^App) -> bool {
 // grid behind it is filtered by the same words and leaving them on would leave
 // the grid narrowed by something no longer on screen.
 app_launcher :: proc(app: ^App, open: bool) {
-	app.canvas.launcher = open
+	app.overlay = open ? .Launcher : .None
 	app.canvas.menu_at = 0
-	app.focus = open ? .Search : .Composer
 	if !open do editor_clear(&app.search)
-	app_filter(app)
+}
+
+// Which project you are in, and so where work typed now belongs: the thread
+// you have open, the project the grid is narrowed to, or the one last worked
+// in. Four call sites used to answer this themselves, in four slightly
+// different orders, and the card that went into the wrong project was the
+// only thing that ever said they disagreed.
+// A card's thread runs in the card's own worktree, so the answer has to be
+// read back through it: the project is what the tree was cut from, and work
+// written down while reading a card used to be filed under a path in the
+// cache that nothing else on the grid shared.
+app_project :: proc(app: ^App) -> string {
+	if app.page == .Thread && app.chat.cwd != "" do return worktree_project(app, app.chat.cwd)
+	if app.canvas.project != "" do return app.canvas.project
+	return app.cwd
+}
+
+// Where the thread on screen runs. A thread that has not been given one yet
+// runs where the window is.
+app_chat_cwd :: proc(app: ^App) -> string {
+	return app.chat.cwd != "" ? app.chat.cwd : app.cwd
+}
+
+// What the thread on screen is called. The scan is what learns this — the
+// harness writes a title a moment after the first turn — so it is read off
+// the session list rather than copied onto the chat every time one lands.
+app_chat_title :: proc(app: ^App) -> string {
+	if at := session_index(app, app.chat.session_id); at >= 0 && app.sessions[at].title != "" {
+		return app.sessions[at].title
+	}
+	return app.chat.title
 }
 
 // The session list the launcher works from, and nothing else. The grid is not
@@ -328,9 +355,21 @@ app_launcher :: proc(app: ^App, open: bool) {
 // every ten seconds and against the clock, which threads deserved a place,
 // and the grid rearranged itself around the answer while you were looking at
 // it.
+// The sessions the launcher offers, as they are now. Every reader goes
+// through here, so there is no moment where the list on screen is older than
+// the cards it was built from.
+app_visible :: proc(app: ^App) -> []int {
+	app_filter(app)
+	return app.visible[:]
+}
+
+// Rebuilds the two lists the screen is made of, from the cards and the
+// sessions, as they are right now. Nothing invalidates it and nothing has to
+// remember to call it: it runs from canvas_layout, which every reader of
+// either list goes through first. It used to be called by hand from a dozen
+// places, guarded by two version counters, and the places that forgot are
+// where the grid drew a card that was no longer there.
 app_filter :: proc(app: ^App) {
-	app.layout_v += 1
-	app.view_v = app.todos.ver
 	clear(&app.visible)
 	query := strings.to_lower(strings.trim_space(editor_text(&app.search)), context.temp_allocator)
 	for s, i in app.sessions {
@@ -394,27 +433,7 @@ app_build_cards :: proc(app: ^App) {
 	}
 	slice.sort_by(rows[:], card_before)
 
-	// The same piece of work is one card however many threads it took. Sorted
-	// newest first, so the first to claim a wording is the newest one that
-	// says it and the rest count towards it. A search is asking to be shown
-	// everything by that name, folded or not, and a card nothing has started
-	// is never folded into another — it is waiting on a person, which is not
-	// something to hide behind a count.
-	seen := make(map[string]int, context.temp_allocator)
-	for row in rows {
-		td := app.todos.list[row.todo]
-		if query != "" || td.session == "" {
-			append(&app.todo_view, Card_Ref{todo = row.todo, threads = 1})
-			continue
-		}
-		key := strings.concatenate({td.cwd, todo_fold_key(td.text)}, context.temp_allocator)
-		if k, has := seen[key]; has {
-			app.todo_view[k].threads += 1
-			continue
-		}
-		seen[key] = len(app.todo_view)
-		append(&app.todo_view, Card_Ref{todo = row.todo, threads = 1})
-	}
+	for row in rows do append(&app.todo_view, row.todo)
 }
 
 // Called when a scan lands, and all it does now is forget cards whose thread
@@ -449,154 +468,94 @@ app_sync_todos :: proc(app: ^App) {
 // --- items -------------------------------------------------------------------
 
 // Enter on a card, and a click on one. A card with a thread behind it opens
-// that thread at the part it is about; a card nothing has started yet joins
-// the run queue. One path either way, whether or not a turn is in flight:
-// Enter always does the same thing and never has to be pressed twice.
+// that thread at the part it is about; a card nothing has started yet is
+// started, now. One path either way, whether or not anything else is in
+// flight: Enter always does the same thing and never has to be pressed twice.
 app_open_todo :: proc(app: ^App, id: string) {
 	at := todos_find(&app.todos, id)
 	if at < 0 do return
 	td := app.todos.list[at]
 	if td.session == "" {
-		app_queue_batch(app, td.batch)
+		app_start_todo(app, td.id)
 		return
 	}
-	// A card with a turn of its own still running is already showing what that
-	// turn is doing, right there on the card. Zooming the thread open over the
-	// grid takes that away and puts a transcript in its place, which is not
-	// what pressing Enter on a card that is plainly busy is asking for. The
-	// launcher still opens any thread by name for anyone who does want to
-	// read along.
-	if turn_for_batch(app, td.batch) >= 0 {
-		canvas_set_sel(app, id)
-		return
-	}
+	// A running turn is no reason to refuse. A card that is busy is exactly
+	// the card you want to read along with, and the click used to be swallowed
+	// by a special case that only selected it — one press, one meaning, in
+	// every state the card can be in.
 	canvas_set_sel(app, id) // the card, so the cursor is on it when you come back
 	app.open_single = true
 	canvas_open(app, td.session)
 }
 
-// --- the run queue -------------------------------------------------------------
+// --- starting one ---------------------------------------------------------------
 
-// Lines a batch up to be run: one turn, one thread, and every card cut out of
-// what was typed riding on it. Already running or already queued is not an
-// error and not a second turn — it is simply already on its way.
-app_queue_batch :: proc(app: ^App, batch: string) {
-	if batch == "" do return
-	if turn_for_batch(app, batch) >= 0 do return
-	for q in app.run_queue do if q == batch do return
-	if len(app.run_queue) == cap(app.run_queue) {
-		app_status(app, "the queue is full")
-		return
-	}
-	append(&app.run_queue, strings.clone(batch))
-	app_note_clear(app, batch) // whatever went wrong last time is last time
-	todos_batch_state(&app.todos, batch, .Queued)
-	todos_save(&app.todos)
-	app_filter(app)
-}
-
-// Takes a batch out of the queue, wherever it is in it. A batch whose last
-// card was dismissed must not leave the queue holding a name with nothing
-// behind it.
-app_unqueue_batch :: proc(app: ^App, batch: string) {
-	for q, i in app.run_queue {
-		if q != batch do continue
-		delete(q)
-		ordered_remove(&app.run_queue, i)
-		return
-	}
-}
-
-// Where a batch is in the queue, counting from one, or 0 if it is not in it.
-// Every card of a batch is in the same place, because they go out together.
-todo_queue_pos :: proc(app: ^App, batch: string) -> int {
-	for q, i in app.run_queue do if q == batch do return i + 1
-	return 0
-}
-
-// Starts the next card, when there is a process free for it. Called once a
-// frame: a turn ending — cleanly, in failure, or by dying without a word — is
-// the only thing that makes room, and this is what notices.
+// One card, run: a new thread of its own, in the card's project, with the
+// card's own wording as the first thing said in it. A card is a conversation,
+// so there is nothing else in the prompt — a list typed in one go used to be
+// glued back together into one prompt on one thread, and then nothing about
+// that thread could be read, stopped or dismissed a card at a time.
 //
-// Cards that went away while they waited are stepped over rather than
-// stopping the queue, which is why this loops.
-app_pump_todos :: proc(app: ^App) -> bool {
-	started := false
-	for len(app.run_queue) > 0 && turn_slot(app) >= 0 {
-		batch := strings.clone(app.run_queue[0], context.temp_allocator)
-		was := len(app.run_queue)
-		delete(app.run_queue[0])
-		ordered_remove(&app.run_queue, 0)
-		if app_start_batch(app, batch) {
-			started = true
-			continue
-		}
-		// It put itself back, so there is no room and nothing to gain by
-		// going round again this frame.
-		if len(app.run_queue) == was do break
-	}
-	return started
-}
-
-// One batch, run: a single new thread, in the batch's own project, with
-// everything that was typed as the first thing said in it. The cards are what
-// that text was cut into, not what it was cut up for — one list is one piece
-// of work, and splitting it into four conversations would throw away
-// everything each part knows about the others.
+// Every card asked for goes out the moment it is asked for. There was a queue
+// here, four slots wide, and cards sat in it saying `queued` — which is a
+// card telling you its work is not being done while the machine is idle. The
+// four unrelated threads it was rationing were never the scarce thing.
 //
 // Headless. Nothing here goes near the composer, the transcript or the panel:
 // the draft in the composer belongs to whoever typed it, and several turns
 // running would otherwise be several things fighting over one screen. The
-// cards say `processing`, and clicking one opens the thread as soon as the
+// card says `processing`, and clicking it opens the thread as soon as the
 // harness has named it.
-@(private = "file")
-app_start_batch :: proc(app: ^App, batch: string) -> bool {
-	// Rebuilt from the cards rather than remembered, so a card dismissed
-	// while the batch waited for a slot is not asked for.
-	parts := make([dynamic]string, context.temp_allocator)
-	cwd := ""
-	for at in todos_batch(&app.todos, batch) {
-		td := app.todos.list[at]
-		if td.session != "" do return false // it found a thread another way
-		if td.text != "" do append(&parts, td.text)
-		if cwd == "" do cwd = td.cwd
-	}
-	if len(parts) == 0 do return false // every card of it is gone
-	if cwd == "" do cwd = app.cwd
-	prompt := strings.join(parts[:], "\n", context.temp_allocator)
+//
+// Asking twice is not two turns: a card already running is already on its way.
+app_start_todo :: proc(app: ^App, id: string) {
+	if id == "" do return
+	if turn_for_todo(app, id) >= 0 do return
+	// Read out of the store rather than taken on trust, so a card that has
+	// since been dismissed is not asked for.
+	at := todos_find(&app.todos, id)
+	if at < 0 do return
+	td := app.todos.list[at]
+	if td.session != "" do return // it found a thread another way
+	if td.text == "" do return
+	project := td.cwd != "" ? td.cwd : app.cwd
 
-	if !turn_start(app, cwd, "", prompt, batch, false) {
-		// Not a failure of the work: a slot or a pipe this window could not
-		// get hold of just now, with three other turns holding theirs. Saying
-		// `failed` on a card whose turn never ran — while the ones beside it
-		// carry on — is a lie the grid used to tell. It goes back in the
-		// queue and is tried again on the next frame.
-		inject_at(&app.run_queue, 0, strings.clone(batch))
-		app_status(app, "waiting for a free slot")
-		return false
-	}
-	todos_batch_state(&app.todos, batch, .Running)
-	todos_save(&app.todos)
-	app_filter(app)
-	return true
-}
-
-// Why a batch failed, kept until it is asked to run again. Not written down
-// with the cards: it is about this attempt, not about the work.
-app_note :: proc(app: ^App, batch, text: string) {
-	if batch == "" do return
-	line := strings.trim_space(one_line(text, 160))
-	if line == "" do return
-	if old, has := app.notes[batch]; has {
-		delete(old)
-		app.notes[batch] = strings.clone(line)
+	app_note_clear(app, id) // whatever went wrong last time is last time
+	// Its own checkout, so that four cards running at once are four working
+	// trees and not four agents editing one. A project git knows nothing
+	// about runs where it always ran.
+	cwd, why := worktree_for(project, id, context.temp_allocator)
+	if why != "" do app_note(app, id, why)
+	// With the preamble on the front: a headless turn is the one nobody is
+	// reading, so it is the one that has to say whether it finished.
+	if !turn_start(app, cwd, project, "", verdict_preamble(td.text), id, false) {
+		// Not a failure of the work: a pipe or a process this window could
+		// not get hold of just now. Saying `failed` on a card whose turn
+		// never ran — while the ones beside it carry on — is a lie the grid
+		// used to tell, so the card stays as it was and can be asked again.
+		app_status(app, "could not start claude")
 		return
 	}
-	app.notes[strings.clone(batch)] = strings.clone(line)
+	// Nothing to write down: the turn now in flight is what says this card is
+	// running, and it says so until it ends.
 }
 
-app_note_clear :: proc(app: ^App, batch: string) {
-	if key, val := delete_key(&app.notes, batch); key != "" {
+// Why a card failed, kept until it is asked to run again. Not written down
+// with the card: it is about this attempt, not about the work.
+app_note :: proc(app: ^App, id, text: string) {
+	if id == "" do return
+	line := strings.trim_space(one_line(text, 160))
+	if line == "" do return
+	if old, has := app.notes[id]; has {
+		delete(old)
+		app.notes[id] = strings.clone(line)
+		return
+	}
+	app.notes[strings.clone(id)] = strings.clone(line)
+}
+
+app_note_clear :: proc(app: ^App, id: string) {
+	if key, val := delete_key(&app.notes, id); key != "" {
 		delete(key)
 		delete(val)
 	}
@@ -610,31 +569,21 @@ app_notes_destroy :: proc(app: ^App) {
 	delete(app.notes)
 }
 
-// The turn a batch of cards was running has ended, one way or the other. One
-// thread finishing is every card on it finishing: there was one turn.
-app_batch_finished :: proc(app: ^App, batch: string, state: Todo_State) {
-	if batch == "" do return
-	todos_batch_state(&app.todos, batch, state)
+// The turn a card was running has ended, one way or the other.
+app_todo_finished :: proc(app: ^App, id: string, state: Todo_State) {
+	if id == "" do return
+	todo_set_state(&app.todos, id, state)
 	todos_save(&app.todos)
-	app_filter(app)
 }
 
 // What a card says its work is doing. The store is the record and the process
-// is the truth: the one card the runner is on is running, a card the queue is
-// holding is queued, and a `running` left on disk by a quit or a crash is
-// neither of those and reads as waiting again.
+// is the truth: a card a turn is on is running, and a `running` left on disk
+// by a quit or a crash is not that and reads as waiting again.
 todo_display_state :: proc(app: ^App, td: Todo) -> Todo_State {
-	if turn_for_batch(app, td.batch) >= 0 do return .Running
-	if todo_queue_pos(app, td.batch) > 0 do return .Queued
-	#partial switch td.state {
-	case .Running:
-		// A turn running in the card's own thread — one typed into the
-		// composer, say — shows on the card as well.
-		return app_session_busy(app, td.session) ? .Running : .Open
-	case .Queued:
-		// The queue is the only thing that queues, and it is not holding this.
-		return .Open
-	}
+	// A turn on this card, or a turn in the card's own thread — one typed
+	// into the composer, say — both show on the card as running.
+	if turn_for_todo(app, td.id) >= 0 do return .Running
+	if td.session != "" && app_session_busy(app, td.session) do return .Running
 	return td.state
 }
 
@@ -657,17 +606,12 @@ app_drop_todo :: proc(app: ^App, id: string) {
 	at := todos_find(&app.todos, id)
 	if at < 0 do return
 	session := strings.clone(app.todos.list[at].session, context.temp_allocator)
-	batch := strings.clone(app.todos.list[at].batch, context.temp_allocator)
 	todos_dismiss(&app.todos, id)
-	// Only when the last of them has gone: the others still want the turn.
-	if len(todos_batch(&app.todos, batch)) == 0 {
-		app_unqueue_batch(app, batch)
-		// Taking the last card of a piece of work off the grid is saying you
-		// are done with it, so the turn running it stops. This is the way to
-		// stop one from the grid, and it is deliberate — which is the whole
-		// difference between it and what Esc used to do.
-		if at := turn_for_batch(app, batch); at >= 0 do turn_stop(app, at)
-	}
+	// Taking a card off the grid is saying you are done with it, so the turn
+	// running it stops. This is the way to stop one from the grid, and it is
+	// deliberate — which is the whole difference between it and what Esc used
+	// to do.
+	if at := turn_for_todo(app, id); at >= 0 do turn_stop(app, at)
 	if session != "" && !todos_has(&app.todos, session) {
 		archive_set(&app.archive, session, true)
 	}
@@ -675,32 +619,61 @@ app_drop_todo :: proc(app: ^App, id: string) {
 
 // --- typing a list ---------------------------------------------------------------
 
-// Everything typed into the box under the grid: one thread, and a card for
-// each of the things said in it.
+// Everything typed into the box under the grid: a card for each of the things
+// said in it, and a thread each.
 //
-// The split is what the grid is made of, not what the work is cut into. A
-// list someone types in one go is one piece of work said in several
-// sentences — the second line is usually about the first — so it goes out as
-// one prompt to one thread, the way it would if it had been typed into a
-// composer. The cards are how it reads back on the grid afterwards, and they
-// all point at that one thread.
+// Where one item stops and the next begins is worked out from what was
+// written — a line, a bullet, a numbered point, a sentence. Each part is its
+// own conversation, so a card can be opened, stopped and dismissed without
+// dragging the ones typed beside it along: they used to share one thread, and
+// sharing it was what made every one of those a special case.
 app_capture :: proc(app: ^App) {
 	text := strings.trim_space(editor_text(&app.capture))
 	if text == "" do return
-	// The project the grid is narrowed to, else the one last worked in.
-	cwd := app.canvas.project != "" ? app.canvas.project : app.cwd
+	cwd := app_project(app)
 	parts := todos_split(text)
 	if len(parts) == 0 do return
 
-	// The first card names the batch, and the rest join it.
-	batch := todos_add(&app.todos, parts[0], "", cwd)
-	for part in parts[1:] do todos_add(&app.todos, part, "", cwd, batch = batch)
+	first := ""
+	for part in parts {
+		id := todos_add(&app.todos, part, "", cwd)
+		if first == "" do first = id
+		app_start_todo(app, id)
+	}
 	editor_clear(&app.capture)
+	app.history_at = 0
 	todos_save(&app.todos)
-	canvas_set_sel(app, batch)
-	app_queue_batch(app, batch)
-	note := len(parts) == 1 ? "running it" : fmt.tprintf("%d cards — one thread", len(parts))
-	app_status(app, note)
+	canvas_set_sel(app, first)
+}
+
+// --- what was typed before ----------------------------------------------------
+
+// Up and down in the box under the grid walk back through what has already
+// been written there, the way a shell does it. What was typed is what became a
+// card, so the cards are the history and there is no second list to keep — the
+// only thing written down is how far back through them the box is showing.
+//
+// The arrows used to move the keyboard cursor between cards instead, so the
+// commonest thing anyone wants from a box — the line typed a minute ago, again
+// — could not be had at all. The cards keep left and right.
+app_history :: proc(app: ^App, back: int) -> bool {
+	// Asked from the grid's arrow keys, which are there whether or not the
+	// box is: on a grid of every project there is nothing to type into, and
+	// walking a history into a box nobody can see is the second copy this
+	// whole arrangement exists to avoid.
+	if !app_capture_open(app) do return false
+	n := len(app.todos.list)
+	if n == 0 do return false
+	at := clamp(app.history_at + back, 0, n)
+	if at == app.history_at do return false
+	app.history_at = at
+	if at == 0 {
+		editor_clear(&app.capture)
+		return true
+	}
+	// The list is oldest first, so one step back is one off the end.
+	editor_set_text(&app.capture, app.todos.list[n - at].text)
+	return true
 }
 
 // Everything a thread can be found by: what it is called, what was asked of
@@ -730,32 +703,36 @@ session_matches :: proc(s: Session, query: string) -> bool {
 // is ctrl c, which is only ever about one thing and is never pressed by
 // somebody trying to close a panel.
 //
-// The project the grid is narrowed to is not in that list. Narrowing to one
-// is a thing you said, not a thing that happened to you, and Esc undoing it
-// meant every press that missed everything else dumped you back out of the
-// project you were working in. The launcher offers a row that widens it
-// again, which is where the choice was made in the first place.
+// The project the grid is narrowed to is last in that list, and only there:
+// Esc gives up the launcher, the picker, the open thread and what is
+// half-typed before it will widen the grid. A press that has nothing else
+// left to back out of is somebody asking to see everything again, and having
+// no key for it at all meant the only way out of a project was to know that
+// the launcher had a row for it.
 //
 // Returns whether the search text changed, which the grid is filtered by.
 app_cancel :: proc(app: ^App) -> bool {
 	switch {
-	case app.canvas.launcher:
+	case app.overlay == .Launcher:
 		app_launcher(app, false)
 		return true
 
-	case app.model_open:
-		app.model_open = false
+	case app.overlay == .Model:
+		app.overlay = .None
 
-	case app.canvas.opened && app.focus != .Search:
+	case app.page == .Thread:
 		canvas_close(app)
 
-	case app.focus == .Search:
-		editor_clear(&app.search)
-		app.focus = .Composer
-		return true
-
-	case app.focus == .Capture && editor_text(&app.capture) != "":
+	// Only what is on screen counts as something to back out of. A state
+	// file written by an older build can restore text into the box while the
+	// grid is showing every project, and a press that quietly cleared a box
+	// nobody can see is a press that looked like it did nothing.
+	case app_capture_open(app) && editor_text(&app.capture) != "":
 		editor_clear(&app.capture)
+		app.history_at = 0
+
+	case app.canvas.project != "":
+		canvas_filter_project(app, "")
 
 	}
 	return false
@@ -773,7 +750,6 @@ chat_new :: proc(app: ^App) {
 	clear(&app.open)
 	app.chat.cwd = strings.clone(app.cwd)
 	app.chat.title = strings.clone("New chat")
-	app.selected = -1
 	app.cur_msg = -1
 	app.stick = true
 	app.chat_ver += 1
@@ -786,7 +762,7 @@ chat_new :: proc(app: ^App) {
 // lands instantly even on a session file that runs to tens of megabytes.
 app_open :: proc(app: ^App, index: int) {
 	if index < 0 || index >= len(app.sessions) do return
-	if app.selected == index && !load_busy(&app.load) do return
+	if app.chat.session_id == app.sessions[index].id && !load_busy(&app.load) do return
 
 	s := &app.sessions[index]
 	chat_destroy(&app.chat)
@@ -799,11 +775,12 @@ app_open :: proc(app: ^App, index: int) {
 	// project you are in, and a card typed afterwards belongs to that project
 	// — it used to go to whatever directory the window was launched from, so
 	// work written down while reading one project landed in another.
-	if s.cwd != "" && s.cwd != app.cwd {
+	// Through the worktree to the project it was cut from: a thread running
+	// in a card's own tree is still work in the project the card came from.
+	if project := worktree_project(app, s.cwd); project != "" && project != app.cwd {
 		delete(app.cwd)
-		app.cwd = strings.clone(s.cwd)
+		app.cwd = strings.clone(project)
 	}
-	app.selected = index
 	app.cur_msg = -1
 	app.stick = true
 	app.chat_ver += 1
@@ -859,8 +836,8 @@ app_send :: proc(app: ^App) {
 // the harness is given; they differ only when there are attachments.
 //
 // False means nothing went out: an empty prompt, or a harness that would not
-// start. A message that only got as far as the queue behind a running turn
-// counts as sent — it is in the transcript and it will go.
+// start. Nothing else can stop it — every message goes out the moment it is
+// typed, whatever else this window is running.
 app_submit :: proc(app: ^App, text, prompt: string) -> bool {
 	if strings.trim_space(prompt) == "" do return false
 
@@ -876,39 +853,21 @@ app_submit :: proc(app: ^App, text, prompt: string) -> bool {
 	clear(&app.attach) // the blocks own the attachments now
 	app.chat_ver += 1
 
-	cwd := app.chat.cwd != "" ? app.chat.cwd : app.cwd
+	cwd := app_chat_cwd(app)
 	route_clear(app)
 
-	// A turn is already running in this thread, or every slot is taken: the
-	// message is already in the transcript where it was typed, so all that is
-	// left is to remember to send it. Dropping it here — which is what used to
-	// happen — looked exactly like a broken Enter key.
-	waiting := app_chat_busy(app) || app_session_busy(app, app.chat.session_id) || turn_slot(app) < 0
-	if waiting {
-		if len(app.queue) == cap(app.queue) {
-			// Never fall through to starting one: a second `--resume` of a
-			// thread that already has a turn in it is two processes writing
-			// one session file.
-			app_status(app, "too many messages waiting")
-			return false
-		}
-		app.chat.msgs[m].queued = true
-		append(
-			&app.queue,
-			Pending {
-				prompt = strings.clone(prompt),
-				session = strings.clone(app.chat.session_id),
-				cwd = strings.clone(cwd),
-				msg = m,
-			},
-		)
-		app.stick = true
-		app_status(app, fmt.tprintf("queued (%d)", len(app.queue)))
-		return true
-	}
-
+	// A turn already running in this thread is no reason to hold this one:
+	// it starts now, beside the one before it. There used to be a queue here
+	// — a follow-up waited in it until the turn it was typed over finished,
+	// because two `--resume`s of one session are two processes writing one
+	// session file. The waiting is what broke: a turn that ended in a way
+	// nothing noticed left its follow-ups sitting in the queue for good, and
+	// a message that never goes out is worse than two harnesses arguing over
+	// a session file — which the harness settles for itself, and which
+	// nothing waiting in this process ever settled.
+	//
 	// The composer's turn is the one that draws into the transcript.
-	if !turn_start(app, cwd, app.chat.session_id, prompt, "", true) {
+	if !turn_start(app, cwd, app_project(app), app.chat.session_id, prompt, "", true) {
 		app_status(app, "could not start claude")
 		return false
 	}
@@ -916,78 +875,6 @@ app_submit :: proc(app: ^App, text, prompt: string) -> bool {
 	app.stick = true
 	app_status(app, "thinking...")
 	return true
-}
-
-// Sends the next message that was typed over a running turn. Called when one
-// finishes, which is the only time there is a process free to run it.
-app_pump_queue :: proc(app: ^App) {
-	if len(app.queue) == 0 || turn_slot(app) < 0 do return
-	// Only the head, and only when its own thread is free: messages typed into
-	// one thread have to reach it in the order they were typed.
-	session := app.queue[0].session
-	if session == "" {
-		// Queued against a chat the harness had not named yet. It belongs to
-		// whichever id came back for the turn it was typed over, so it waits
-		// for that turn to be over and for the chat to have picked the id up.
-		if turn_chat(app) >= 0 do return
-		session = app.chat.session_id
-	}
-	if app_session_busy(app, session) do return
-
-	p := app.queue[0]
-	ordered_remove(&app.queue, 0)
-	defer pending_destroy(&p)
-
-	// It is going out now, so it stops being drawn as waiting — unless the
-	// reader has moved to another session, in which case that transcript is
-	// gone and there is nothing to unmark.
-	if p.session == app.chat.session_id && p.msg >= 0 && p.msg < len(app.chat.msgs) {
-		app.chat.msgs[p.msg].queued = false
-		app.chat_ver += 1
-	}
-	// It draws into the transcript when the thread it is for is the one on
-	// screen, which is the usual case and not the only one.
-	if !turn_start(app, p.cwd, session, p.prompt, "", session == app.chat.session_id) {
-		app_status(app, "could not start claude")
-		return
-	}
-	app.cur_msg = -1
-	app_status(app, "thinking...")
-}
-
-// Everything lined up behind a turn that is being stopped. Stopping one
-// should not be followed by the next thing starting on its own, whichever of
-// the two it would have been.
-app_queue_clear :: proc(app: ^App) {
-	app_queue_clear_messages(app)
-	app_run_queue_clear(app)
-}
-
-// The follow-ups typed into the composer. They stop claiming they are about
-// to go out, because they are not.
-app_queue_clear_messages :: proc(app: ^App) {
-	if len(app.queue) == 0 do return
-	for &p in app.queue {
-		if p.session == app.chat.session_id && p.msg >= 0 && p.msg < len(app.chat.msgs) {
-			app.chat.msgs[p.msg].queued = false
-		}
-		pending_destroy(&p)
-	}
-	app.chat_ver += 1
-	clear(&app.queue)
-}
-
-// The cards waiting for a slot, put back to waiting. Turns already in flight
-// are not touched: stopping those is turns_stop_all.
-app_run_queue_clear :: proc(app: ^App) {
-	if len(app.run_queue) == 0 do return
-	for batch in app.run_queue {
-		todos_batch_state(&app.todos, batch, .Open)
-		delete(batch)
-	}
-	clear(&app.run_queue)
-	todos_save(&app.todos)
-	app_filter(app)
 }
 
 // --- applying what the runner streams ---------------------------------------
@@ -999,7 +886,7 @@ open_key :: proc(parent: string, index: int) -> u64 {
 
 app_apply_events :: proc(app: ^App) -> bool {
 	changed := false
-	for &t, at in app.turns {
+	for t, at in app.turns {
 		if !t.live do continue
 		events := runner_drain(&t.runner, context.temp_allocator)
 		if len(events) == 0 do continue
@@ -1024,7 +911,7 @@ app_apply_event_for_test :: proc(app: ^App, at: int, e: ^Event) {
 @(private = "file")
 app_apply :: proc(app: ^App, at: int, e: ^Event) {
 	c := &app.chat
-	t := &app.turns[at]
+	t := app.turns[at]
 	turn_note(t, e)
 
 	// The harness names the thread in the first record it writes, and that is
@@ -1032,7 +919,9 @@ app_apply :: proc(app: ^App, at: int, e: ^Event) {
 	if e.kind == .Session && e.id != "" && t.session != e.id {
 		delete(t.session)
 		t.session = strings.clone(e.id)
-		if t.batch != "" do todos_batch_session(&app.todos, t.batch, e.id, t.cwd)
+		// The project, not the tree it is checked out into: the card is filed
+		// under the work it belongs to.
+		if t.todo != "" do todo_set_session(&app.todos, t.todo, e.id, t.project)
 		if t.chat && c.session_id != e.id {
 			delete(c.session_id)
 			c.session_id = strings.clone(e.id)
@@ -1042,18 +931,7 @@ app_apply :: proc(app: ^App, at: int, e: ^Event) {
 	if !t.chat || (t.session != "" && t.session != c.session_id) {
 		#partial switch e.kind {
 		case .Failed:
-			if t.stopped {
-				// Killed by hand a moment ago. The non-zero exit that follows
-				// is us, not the work.
-				app_note(app, t.batch, "stopped")
-				app_turn_ended(app, t, .Open)
-				break
-			}
-			// Headless, so there is no transcript for this to go in. It goes
-			// on the card instead, which is the only thing anyone can see.
-			app_note(app, t.batch, e.text)
-			app_status(app, e.text != "" ? e.text : "a turn failed")
-			app_turn_ended(app, t, .Failed)
+			app_turn_failed(app, t, e.text)
 		case .Done:
 			app_turn_ended(app, t, .Done)
 		}
@@ -1065,6 +943,10 @@ app_apply :: proc(app: ^App, at: int, e: ^Event) {
 	case .Session:
 		// Taken above: the id has to be picked up whether or not anyone is
 		// looking at the thread it names.
+
+	case .Verdict:
+		// Taken above too: what a turn says about its own work is the card's
+		// business whether or not anyone has the thread open.
 
 	case .Status:
 		if e.text != "" do app_status(app, e.text)
@@ -1135,11 +1017,15 @@ app_apply :: proc(app: ^App, at: int, e: ^Event) {
 		strings.write_string(&b.result, e.text)
 
 	case .Failed:
+		// The transcript is the only part of this that is about having the
+		// thread open. What became of the turn is not: the card is marked and
+		// the reason written down the same way it would be if nobody were
+		// looking, because opening a card used to be the difference between
+		// `failed` with the reason beside it and `failed` on its own.
 		m := chat_append(c, .System)
 		ref := msg_append_block(c, m, Block{kind = .Error})
 		strings.write_string(&chat_block(c, ref).text, e.text)
-		app_turn_ended(app, t, .Failed)
-		app_status(app, "failed")
+		app_turn_failed(app, t, e.text)
 
 	case .Done:
 		for &m in c.msgs {
@@ -1155,6 +1041,24 @@ app_apply :: proc(app: ^App, at: int, e: ^Event) {
 	}
 }
 
+// A turn came back a failure. One path, whether or not its thread is the one
+// on screen: a turn stopped by hand is not a failure at all, and every other
+// one leaves the reason on the card — a headless turn has nowhere else to put
+// it, and a card that says `failed` and nothing else is one you cannot act on.
+@(private = "file")
+app_turn_failed :: proc(app: ^App, t: ^Turn, text: string) {
+	if t.stopped {
+		// Killed by hand a moment ago. The non-zero exit that follows is us,
+		// not the work.
+		app_note(app, t.todo, "stopped")
+		app_turn_ended(app, t, .Open)
+		return
+	}
+	app_note(app, t.todo, text)
+	app_status(app, text != "" ? text : "a turn failed")
+	app_turn_ended(app, t, .Failed)
+}
+
 // A turn is over. Its card is marked, the sidebar is re-read because the
 // session file has just changed, and a turn that changed this window rebuilds
 // it — the new binary takes the process over a few seconds later.
@@ -1163,7 +1067,11 @@ app_turn_ended :: proc(app: ^App, t: ^Turn, state: Todo_State) {
 	if t.ended do return // Failed then Done is one ending, and the first wins
 	t.ended = true
 	app.cost = t.runner.cost
-	app_batch_finished(app, t.batch, state)
+	// What the process did and what the work did are two questions, and the
+	// exit code only answers the first.
+	outcome := turn_outcome(t, state)
+	if outcome == .Asked do app_note(app, t.todo, t.say)
+	app_todo_finished(app, t.todo, outcome)
 	app.rescan = true
 	reload_build(app, t.cwd)
 }
@@ -1190,4 +1098,24 @@ base_name :: proc(path: string) -> string {
 		return path[idx + 1:]
 	}
 	return path
+}
+
+// How many projects the grid is showing, and which one when it is showing
+// exactly one. The heading over the grid and the names over the sections are
+// two answers to the same question — what is on screen — and they used to
+// disagree: the heading said "all projects" while the first section, the one
+// the heading sat directly on top of, went unnamed on the grounds that the
+// line above it had already said which project it was. Both now read this.
+app_view_projects :: proc(app: ^App) -> (n: int, only: string) {
+	cwd := ""
+	for at in app.todo_view {
+		if at >= len(app.todos.list) do continue
+		td := app.todos.list[at]
+		if td.cwd == cwd do continue
+		cwd = td.cwd
+		n += 1
+		only = cwd
+	}
+	if n != 1 do only = ""
+	return
 }

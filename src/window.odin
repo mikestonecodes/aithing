@@ -520,7 +520,11 @@ on_modifiers :: proc "c" (
 // Appends a key press and the text it types, if any.
 @(private = "file")
 emit_key :: proc(w: ^Window, k: Key, repeat := false) {
-	append(&w.input.keys, k)
+	// The one place a keycode becomes a key. What it types is still read off
+	// the code it arrived on; which key it is comes from the keymap, because
+	// a keymap that is not a keyboard puts its keys wherever it likes.
+	code := keymap_code(&w.keymap, k.code)
+	append(&w.input.keys, Key{code, k.mods})
 	r: rune
 	if !(.Ctrl in k.mods || .Alt in k.mods || .Super in k.mods) {
 		r = keymap_char(&w.keymap, k.code, .Shift in k.mods)
@@ -532,7 +536,17 @@ emit_key :: proc(w: ^Window, k: Key, repeat := false) {
 	// AITHING_KEYS=1 prints what arrived: the only way to tell a key the
 	// compositor never sent from one this program mistranslated.
 	if g_log_keys {
-		fmt.eprintfln("key code=%d mods=%v types=%q%s", k.code, k.mods, r, repeat ? " (repeat)" : "")
+		// Both codes, because the whole of this bug was invisible with only
+		// the first: a synthetic keyboard sends code 1 meaning Insert, and a
+		// log that printed 1 and stopped looked like somebody pressed Escape.
+		fmt.eprintfln(
+			"key code=%d as=%d mods=%v types=%q%s",
+			k.code,
+			code,
+			k.mods,
+			r,
+			repeat ? " (repeat)" : "",
+		)
 	}
 }
 

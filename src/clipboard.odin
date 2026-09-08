@@ -118,6 +118,17 @@ clipboard_read :: proc(w: ^Window, mime: string) -> ([]byte, bool) {
 }
 
 clipboard_text :: proc(w: ^Window) -> (string, bool) {
+	// Our own copy comes back from the one place it is kept, without asking
+	// the compositor to ask us for it. The round trip cannot work and does
+	// not fail quietly: `receive` is answered by the `send` callback on the
+	// event queue this procedure is blocking on, so nobody writes, the poll
+	// times out, and the read end is closed — and the write that finally
+	// runs on the next dispatch lands on a pipe with no reader, which is a
+	// SIGPIPE and a window that vanishes between a copy and the paste after
+	// it, with nothing in the crash log because a default SIGPIPE is not a
+	// crash. Super+C then Super+V killed the program every time.
+	if w.copy_source != nil do return strings.clone(w.copy_text), true
+
 	mimes := TEXT_MIMES
 	mime, ok := clipboard_has(w, mimes[:])
 	if !ok do return "", false
@@ -129,6 +140,9 @@ clipboard_text :: proc(w: ^Window) -> (string, bool) {
 // The pasted image, still encoded; the caller decodes it for a thumbnail and
 // writes it somewhere Claude can read.
 clipboard_image :: proc(w: ^Window) -> (data: []byte, mime: string, ok: bool) {
+	// While the selection is ours it holds text and nothing else, and reading
+	// it the long way is the deadlock above.
+	if w.copy_source != nil do return nil, "", false
 	mimes := IMAGE_MIMES
 	mime, ok = clipboard_has(w, mimes[:])
 	if !ok do return nil, "", false

@@ -57,6 +57,7 @@ KEY_END :: 107
 KEY_DOWN :: 108
 KEY_PAGEDOWN :: 109
 KEY_SLASH :: 53
+KEY_INSERT :: 110
 KEY_DELETE :: 111
 
 @(private = "file")
@@ -98,6 +99,7 @@ key_char :: proc "contextless" (code: u32, shift: bool) -> u8 {
 
 Keymap :: struct {
 	levels: map[u32][2]rune, // evdev code -> unshifted, shifted
+	codes:  map[u32]u32, // evdev code -> the key it actually is
 	parsed: bool, // once this holds, the keymap is the only authority
 }
 
@@ -153,10 +155,13 @@ keymap_parse :: proc(text: string) -> (km: Keymap, ok: bool) {
 		if !has do continue
 
 		pair: [2]rune
+		first: string
 		level := 0
 		for part in strings.split_iterator(&list, ",") {
 			if level >= 2 do break
-			pair[level] = keysym_rune(strings.trim_space(part))
+			sym := strings.trim_space(part)
+			if level == 0 do first = sym
+			pair[level] = keysym_rune(sym)
 			level += 1
 		}
 		// Keys that type nothing are recorded too, as a pair of zeroes. That
@@ -164,6 +169,16 @@ keymap_parse :: proc(text: string) -> (km: Keymap, ok: bool) {
 		// nothing", or a Delete sitting on a keycode that a US keyboard uses
 		// for a digit falls through and types the digit.
 		km.levels[code] = pair
+
+		// And what the key *is*, which is a different question from what it
+		// types and until now was answered by a different authority: the
+		// switches on KEY_ESC and friends read the raw evdev code straight
+		// off the wire. See `keymap_code`.
+		if canon, named := keysym_key(first); named {
+			km.codes[code] = canon
+		} else if canon, letter := letter_code(pair[0]); letter {
+			km.codes[code] = canon
+		}
 	}
 	km.parsed = len(km.levels) > 0
 	return km, km.parsed
@@ -171,6 +186,7 @@ keymap_parse :: proc(text: string) -> (km: Keymap, ok: bool) {
 
 keymap_destroy :: proc(km: ^Keymap) {
 	delete(km.levels)
+	delete(km.codes)
 	km^ = {}
 }
 
@@ -185,6 +201,80 @@ keymap_char :: proc(km: ^Keymap, code: u32, shift: bool) -> rune {
 		return r
 	}
 	return rune(key_char(code, shift))
+}
+
+// Which key a keycode is, which is not the same question as what it types and
+// must not be answered by a second authority.
+//
+// It used to be: `keymap_char` asked the compositor's keymap, while every
+// shortcut compared the raw evdev code against the US table at the top of this
+// file. That agrees right up until something hands the window a keymap that is
+// not a keyboard. `wtype` does — it is how a compositor binding types for you,
+// as in niri's
+//
+//     Mod+C { spawn "wtype" "-M" "ctrl" "-k" "Insert"; }
+//
+// and it sends a one-key keymap, `<K1> = 9` carrying Insert, so the key
+// arrives as evdev code 1. Code 1 in the US table is Escape. Pressing copy
+// closed the thread, and so did paste, and so did cut.
+//
+// Every keycode enters the program through here, once, at the window. A key
+// the keymap does not name keeps the code it came in with, which is what a
+// real keyboard's keymap agrees with anyway.
+keymap_code :: proc(km: ^Keymap, code: u32) -> u32 {
+	if !km.parsed do return code
+	return km.codes[code] or_else code
+}
+
+// The keys that are keys rather than characters, by keysym. Compositors send
+// keysyms either by name or as hex, so both forms are here on one row.
+@(private = "file")
+STRUCTURAL := [?]struct {
+	name:  string,
+	value: u64,
+	code:  u32,
+} {
+	{"Escape", 0xff1b, KEY_ESC},
+	{"Return", 0xff0d, KEY_ENTER},
+	{"KP_Enter", 0xff8d, KEY_KPENTER},
+	{"BackSpace", 0xff08, KEY_BACKSPACE},
+	{"Tab", 0xff09, KEY_TAB},
+	{"Insert", 0xff63, KEY_INSERT},
+	{"Delete", 0xffff, KEY_DELETE},
+	{"Home", 0xff50, KEY_HOME},
+	{"Left", 0xff51, KEY_LEFT},
+	{"Up", 0xff52, KEY_UP},
+	{"Right", 0xff53, KEY_RIGHT},
+	{"Down", 0xff54, KEY_DOWN},
+	{"Page_Up", 0xff55, KEY_PAGEUP},
+	{"Page_Down", 0xff56, KEY_PAGEDOWN},
+	{"End", 0xff57, KEY_END},
+}
+
+@(private = "file")
+keysym_key :: proc(sym: string) -> (code: u32, ok: bool) {
+	value: u64
+	if strings.has_prefix(sym, "0x") {
+		v, parsed := strconv.parse_u64_of_base(sym[2:], 16)
+		if !parsed do return 0, false
+		value = v
+	}
+	for s in STRUCTURAL {
+		hit := value != 0 ? s.value == value : s.name == sym
+		if hit do return s.code, true
+	}
+	return 0, false
+}
+
+// The keycode a letter sits on for the purposes of a shortcut. Ctrl+N is the
+// key labelled n: on a US keyboard that is the code it arrived on, and on
+// anything else — a Dvorak layout, or wtype's scratch keymap typing a cut as
+// ctrl and the letter x — the label is the only thing that means anything.
+@(private = "file")
+letter_code :: proc(r: rune) -> (code: u32, ok: bool) {
+	if r < 'a' || r > 'z' do return 0, false
+	for c, i in UNSHIFTED do if rune(c) == r do return u32(i), true
+	return 0, false
 }
 
 // Whether a held key should repeat: anything that types, plus the editing keys.

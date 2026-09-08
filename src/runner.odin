@@ -25,6 +25,7 @@ Ev_Kind :: enum {
 	Block_Stop,
 	Tool_Result,
 	Tool_Input, // the tool call's finished input, once it parses
+	Verdict, // the agent's own word on whether the work is finished
 	Done,
 	Failed,
 }
@@ -32,6 +33,7 @@ Ev_Kind :: enum {
 Event :: struct {
 	kind:       Ev_Kind,
 	block_kind: Block_Kind,
+	verdict:    Verdict,
 	index:      int,
 	text:       string, // owned by the event; the UI frees it after applying
 	name:       string,
@@ -86,6 +88,13 @@ Runner :: struct {
 	events:  [dynamic]Event,
 	running: bool,
 	failed:  bool,
+	// The subtype of the last `result` record, empty when it said success.
+	// The harness writes one of these every time it winds a turn up, and it
+	// winds one up and carries on more often than it exits: an interrupted
+	// turn gets a `result`, then a "continue from where you left off" and
+	// another two minutes of work. Read at the end rather than acted on when
+	// it arrives, because until the process is gone it is not the last one.
+	result:  string,
 	process: os.Process,
 	worker:  ^thread.Thread,
 	out_r:   ^os.File,
@@ -160,6 +169,8 @@ runner_start :: proc(
 	sync.mutex_lock(&r.mu)
 	r.running = true
 	r.failed = false
+	delete(r.result)
+	r.result = ""
 	r.process = process
 	r.out_r = out_r
 	delete(r.err_path)
@@ -247,17 +258,26 @@ runner_thread :: proc(r: ^Runner) {
 	sync.mutex_lock(&r.mu)
 	process := r.process
 	err_path := strings.clone(r.err_path, context.temp_allocator)
+	// The stream is over, so this is the last `result` there will be.
+	result := strings.clone(r.result, context.temp_allocator)
 	sync.mutex_unlock(&r.mu)
 
 	state, _ := os.process_wait(process)
 
+	// One ending, and the process is what says so. The exit code first,
+	// because it is the harness's own verdict on the whole run; the last
+	// `result` after it, for a harness that reports an error and still exits
+	// zero.
 	if state.exit_code != 0 {
 		msg := fmt.tprintf("claude exited with %d", state.exit_code)
+		if result != "" do msg = fmt.tprintf("%s (%s)", msg, result)
 		if data, ok := os.read_entire_file_from_path(err_path, context.temp_allocator); ok == nil {
 			trimmed := strings.trim_space(string(data))
 			if trimmed != "" do msg = fmt.tprintf("%s\n%s", msg, one_line(trimmed, 400))
 		}
 		runner_emit(r, Event{kind = .Failed, text = strings.clone(msg)})
+	} else if result != "" {
+		runner_emit(r, Event{kind = .Failed, text = strings.clone(result)})
 	}
 
 	sync.mutex_lock(&r.mu)
@@ -339,7 +359,12 @@ runner_line :: proc(r: ^Runner, line: string) {
 		if !has do return
 		content, is_arr := jarr(msg, "content")
 		if !is_arr do return
+		say := strings.builder_make(context.temp_allocator)
 		for item in content {
+			if jstr(item, "type") == "text" {
+				strings.write_string(&say, jstr(item, "text"))
+				continue
+			}
 			if jstr(item, "type") != "tool_use" do continue
 			input, _ := jobj(item, "input")
 			name := jstr(item, "name")
@@ -349,6 +374,16 @@ runner_line :: proc(r: ^Runner, line: string) {
 				name = strings.clone(name),
 				text = tool_summary(name, input),
 			})
+		}
+		// Off the finished message rather than the deltas: the marker is one
+		// line and the deltas cut it wherever the bytes happened to arrive.
+		// Only the agent's own messages, never a subagent's — a Task that
+		// reports itself done has finished a piece of the work, not the card.
+		if parent == "" {
+			text := strings.to_string(say)
+			if v := verdict_read(text); v != .None {
+				runner_emit(r, Event{kind = .Verdict, verdict = v, text = verdict_say(text, context.allocator)})
+			}
 		}
 
 	case "user":
@@ -383,9 +418,17 @@ runner_line :: proc(r: ^Runner, line: string) {
 				sync.mutex_unlock(&r.mu)
 			}
 		}
-		if jstr(v, "subtype") != "success" && jstr(v, "subtype") != "" {
-			runner_emit(r, Event{kind = .Failed, text = strings.clone(jstr(v, "subtype"))})
-		}
+		// Written down, not reported. A turn that says `error_during_execution`
+		// and then picks itself back up and finishes is a turn that finished
+		// — and reporting the first of those ended the card two minutes
+		// before the process it was watching had done the work, red, while
+		// the thread it came from went on to say the build and the tests
+		// passed.
+		sub := jstr(v, "subtype")
+		sync.mutex_lock(&r.mu)
+		delete(r.result)
+		r.result = strings.clone(sub == "success" ? "" : sub)
+		sync.mutex_unlock(&r.mu)
 	}
 }
 
@@ -414,4 +457,5 @@ runner_destroy :: proc(r: ^Runner) {
 	for &e in r.events do event_destroy(&e)
 	delete(r.events)
 	delete(r.err_path)
+	delete(r.result)
 }

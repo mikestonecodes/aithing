@@ -25,56 +25,67 @@ draw_app :: proc(app: ^App) {
 	full := Rect{0, 0, ui.size.x, ui.size.y}
 	panel, arrived, t := canvas_panel(app, full)
 
-	// The canvas underneath, dimmed as the panel takes over. While the panel
-	// is up the canvas must not see the pointer either.
-	canvas_mouse := ui.mouse
-	if app.canvas.opened || t > 0.02 do ui.mouse = {-1e6, -1e6}
-	draw_canvas(app, full)
-	ui.mouse = canvas_mouse
-	if t > 0.01 do ui_rect(ui, full, color_alpha(Color(0xff000000), 0.45 * t))
+	// The canvas underneath, only while the panel is still on its way. Once
+	// the panel fills the window the grid is not drawn at all: the thread is
+	// the page now, standing on the same ground the grid stood on — the
+	// window's own clear colour — rather than a lit panel over a dimmed copy
+	// of where you came from. Drawing both meant BG over BG, so the thread
+	// read as a sheet floating above the grid instead of replacing it.
+	// While the panel is up the canvas must not see the pointer either.
+	if !arrived {
+		canvas_mouse := ui.mouse
+		if app.page == .Thread || t > 0.02 do ui.mouse = {-1e6, -1e6}
+		draw_canvas(app, full)
+		ui.mouse = canvas_mouse
+	}
 
-	// The panel: a growing box, then the real thing once it has arrived.
-	if t > 0.01 {
-		ui_rect(ui, {panel.x + 2, panel.y + 8, panel.w, panel.h}, color_alpha(Color(0xff000000), 0.4 * t), 14 * (1 - t))
+	// The panel: a growing box, then the real thing once it has arrived. The
+	// box and its shadow only exist while it is growing — they are what makes
+	// a card look like it is lifting off the grid, and by the time it has
+	// arrived there is no grid left to lift off.
+	if arrived {
+		composer_h := composer_height(app, panel.w)
+		draw_transcript(app, {panel.x, panel.y, panel.w, panel.h - composer_h})
+		draw_composer(app, {panel.x, panel.y + panel.h - composer_h, panel.w, composer_h})
+		if app.overlay == .Model do draw_model_picker(app)
+	} else if t > 0.01 {
+		ui_rect(ui, {panel.x + 2, panel.y + 8, panel.w, panel.h}, color_alpha(Color(0xff000000), 0.4 * (1 - t)), 14 * (1 - t))
 		ui_rect(ui, panel, BG, 14 * (1 - t))
-		if arrived {
-			composer_h := composer_height(app, panel.w)
-			draw_transcript(app, {panel.x, panel.y, panel.w, panel.h - composer_h})
-			draw_composer(app, {panel.x, panel.y + panel.h - composer_h, panel.w, composer_h})
-			if app.model_open do draw_model_picker(app)
-		} else {
-			ui_text(ui, &ui.bold, app.chat.title, {panel.x + 20, panel.y + 16}, 16, color_alpha(TEXT, t))
-		}
+		ui_text(ui, &ui.bold, app_chat_title(app), {panel.x + 20, panel.y + 16}, 16, color_alpha(TEXT, t))
 	} else {
 		draw_project_head(app, full)
-		draw_capture(app, full)
+		if app_capture_open(app) do draw_capture(app, full)
 	}
 	draw_launcher(app, full)
 	if t > 0.01 && !arrived do ui_wake_in(ui, 0)
 }
 
-// The one line above the grid: the project you are in, which is the project a
-// card typed into the box below will belong to.
+// The one line above the grid: the name of the project it is showing, and
+// nothing when it is showing more than one.
 //
-// Without it there was nothing on screen that said where new work would land,
-// and it landed wherever the window happened to have been launched — so a
-// task written down while reading one project went quietly into another, and
-// the only way to find out was to notice the card under the wrong heading.
+// It used to print the last project worked in whenever the grid was not
+// narrowed, so a grid of every project sat under one project's name — two
+// pieces of state, one line, and no way to tell which you were reading. Then
+// it printed "all projects" there instead, which is a name no project has: a
+// line that says the grid below it is everything, over a grid of sections
+// that each already say whose cards they are. The sections are the answer, so
+// the line stands down and lets them give it.
 @(private = "file")
 draw_project_head :: proc(app: ^App, full: Rect) {
 	ui := &app.ui
-	filtered := app.canvas.project != ""
-	cwd := filtered ? app.canvas.project : app.cwd
-	if cwd == "" do return
-
-	x := full.x + GRID_PAD
-	y := full.y + 20
-	w := ui_text(ui, &ui.bold, base_name(cwd), {x, y}, 21, TEXT)
-
-	// What that name is: the project the grid has been narrowed to, or simply
-	// the one last worked in. They read the same and mean different things.
-	note := filtered ? "only this project  ·  / to widen" : "new cards go here"
-	ui_text(ui, &ui.regular, note, {x + w + 14, y + 6}, 13, FAINT)
+	// One project on screen, whether because the grid was narrowed to it or
+	// because it is the only one with cards. Both are the same question, and
+	// they used to be two.
+	name := app.canvas.project
+	if name == "" {
+		if projects, only := app_view_projects(app); projects == 1 do name = only
+	}
+	if name == "" do return
+	// The line is the name and nothing else. It used to carry a hint beside
+	// it — "esc to widen", "/ to pick a project" — which said the same thing
+	// on every frame forever after it had been read once, and cost the top of
+	// the window to keep saying it.
+	ui_text(ui, &ui.bold, base_name(name), {full.x + GRID_PAD, full.y + 20}, 21, TEXT)
 }
 
 // --- the box under the grid ---------------------------------------------------
@@ -90,14 +101,25 @@ draw_project_head :: proc(app: ^App, full: Rect) {
 
 CAPTURE_PX :: f32(15)
 CAPTURE_PAD :: f32(12)
+CAPTURE_LINES :: 6 // how tall the box grows before it starts scrolling
+
+// How wide the text in the box is, which is the one number the height and the
+// draw have to agree on: they used to work it out separately — the height off
+// the whole box, the draw off the box less ninety pixels it kept for a note —
+// so a line that fitted for one wrapped for the other and the box came out a
+// line short of what it was drawing.
+@(private = "file")
+capture_text_width :: proc(width: f32) -> f32 {
+	return composer_width(width) - COMPOSER_SIDE * 2
+}
 
 // How much of the window the box takes, which the grid above it keeps clear.
 capture_height :: proc(app: ^App, width: f32) -> f32 {
 	ui := &app.ui
-	inner := composer_width(width) - COMPOSER_SIDE * 2
-	editor_layout_lines(ui, &app.capture, inner, &ui.regular, CAPTURE_PX)
-	lines := f32(clamp(len(app.capture.lines), 1, 6))
-	return CAPTURE_PAD * 2 + lines * (CAPTURE_PX * 1.5) + 22
+	if !app_capture_open(app) do return 0
+	editor_layout_lines(ui, &app.capture, capture_text_width(width), &ui.regular, CAPTURE_PX)
+	_, lines := editor_window(&app.capture, CAPTURE_LINES)
+	return CAPTURE_PAD * 2 + f32(lines) * (CAPTURE_PX * 1.5) + 22
 }
 
 @(private = "file")
@@ -106,32 +128,48 @@ draw_capture :: proc(app: ^App, full: Rect) {
 	h := capture_height(app, full.w)
 	width := composer_width(full.w)
 	x := full.x + (full.w - width) / 2
+	// The box is the box. It used to keep a line above itself naming the
+	// project the cards would land in — "in aithing" — and that line is gone
+	// with the room it took: the box is only there on a grid narrowed to one
+	// project, and the heading over that grid has already said which.
 	box := Rect{x, full.y + full.h - h + 6, width, h - 18}
 
-	focused := app.focus == .Capture
+	focused := app_focus(app) == .Capture
 	ui_punch(ui, box, COMPOSER_BG, 14)
 	ui_rect(ui, box, focused ? color_alpha(ACCENT, 0.35) : color_alpha(BORDER, 0.9), 14)
-	if clicked_in(app, box) do app.focus = .Capture
 	if ui_hovered(ui, box) do ui.cursor_text = true
 
-	text_w := box.w - COMPOSER_SIDE * 2 - 90
+	text_w := capture_text_width(full.w)
 	editor_layout_lines(ui, &app.capture, text_w, &ui.regular, CAPTURE_PX)
-	text_h := f32(max(len(app.capture.lines), 1)) * (CAPTURE_PX * 1.5)
+	_, lines := editor_window(&app.capture, CAPTURE_LINES)
+	text_h := f32(lines) * (CAPTURE_PX * 1.5)
 	text_r := Rect{box.x + COMPOSER_SIDE, box.y + CAPTURE_PAD, text_w, text_h}
 	if editor_text(&app.capture) == "" {
 		ui_text(ui, &ui.regular, "what needs doing", {text_r.x, text_r.y + 1}, CAPTURE_PX, FAINT)
 	}
-	draw_editor(app, &app.capture, text_r, &ui.regular, CAPTURE_PX, focused)
+	draw_editor(app, &app.capture, text_r, &ui.regular, CAPTURE_PX, focused, CAPTURE_LINES)
 
-	// What Enter will do, and what the agent is up to behind it.
+	// What Enter will do with what is in the box. Where the split falls is
+	// read off the text rather than being a rule the writer has to keep to,
+	// so the only way to know a full stop just made a second card — and a
+	// second thread with it — is to be told before pressing Enter. It went
+	// away with the line above the box, and taking it away made the split
+	// look broken: two cards appeared out of one line with no warning.
 	note := ""
 	if strings.trim_space(editor_text(&app.capture)) != "" {
 		n := len(todos_split(editor_text(&app.capture)))
-		note = n == 1 ? "enter · runs it" : fmt.tprintf("enter · %d cards, one thread", n)
+		note = n == 1 ? "enter · runs it" : fmt.tprintf("enter · %d cards, a thread each", n)
 	}
 	if note != "" {
 		nw := font_width(&ui.regular, note, 12)
-		ui_text(ui, &ui.regular, note, {box.x + box.w - COMPOSER_SIDE - nw, box.y + box.h - 20}, 12, FAINT)
+		ui_text(
+			ui,
+			&ui.regular,
+			note,
+			{box.x + box.w - COMPOSER_SIDE - nw, box.y + box.h - 20},
+			12,
+			FAINT,
+		)
 	}
 }
 
@@ -173,7 +211,7 @@ launcher_hits :: proc(app: ^App, query: string) -> []Hit {
 	}
 	// Threads: the filtered list is already in newest-first order and already
 	// matches the query, archived and abandoned ones included.
-	for i in app.visible {
+	for i in app_visible(app) {
 		if len(out) >= LAUNCH_ROWS do break
 		s := &app.sessions[i]
 		append(&out, Hit{session = i, name = s.title, sub = base_name(s.cwd)})
@@ -188,7 +226,7 @@ launcher_hits :: proc(app: ^App, query: string) -> []Hit {
 draw_launcher :: proc(app: ^App, full: Rect) {
 	ui := &app.ui
 	c := &app.canvas
-	t := ui_anim(ui, ui_id("launcher"), c.launcher ? 1 : 0, 16)
+	t := ui_anim(ui, ui_id("launcher"), app.overlay == .Launcher ? 1 : 0, 16)
 	if t < 0.01 do return
 	if t < 0.99 do ui_wake_in(ui, 0)
 
@@ -214,7 +252,7 @@ draw_launcher :: proc(app: ^App, full: Rect) {
 		ui_text(ui, &ui.bold, "Search everything", {x, y}, size, color_alpha(FAINT, t))
 	} else {
 		editor_layout_lines(ui, &app.search, w, &ui.bold, size)
-		draw_editor(app, &app.search, {x, y, w, size * 1.4}, &ui.bold, size, true)
+		draw_editor(app, &app.search, {x, y, w, size * 1.4}, &ui.bold, size, true, 1)
 	}
 	y += size * 1.5
 	ui_rect(ui, {x, y, w, 1}, color_alpha(BORDER, t))
@@ -254,15 +292,12 @@ draw_launcher :: proc(app: ^App, full: Rect) {
 launcher_take :: proc(app: ^App, hit: Hit) {
 	if hit.session < 0 {
 		canvas_filter_project(app, hit.cwd)
-		app.canvas.launcher = false
+		app.overlay = .None
 		editor_clear(&app.search)
-		app.focus = .Composer
-		app_filter(app)
 		return
 	}
 	canvas_open(app, app.sessions[hit.session].id)
 	editor_clear(&app.search)
-	app_filter(app)
 }
 
 // Enter, from the key handler.
@@ -290,7 +325,7 @@ draw_transcript :: proc(app: ^App, r: Rect) {
 		clear(&app.heights)
 		total := f32(PAD)
 		for &m, i in app.chat.msgs {
-			h := layout_message(app, &m, x, 0, width, false)
+			h := layout_message(app, &m, i, x, 0, width, false)
 			append(&app.heights, h)
 			total += h
 		}
@@ -317,10 +352,10 @@ draw_transcript :: proc(app: ^App, r: Rect) {
 
 	y := r.y + PAD - app.transcript.offset
 	for &m, i in app.chat.msgs {
-		h := i < len(app.heights) ? app.heights[i] : layout_message(app, &m, x, y, width, false)
+		h := i < len(app.heights) ? app.heights[i] : layout_message(app, &m, i, x, y, width, false)
 		// Only what is on screen is drawn; the rest is just an offset.
 		if y + h > r.y && y < r.y + r.h {
-			_ = layout_message(app, &m, x, y, width, true)
+			_ = layout_message(app, &m, i, x, y, width, true)
 		}
 		y += h
 	}
@@ -338,7 +373,7 @@ draw_transcript :: proc(app: ^App, r: Rect) {
 // One message. Returns its height; only draws when `draw` is set, so the same
 // code measures the transcript for the scrollbar.
 @(private = "file")
-layout_message :: proc(app: ^App, m: ^Msg, x, y, width: f32, draw: bool) -> f32 {
+layout_message :: proc(app: ^App, m: ^Msg, at: int, x, y, width: f32, draw: bool) -> f32 {
 	ui := &app.ui
 
 	if m.role == .User {
@@ -352,22 +387,17 @@ layout_message :: proc(app: ^App, m: ^Msg, x, y, width: f32, draw: bool) -> f32 
 		bw := width * 0.8
 		bx := x + width - bw
 		if draw {
-			// A message still waiting its turn is drawn back, with the word
-			// under it: it has been typed and accepted, but nothing has been
-			// sent yet, and those two states used to look identical.
-			ui_rect(ui, {bx, y, bw, h + 20}, m.queued ? PANEL : USER_BG, 12)
+			// Every bubble looks the same, because every message is in the
+			// same state: sent. A dimmed one used to mean waiting behind a
+			// running turn, and nothing waits any more.
+			ui_rect(ui, {bx, y, bw, h + 20}, USER_BG, 12)
 			yy := y + 10
 			for &b in m.blocks {
 				yy += layout_block(app, &b, bx + 12, yy, inner, true, 0)
 			}
-			if m.queued {
-				label := "queued"
-				lw := font_width(&ui.regular, label, 13)
-				ui_text(ui, &ui.regular, label, {bx + bw - lw, y + h + 23}, 13, FAINT)
-			}
 		}
 		_ = body
-		return m.queued ? h + 46 : h + 32
+		return h + 32
 	}
 
 	h := f32(0)
@@ -386,6 +416,7 @@ layout_block :: proc(app: ^App, b: ^Block, x, y, width: f32, draw: bool, depth: 
 	case .Text:
 		md_layout(ui, b, width)
 		if !draw do return b.height + 6
+		ui_hover_text(ui, {x, y, width, b.height}, strings.to_string(b.text))
 		yy := y
 		for l in b.lines {
 			yy += md_draw_line(ui, l, x, yy, width, TEXT, MUTED)
@@ -396,6 +427,7 @@ layout_block :: proc(app: ^App, b: ^Block, x, y, width: f32, draw: bool, depth: 
 		md_layout(ui, b, width - 24)
 		h := b.height + 20
 		if draw {
+			ui_hover_text(ui, {x, y, width, h}, strings.to_string(b.text))
 			ui_rect(ui, {x, y, width, h}, color_alpha(RED, 0.12), 8)
 			ui_rect(ui, {x, y, 3, h}, RED, 2)
 			yy := y + 10
@@ -565,7 +597,7 @@ chevron :: proc(ui: ^UI, at: [2]f32, open: bool, col: Color) {
 
 COMPOSER_PX :: f32(19)
 COMPOSER_MIN :: f32(84)
-COMPOSER_MAX :: f32(300)
+COMPOSER_LINES :: 8 // how tall the box grows before it starts scrolling
 COMPOSER_PAD :: f32(12) // inside the box, above the text and below it
 COMPOSER_CHIPS :: f32(36) // the band along the bottom holding the model chip
 COMPOSER_SIDE :: f32(18) // the text inset from either edge of the box
@@ -578,7 +610,8 @@ composer_box_height :: proc(app: ^App, width: f32) -> f32 {
 	ui := &app.ui
 	inner := composer_width(width) - COMPOSER_SIDE * 2
 	editor_layout_lines(ui, &app.editor, inner, &ui.regular, COMPOSER_PX)
-	h := COMPOSER_PAD * 2 + f32(max(len(app.editor.lines), 1)) * (COMPOSER_PX * 1.5)
+	_, lines := editor_window(&app.editor, COMPOSER_LINES)
+	h := COMPOSER_PAD * 2 + f32(lines) * (COMPOSER_PX * 1.5)
 	if len(app.attach) > 0 do h += COMPOSER_THUMB + 14
 	return h + COMPOSER_CHIPS
 }
@@ -589,9 +622,12 @@ composer_width :: proc(width: f32) -> f32 {
 }
 
 // What the layout above reserves for the whole strip: the box plus the 6px of
-// air above it and the 12px below that draw_composer insets by.
+// air above it and the 12px below that draw_composer insets by. There is no
+// ceiling on it — COMPOSER_LINES is the ceiling, and it is one the text inside
+// knows about, which a plain clamp here was not: the box stopped growing at
+// 300px and the text kept going out through the bottom of it.
 composer_height :: proc(app: ^App, width: f32) -> f32 {
-	return clamp(composer_box_height(app, width) + 18, COMPOSER_MIN, COMPOSER_MAX)
+	return max(composer_box_height(app, width) + 18, COMPOSER_MIN)
 }
 
 draw_composer :: proc(app: ^App, r: Rect) {
@@ -600,14 +636,13 @@ draw_composer :: proc(app: ^App, r: Rect) {
 	x := r.x + (r.w - width) / 2
 
 	box := Rect{x, r.y + 6, width, r.h - 18}
-	focused := app.focus == .Composer
+	focused := app_focus(app) == .Composer
 	// What you are about to say sits over the desktop, not over the app: the
 	// box is cut out of everything drawn behind it and filled with a colour
 	// too thin to hide what the compositor blurs through the window.
 	ui_punch(ui, box, COMPOSER_BG, 14)
 	ui_rect(ui, box, focused ? color_alpha(ACCENT, 0.35) : color_alpha(BORDER, 0.9), 14)
 
-	if clicked_in(app, box) do app.focus = .Composer
 	if ui_hovered(ui, box) do ui.cursor_text = true
 
 	inner_y := box.y + COMPOSER_PAD
@@ -636,24 +671,25 @@ draw_composer :: proc(app: ^App, r: Rect) {
 
 	// A draft in a new chat may belong to a thread that is already open on
 	// this project; the manager reads it as it grows and opens that thread.
-	if app.canvas.opened do route_update(app)
+	if app.page == .Thread do route_update(app)
 
 	// The text starts under the top padding and the box grows downward with it,
 	// so the first line never moves as you type and the chip row stays clear.
 	text_w := box.w - COMPOSER_SIDE * 2
 	editor_layout_lines(ui, &app.editor, text_w, &ui.regular, COMPOSER_PX)
-	text_h := f32(max(len(app.editor.lines), 1)) * (COMPOSER_PX * 1.5)
+	_, lines := editor_window(&app.editor, COMPOSER_LINES)
+	text_h := f32(lines) * (COMPOSER_PX * 1.5)
 	text_r := Rect{box.x + COMPOSER_SIDE, inner_y, text_w, text_h}
 	if editor_text(&app.editor) == "" && !focused {
 		ui_text(ui, &ui.regular, "Reply to Claude...", {text_r.x, text_r.y + 2}, COMPOSER_PX, FAINT)
 	}
-	draw_editor(app, &app.editor, text_r, &ui.regular, COMPOSER_PX, focused)
+	draw_editor(app, &app.editor, text_r, &ui.regular, COMPOSER_PX, focused, COMPOSER_LINES)
 
 	// The only control in the window: which model answers. Permissions are
 	// whatever the harness is already configured to do.
 	chip_y := box.y + box.h - COMPOSER_CHIPS / 2 - 8
 	cx := draw_chip(app, ui_id("model-chip"), box.x + box.w - 12, chip_y, model_label[app.model], MUTED)
-	if ui.pressed && ui.hot == ui_id("model-chip") do app.model_open = !app.model_open
+	if ui.pressed && ui.hot == ui_id("model-chip") do app.overlay = app.overlay == .Model ? .None : .Model
 	app.model_chip = Rect{cx, chip_y - 5, box.x + box.w - 12 - cx, 26}
 	if app_chat_busy(app) {
 		// While a turn is in flight the same corner says so, and stops it.
@@ -694,7 +730,7 @@ draw_model_picker :: proc(app: ^App) {
 
 	// Anywhere else closes it.
 	if ui.pressed && !rect_contains(r, ui.mouse) && !rect_contains(app.model_chip, ui.mouse) {
-		app.model_open = false
+		app.overlay = .None
 		return
 	}
 
@@ -711,7 +747,7 @@ draw_model_picker :: proc(app: ^App) {
 		if clicked {
 			app.model = m
 			model_save(m)
-			app.model_open = false
+			app.overlay = .None
 		}
 		y += row_h
 	}
@@ -792,17 +828,18 @@ byte_at_x :: proc(font: ^Font, text: string, px, target: f32) -> int {
 	return len(text)
 }
 
-draw_editor :: proc(app: ^App, e: ^Editor, r: Rect, font: ^Font, px: f32, focused: bool) {
+draw_editor :: proc(app: ^App, e: ^Editor, r: Rect, font: ^Font, px: f32, focused: bool, max_lines: int) {
 	ui := &app.ui
 	text := editor_text(e)
 	lh := px * 1.5
+	first, shown := editor_window(e, max_lines)
 
 	// Click and drag to place the caret and select.
 	id := ui_id_ptr(e)
 	_, hovered := ui_invisible_button(ui, id, r)
 	_ = hovered
 	if (ui.pressed && ui_hovered(ui, r)) || (ui.down && ui.active == id) {
-		row := clamp(int((ui.mouse.y - r.y) / lh), 0, max(len(e.lines) - 1, 0))
+		row := clamp(first + int((ui.mouse.y - r.y) / lh), 0, max(len(e.lines) - 1, 0))
 		span := e.lines[row]
 		off := byte_at_x(font, text[span.start:span.end], px, ui.mouse.x - r.x)
 		e.cursor = span.start + off
@@ -823,8 +860,8 @@ draw_editor :: proc(app: ^App, e: ^Editor, r: Rect, font: ^Font, px: f32, focuse
 	// Selection, then the text, then the caret on top.
 	lo, hi := editor_selection(e)
 	y := r.y
-	for span, i in e.lines {
-		if y > r.y + r.h do break
+	for i in first ..< min(first + shown, len(e.lines)) {
+		span := e.lines[i]
 		line := text[span.start:span.end]
 		if hi > lo && span.end >= lo && span.start <= hi {
 			s := max(lo, span.start) - span.start
@@ -841,6 +878,7 @@ draw_editor :: proc(app: ^App, e: ^Editor, r: Rect, font: ^Font, px: f32, focuse
 		row, off := editor_locate(e, e.cursor)
 		span := e.lines[clamp(row, 0, len(e.lines) - 1)]
 		cx := r.x + font_width(font, text[span.start:span.start + off], px)
+		row -= first
 
 		// A block caret, the width of the character it sits on, with that
 		// character redrawn dark on top of it — a terminal cursor, because a

@@ -52,7 +52,7 @@ route_update :: proc(app: ^App) {
 // only ones touched recently: a task from last week is a thread you would go
 // and find, not one you would fall into by typing.
 route_pick :: proc(app: ^App, text: string) -> int {
-	cwd := app.chat.cwd != "" ? app.chat.cwd : app.cwd
+	cwd := app_chat_cwd(app)
 	if cwd == "" do return -1
 
 	// A word in most of a project's threads says nothing about which one.

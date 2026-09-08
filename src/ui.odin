@@ -94,6 +94,13 @@ UI :: struct {
 	// the composer keeps the caret while the pointer is somewhere else.
 	focus:      u64,
 	cursor_text: bool, // set when the pointer is over something text-editable
+	// What the pointer is resting on, in words: a card, a paragraph of an
+	// answer, a tool's output. Copy with nothing selected takes this. There is
+	// nowhere else to read it from — everything on screen is drawn out of the
+	// app state and thrown away again the same frame — so whatever draws text
+	// says what it drew here on the way past, and the innermost thing under
+	// the pointer wins by being drawn last.
+	hover_text: [dynamic]u8,
 	// Where the pointer was when the button went down. A widget that has
 	// moved out from under a still pointer between the press and the release
 	// — a card easing past under a scroll — has still been clicked.
@@ -202,6 +209,7 @@ ui_begin :: proc(ui: ^UI, width, height: int, input: ^Input, dt: f32 = 1.0 / 60)
 	ui.scroll_x_px = input.scroll_x_px
 	ui.scroll_end = input.scroll_end
 	ui.mods = input.mods
+	clear(&ui.hover_text)
 	ui.hot = 0
 	ui.animating = false
 	ui.time_effects = false
@@ -368,6 +376,21 @@ ui_punch :: proc(ui: ^UI, r: Rect, col: Color, radius: f32 = NO_ROUND) {
 }
 
 // Returns whether the pointer is inside `r`, honouring the current clip.
+// Says what is drawn in `r`, if the pointer is in it. Unlike ui_hovered this
+// does not care whether something is being dragged: reading is not clicking.
+ui_hover_text :: proc(ui: ^UI, r: Rect, text: string) {
+	if text == "" || !ui.has_mouse do return
+	if !rect_contains(rect_intersect(r, ui.clip), ui.mouse) do return
+	clear(&ui.hover_text)
+	append(&ui.hover_text, ..transmute([]byte)text)
+}
+
+// What the last frame found under the pointer. Read before the next frame
+// clears it, which is where input is handled.
+ui_hovered_text :: proc(ui: ^UI) -> string {
+	return string(ui.hover_text[:])
+}
+
 ui_hovered :: proc(ui: ^UI, r: Rect) -> bool {
 	if !ui.has_mouse do return false
 	if ui.active != 0 do return false
@@ -476,4 +499,5 @@ ui_destroy :: proc(ui: ^UI) {
 	delete(ui.indices)
 	delete(ui.cmds)
 	delete(ui.clip_stack)
+	delete(ui.hover_text)
 }

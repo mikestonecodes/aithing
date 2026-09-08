@@ -101,6 +101,13 @@ super_copies_and_ctrl_c_stops :: proc(t: ^testing.T) {
 	testing.expect_value(t, editor_key(&e, Key{code = KEY_X, mods = {.Super}}, 0), Editor_Action.Cut)
 	testing.expect_value(t, editor_key(&e, Key{code = KEY_V, mods = {.Super}}, 0), Editor_Action.Paste)
 	testing.expect_value(t, editor_key(&e, Key{code = KEY_C, mods = {.Ctrl}}, 0), Editor_Action.Stop)
+
+	// Insert's names for the same three, which is what a compositor binding
+	// types when it wants a copy that works in a terminal and a browser both.
+	// Cut comes through as ctrl and the letter x, so ctrl x cuts as well.
+	testing.expect_value(t, editor_key(&e, Key{code = KEY_INSERT, mods = {.Ctrl}}, 0), Editor_Action.Copy)
+	testing.expect_value(t, editor_key(&e, Key{code = KEY_INSERT, mods = {.Shift}}, 0), Editor_Action.Paste)
+	testing.expect_value(t, editor_key(&e, Key{code = KEY_X, mods = {.Ctrl}}, 0), Editor_Action.Cut)
 	// And Esc backs out; it never stops anything.
 	testing.expect_value(t, editor_key(&e, Key{code = KEY_ESC, mods = {}}, 0), Editor_Action.Cancel)
 

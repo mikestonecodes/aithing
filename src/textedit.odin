@@ -12,7 +12,6 @@ Editor :: struct {
 	cursor:   int, // byte offset
 	anchor:   int, // the other end of the selection; equal to cursor when none
 	lines:    [dynamic]Span, // byte ranges of the wrapped lines, rebuilt on draw
-	scroll:   f32,
 	last_edit: f32, // ui.time of the last change, so the caret stops blinking
 }
 
@@ -146,6 +145,21 @@ editor_move_line :: proc(e: ^Editor, delta: int, select: bool) {
 	if !select do e.anchor = e.cursor
 }
 
+// Which of the wrapped lines a box that is only so tall actually shows.
+// Every box goes through here twice — once to work out how tall to be, once to
+// draw — so the two can never disagree, which is what left a box measured at
+// six lines drawing ten of them out through its own bottom edge.
+//
+// Nothing is remembered: the window is worked out from where the caret is, so
+// there is no scroll offset to keep in step with an edit that moved it.
+editor_window :: proc(e: ^Editor, max_lines: int) -> (first, count: int) {
+	n := max(len(e.lines), 1)
+	count = min(n, max(max_lines, 1))
+	line, _ := editor_locate(e, e.cursor)
+	first = clamp(line - count + 1, 0, n - count)
+	return
+}
+
 Editor_Action :: enum {
 	None,
 	Submit,
@@ -159,6 +173,25 @@ Editor_Action :: enum {
 // Applies one key press. Text itself arrives separately, as UTF-8, because the
 // compositor sends keycodes and the layout table turns those into characters.
 editor_key :: proc(e: ^Editor, k: Key, time_now: f32) -> Editor_Action {
+	// No caret anywhere — a grid of every project has no box on it. The keys
+	// that are not about text still mean what they mean, and they are
+	// answered here rather than in a second switch beside the caller: there
+	// was one of those once, for the grid that had no box, and being a copy
+	// it drifted — paste and cut only ever reached one of them.
+	if e == nil {
+		switch k.code {
+		case KEY_ENTER, KEY_KPENTER:
+			return .Submit
+		case KEY_ESC:
+			return .Cancel
+		case KEY_C:
+			if .Super in k.mods do return .Copy
+			if .Ctrl in k.mods do return .Stop
+		case KEY_INSERT:
+			if .Ctrl in k.mods do return .Copy
+		}
+		return .None
+	}
 	text := editor_text(e)
 	select := .Shift in k.mods
 	ctrl := .Ctrl in k.mods
@@ -225,9 +258,20 @@ editor_key :: proc(e: ^Editor, k: Key, time_now: f32) -> Editor_Action {
 		if super do return .Copy
 		if ctrl do return .Stop
 	case KEY_X:
-		if super do return .Cut
+		// Ctrl cuts here and nowhere else in this program, because a
+		// compositor asked to type a cut types ctrl and the letter x — niri's
+		// `Mod+X { spawn "wtype" "-M" "ctrl" "-k" "x"; }`. It collides with
+		// nothing: ctrl c is the only ctrl key the clipboard would fight over,
+		// and that one stays stop.
+		if super || ctrl do return .Cut
 	case KEY_V:
 		if super do return .Paste
+	case KEY_INSERT:
+		// The clipboard's other name, the one every terminal answers to and
+		// the one a compositor binding reaches for when it wants a copy that
+		// works in a terminal and a browser alike.
+		if ctrl do return .Copy
+		if select do return .Paste
 	}
 	return .None
 }

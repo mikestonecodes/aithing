@@ -3,6 +3,7 @@ package aithing
 import "base:runtime"
 import "core:fmt"
 import "core:os"
+import "core:strconv"
 import "core:strings"
 import "core:sys/linux"
 import "core:terminal"
@@ -34,10 +35,34 @@ main :: proc() {
 	model_set := false
 	prompt_parts := make([dynamic]string, context.temp_allocator)
 	want_model := false
+	// A run that draws one frame into a file and exits: see shot.odin.
+	shot_path, shot_scene := "", "grid"
+	shot_w, shot_h := 1180, 800
+	want_shot, want_scene, want_size := false, false, false
 	for arg in os.args[1:] {
 		if want_model {
 			want_model = false
 			model, model_set = model_parse(arg)
+			continue
+		}
+		if want_shot {
+			want_shot = false
+			shot_path = arg
+			continue
+		}
+		if want_scene {
+			want_scene = false
+			shot_scene = arg
+			continue
+		}
+		if want_size {
+			want_size = false
+			if w, h, ok := size_parse(arg); ok {
+				shot_w, shot_h = w, h
+			} else {
+				fmt.eprintfln("--size wants WxH, not %q", arg)
+				os.exit(2)
+			}
 			continue
 		}
 		switch arg {
@@ -47,6 +72,8 @@ main :: proc() {
 			fmt.println("  aithing --new           start a blank chat instead")
 			fmt.println("  aithing --model haiku   pick the model for this run")
 			fmt.println("  aithing <prompt...>     a new chat, sent straight away")
+			fmt.printfln("  aithing --shot out.png [--scene %s] [--size 1180x800]", scene_list())
+			fmt.println("                          draw one frame of a built-up scene, no window")
 			fmt.println("  sessions are read from ~/.claude/projects")
 			return
 		case "--version":
@@ -60,9 +87,27 @@ main :: proc() {
 			reloaded = true
 		case "--model":
 			want_model = true
+		case "--shot":
+			want_shot = true
+		case "--scene":
+			want_scene = true
+		case "--size":
+			want_size = true
 		case:
 			append(&prompt_parts, arg)
 		}
+	}
+
+	// Before the window, because there is not going to be one: a shot builds
+	// its own state and draws it into an image of its own.
+	if shot_path != "" {
+		scene, ok := scene_parse(shot_scene)
+		if !ok {
+			fmt.eprintfln("no scene called %q — try one of: %s", shot_scene, scene_list())
+			os.exit(2)
+		}
+		if !shot_run(shot_path, scene, shot_w, shot_h) do os.exit(1)
+		return
 	}
 
 	app := new(App)
@@ -102,7 +147,6 @@ main :: proc() {
 	state := reloaded ? reload_restore() : state_read(config_path("state"))
 	defer state_free(&state)
 	state_restore(app, state, model_set)
-	if reloaded do state_restore_queue(app, state)
 
 	if open_last {
 		// The scan is on a worker thread; wait for it just this once.
@@ -123,7 +167,7 @@ main :: proc() {
 		// again when the window this one continues had it open.
 		if len(app.sessions) > 0 {
 			app_open(app, open_at)
-			app.canvas.opened = state.ok && state.opened
+			app.page = state.ok && state.opened ? .Thread : .Grid
 		}
 	}
 	// AITHING_CYCLE=1 walks the whole session list, one every 400ms. It is how
@@ -330,6 +374,19 @@ main :: proc() {
 // Launched from a desktop entry there is nowhere for a message to go, so when
 // stderr is not a terminal it is pointed at a file. Anything the program says
 // on the way down — a Vulkan complaint, a bounds check — ends up there.
+// "1180x800". Its own proc because two numbers that have to agree with each
+// other are exactly the kind of thing that gets half-parsed inline.
+@(private = "file")
+size_parse :: proc(arg: string) -> (w, h: int, ok: bool) {
+	at := strings.index_byte(arg, 'x')
+	if at <= 0 do return 0, 0, false
+	w, ok = strconv.parse_int(arg[:at])
+	if !ok do return 0, 0, false
+	h, ok = strconv.parse_int(arg[at + 1:])
+	if !ok || w <= 0 || h <= 0 do return 0, 0, false
+	return w, h, true
+}
+
 redirect_log :: proc() {
 	if terminal.is_terminal(os.stderr) do return
 	// One shared name, so a second instance would truncate the first one's
@@ -351,22 +408,13 @@ app_input :: proc(app: ^App) {
 	ui := &app.ui
 	if len(win.input.keys) == 0 && len(win.input.text) == 0 do return
 
-	// Where the caret is, which follows what is on screen: the launcher's
-	// query, the composer inside an open thread, or the box under the grid.
-	if app.canvas.launcher {
-		app.focus = .Search
-	} else if app.canvas.opened {
-		if app.focus != .Composer do app.focus = .Composer
-	} else {
-		app.focus = .Capture
-	}
 	target := focused_editor(app)
 	search_changed := false
 
 	for k in win.input.keys {
 		// The grid and its launcher are driven from the keyboard; the caret
 		// only gets what they do not want.
-		if app.canvas.launcher {
+		if app.overlay == .Launcher {
 			switch k.code {
 			case KEY_UP:
 				app.canvas.menu_at = max(app.canvas.menu_at - 1, 0)
@@ -375,25 +423,24 @@ app_input :: proc(app: ^App) {
 				app.canvas.menu_at += 1
 				continue
 			}
-		} else if !app.canvas.opened {
-			// While something is being typed into the box under the grid the
-			// caret has the horizontal arrows; the cards keep the vertical
-			// ones, which is the only way to reach them from the box.
+		} else if app.page == .Grid {
+			// Up and down are the box's history — the line typed a minute ago,
+			// back again — and the cards have left and right. They used to be
+			// split the other way round, so what had already been written
+			// could not be got back at all.
 			typing := editor_text(&app.capture) != ""
 			switch k.code {
+			case KEY_UP:
+				if app_history(app, 1) do continue
+			case KEY_DOWN:
+				if app_history(app, -1) do continue
 			case KEY_LEFT:
 				if typing do break
-				canvas_move_sel(app, -1, 0)
+				canvas_step_sel(app, -1)
 				continue
 			case KEY_RIGHT:
 				if typing do break
-				canvas_move_sel(app, 1, 0)
-				continue
-			case KEY_UP:
-				canvas_move_sel(app, 0, -1)
-				continue
-			case KEY_DOWN:
-				canvas_move_sel(app, 0, 1)
+				canvas_step_sel(app, 1)
 				continue
 			}
 		}
@@ -405,9 +452,7 @@ app_input :: proc(app: ^App) {
 				// open thread's, or the one the grid is narrowed to. A turn
 				// running elsewhere is no reason to refuse — it is running in
 				// its own slot and its own thread.
-				cwd := app.canvas.opened ? app.chat.cwd : app.canvas.project
-				if cwd == "" do cwd = app.cwd
-				canvas_new_chat(app, cwd)
+				canvas_new_chat(app, app_project(app))
 				route_off(app) // said by hand: do not route this one away
 				continue
 			case KEY_F:
@@ -423,12 +468,18 @@ app_input :: proc(app: ^App) {
 			}
 		}
 
+		// Every page has a box, so every key has a caret to go to, and the
+		// ones that are not about text — Enter, Esc, ctrl c — come back out
+		// of the editor as actions. There was a second copy of that switch
+		// here for the grid that had no box, and being a copy it drifted:
+		// paste and cut were only ever in one of them.
 		target = focused_editor(app)
-		switch editor_key(target, k, ui.time) {
+		action := editor_key(target, k, ui.time)
+		switch action {
 		case .Submit:
-			if app.canvas.launcher {
+			if app.overlay == .Launcher {
 				launcher_confirm(app)
-			} else if !app.canvas.opened {
+			} else if app.page == .Grid {
 				// Enter over a written list makes the cards; over an empty
 				// box it opens the card the cursor is on.
 				if strings.trim_space(editor_text(&app.capture)) != "" {
@@ -444,20 +495,18 @@ app_input :: proc(app: ^App) {
 		case .Stop:
 			app_interrupt(app)
 		case .Copy:
-			if lo, hi := editor_selection(target); hi > lo {
-				clipboard_set_text(win, editor_text(target)[lo:hi])
-			}
+			app_copy(app, target)
 		case .Cut:
 			if lo, hi := editor_selection(target); hi > lo {
 				clipboard_set_text(win, editor_text(target)[lo:hi])
 				editor_delete_selection(target)
-				search_changed = app.focus == .Search
+				search_changed = app_focus(app) == .Search
 			}
 		case .Paste:
 			app_paste(app, target)
-			search_changed = app.focus == .Search
+			search_changed = app_focus(app) == .Search
 		case .None:
-			if app.focus == .Search do search_changed = true
+			if app_focus(app) == .Search do search_changed = true
 		}
 	}
 
@@ -466,52 +515,73 @@ app_input :: proc(app: ^App) {
 		// Typing on the grid writes the list: it lands in the box along the
 		// bottom. `/` over an empty box is the way into the launcher, which
 		// is where searching lives.
-		if !app.canvas.opened && !app.canvas.launcher && typed == "/" && editor_text(&app.capture) == "" {
+		if app.page == .Grid && app.overlay == .None && typed == "/" && editor_text(&app.capture) == "" {
 			app_launcher(app, true)
 			typed = ""
 		}
-		if typed != "" {
+		if typed != "" && focused_editor(app) != nil {
 			target = focused_editor(app)
 			editor_insert(target, typed)
 			target.last_edit = ui.time
-			if app.focus == .Search do search_changed = true
+			// Typing over something the history put there makes it yours: the
+			// next Up starts from the newest card again rather than carrying
+			// on from wherever the walk had got to.
+			if target == &app.capture do app.history_at = 0
+			if app_focus(app) == .Search do search_changed = true
 		}
 	}
 
 	if search_changed do app.canvas.menu_at = 0
-
-	if search_changed do app_filter(app)
 }
 
-// The box a keystroke goes to. The focus is settled at the top of app_input,
-// so this is only ever the one that is on screen.
+// The box a keystroke goes to, worked out from the page rather than
+// remembered: the one that is on screen is the one that is typed into. Nil on
+// a grid of every project, where there is no box — and every key still has
+// somewhere to go, because editor_key answers the ones that are not about
+// text without an editor to answer them for.
 focused_editor :: proc(app: ^App) -> ^Editor {
-	switch app.focus {
+	switch app_focus(app) {
 	case .Search:
 		return &app.search
 	case .Capture:
 		return &app.capture
 	case .Composer:
 		return &app.editor
+	case .None:
+		return nil
 	}
-	return &app.editor
+	return nil
 }
 
-// Super+V: an image on the clipboard becomes an attachment, anything else is
-// pasted as text.
+// Super+C: the selection when there is one, and otherwise whatever the pointer
+// is resting on — a card, a paragraph of an answer, an error. It used to be
+// the selection or nothing, which on the grid was always nothing: there is no
+// way to select a card, so the one place where the thing you want to copy is
+// plainly under the pointer was the one place copy did not work.
+app_copy :: proc(app: ^App, target: ^Editor) {
+	if target != nil {
+		if lo, hi := editor_selection(target); hi > lo {
+			clipboard_set_text(&app.win, editor_text(target)[lo:hi])
+			return
+		}
+	}
+	text := ui_hovered_text(&app.ui)
+	if text == "" do return
+	clipboard_set_text(&app.win, text)
+	app_status(app, "copied")
+}
+
+// Super+V: an image on the clipboard becomes something Claude can open,
+// anything else is pasted as text.
+//
+// The image is only offered to the two boxes that say something to Claude. The
+// launcher's query is a search over threads already on disk, and a screenshot
+// dropped into it as a path would only ever match nothing.
 app_paste :: proc(app: ^App, target: ^Editor) {
-	if target == &app.editor {
+	if target == &app.editor || target == &app.capture {
 		if data, mime, ok := clipboard_image(&app.win); ok {
 			defer delete(data)
-			if len(app.attach) == cap(app.attach) {
-				app_status(app, "that is as many attachments as one message takes")
-				return
-			}
-			if a, made := attachment_make(&app.gpu, data, mime); made {
-				append(&app.attach, a)
-				app_status(app, fmt.tprintf("attached %s", base_name(a.path)))
-				return
-			}
+			if app_paste_image(app, target, data, mime) do return
 		}
 	}
 	if text, ok := clipboard_text(&app.win); ok {
@@ -520,47 +590,69 @@ app_paste :: proc(app: ^App, target: ^Editor) {
 	}
 }
 
-// Esc. Inside a thread it stops that thread's turn and the follow-ups typed
-// behind it, and leaves whatever is running elsewhere alone. From the grid
-// there is no one turn it could mean, so it stops the lot.
-// Esc inside a thread: stops the turn running in that thread and the
-// follow-ups typed behind it, and leaves everything running elsewhere alone.
+// A pasted image, put where the box it landed in can carry it.
+//
+// The composer holds it as an attachment because it has somewhere to draw the
+// thumbnail and a send of its own to hang it off. The box under the grid has
+// neither — what is typed there is cut into cards and joined back up as one
+// prompt, and an attachment list beside it would be a second thing to keep in
+// step with the text through every split, dismissal and requeue. So the path
+// goes into the text, which is already what goes out. It is the same thing
+// `attachments_prompt` does for the composer, said in the one place the grid
+// already reads.
+//
+// False means the paste is not an image after all and the caller should try
+// text; a full attachment list is still handled, and still true.
+app_paste_image :: proc(app: ^App, target: ^Editor, data: []byte, mime: string) -> bool {
+	if target == &app.capture {
+		path, wrote := attachment_write(data, mime, context.temp_allocator)
+		if !wrote do return false
+		// Run onto the end of the last word, the path stops being a path.
+		text := editor_text(target)
+		if target.cursor > 0 && !is_space_byte(text[target.cursor - 1]) {
+			editor_insert(target, " ")
+		}
+		editor_insert(target, path)
+		app_status(app, fmt.tprintf("attached %s", base_name(path)))
+		return true
+	}
+	if len(app.attach) == cap(app.attach) {
+		app_status(app, "that is as many attachments as one message takes")
+		return true
+	}
+	a, made := attachment_make(&app.gpu, data, mime)
+	if !made do return false
+	append(&app.attach, a)
+	app_status(app, fmt.tprintf("attached %s", base_name(a.path)))
+	return true
+}
+
+is_space_byte :: proc(c: byte) -> bool {
+	return c == ' ' || c == '\t' || c == '\n' || c == '\r'
+}
+
 // There is no gesture that stops the lot, on purpose — a key that could do
 // that by being pressed one time too many is how work stopped for no reason
 // anyone could see.
-// Ctrl+C: stop the work in front of you. Inside a
-// thread that is the thread's turn and the follow-ups typed behind it; on the
-// grid it is the card the cursor is on, running or merely queued.
 //
-// One thing, never everything. A key that stops four turns you cannot see is
-// how work stopped for no reason anyone could make out — which is what Esc
-// used to do, and why it no longer stops anything at all.
+// Ctrl+C: stop the work in front of you. Inside a thread that is the thread's
+// turn; on the grid it is the turn the card the cursor is on is running.
+//
+// One thing, never everything. A key that stops turns you cannot see is how
+// work stopped for no reason anyone could make out — which is what Esc used
+// to do, and why it no longer stops anything at all.
 app_interrupt :: proc(app: ^App) {
-	if app.canvas.opened {
+	if app.page == .Thread {
 		at := turn_chat(app)
-		if at < 0 && len(app.queue) == 0 do return
-		app_queue_clear_messages(app)
-		if at >= 0 do turn_stop(app, at)
+		if at < 0 do return
+		turn_stop(app, at)
 		app_status(app, "stopped")
 		return
 	}
 	at := todos_find(&app.todos, app.canvas.sel)
 	if at < 0 do return
-	batch := strings.clone(app.todos.list[at].batch, context.temp_allocator)
-	stopped := false
-	if len(app.run_queue) > 0 {
-		before := len(app.run_queue)
-		app_unqueue_batch(app, batch)
-		if len(app.run_queue) != before {
-			todos_batch_state(&app.todos, batch, .Open)
-			todos_save(&app.todos)
-			app_filter(app)
-			stopped = true
-		}
-	}
-	if turn := turn_for_batch(app, batch); turn >= 0 {
-		turn_stop(app, turn)
-		stopped = true
-	}
-	if stopped do app_status(app, "stopped")
+	turn := turn_for_todo(app, app.todos.list[at].id)
+	if turn < 0 do return
+	turn_stop(app, turn)
+	app_status(app, "stopped")
 }

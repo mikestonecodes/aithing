@@ -30,8 +30,11 @@ cache_path :: proc(name: string, allocator := context.temp_allocator) -> string 
 	return path
 }
 
-// Writes an encoded image to the cache and decodes it for the thumbnail.
-attachment_make :: proc(g: ^Gpu, data: []byte, mime: string) -> (a: Attachment, ok: bool) {
+// Writes an encoded image to the cache and hands back where it landed. This
+// is the whole of what Claude ever gets — the harness opens the file itself —
+// so it is also the whole of what a paste needs when there is nowhere to draw
+// a thumbnail.
+attachment_write :: proc(data: []byte, mime: string, allocator := context.allocator) -> (string, bool) {
 	ext := "png"
 	switch mime {
 	case "image/jpeg":
@@ -42,11 +45,18 @@ attachment_make :: proc(g: ^Gpu, data: []byte, mime: string) -> (a: Attachment, 
 		ext = "bmp"
 	}
 	name := fmt.tprintf("paste-%d.%s", time.now()._nsec, ext)
-	path := cache_path(name, context.allocator)
+	path := cache_path(name, allocator)
 	if os.write_entire_file(path, data) != nil {
-		delete(path)
-		return {}, false
+		delete(path, allocator)
+		return "", false
 	}
+	return path, true
+}
+
+// The same write, plus the decode the composer needs to show what is attached.
+attachment_make :: proc(g: ^Gpu, data: []byte, mime: string) -> (a: Attachment, ok: bool) {
+	path, wrote := attachment_write(data, mime)
+	if !wrote do return {}, false
 
 	a.path = path
 	a.tex = WHITE_TEX

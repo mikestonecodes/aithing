@@ -41,33 +41,40 @@ for the answer to finish.
 ./aithing --model haiku "hello"    # send a prompt straight away
 ```
 
+- The **line above the grid** says what the grid is showing: the project it
+  has been narrowed to, or `all projects`. Beside it, where a card typed below
+  will land — the narrowing when there is one, the project last opened
+  otherwise. Without that second half there was nothing on screen saying where
+  new work would go, and it went wherever the window happened to have been
+  launched; with the two of them collapsed into one name, a grid of every
+  project sat under one project's heading.
 - The **grid** is the home view, and it starts empty: a card on it is one
   thing you asked for, put there by you. Each card says where its work stands
-  — waiting, queued, processing, complete, failed — and a card whose turn is
+  — waiting, processing, complete, failed — and a card whose turn is
   running says what that turn is doing right now. Work that came back clean
   stays on the grid, drawn back, until it is dismissed. Clicking a card opens
-  its thread at the message it is about, unless its own turn is still running,
-  in which case it stays where it is and goes on saying so. **Esc** zooms back
-  out, and from the grid it backs out of a narrowed view. Arrows move between
-  cards.
+  its thread — a card whose turn is still running included, and its output
+  streams into the transcript you just opened.
+  **Esc** gives up one thing per press: the launcher, the model picker, the
+  open thread, whatever is half-typed, and then the narrowing. **Left** and
+  **right** move between cards; **up** and **down** belong to the box below.
 - The **x** on a card takes it off the grid for good. What was dismissed is
   written down beside the list, because the two things that make cards — the
   stub every unread thread gets and the list the agent hands back — would
   otherwise put it straight back on the next scan. A thread whose last card
   has gone is filed off the map with it.
 - The **box along the bottom** is where a list is written. It asks for
-  nothing but the work: where one item stops and the next begins is worked out
-  from what was written — a line, a bullet, a numbered point, a sentence —
-  and the count under the box says what was made of it before **Enter** is
-  pressed. What was typed goes out as **one thread**, the way it would if it
-  had been typed into a composer, and the parts are the cards on it.
-  **Enter** over an empty box opens the card the cursor is on, and a card
-  nothing has started yet joins the run queue.
+  nothing but the work: where one item stops and the next begins is a line,
+  a line each. Every part is a card and a thread of its own, and they go out
+  together. **Up** and **down** walk back through what has already been typed
+  there, the way a shell does; **Enter** over an empty box opens the card the
+  cursor is on, and a card nothing has started yet is started.
 - **Enter** sends inside a thread, **Shift+Enter** is a newline, **Esc**
   closes the open thread. Esc never stops work — that is **Ctrl+C**.
 - **Super+V** pastes — an image on the clipboard becomes an attachment,
-  anything else is pasted as text. **Super+C/X** copy and cut the selection,
-  and **Super+A** selects all. Copy is super rather than ctrl so that
+  anything else is pasted as text. **Super+C/X** copy and cut, and **Super+A**
+  selects all. Copy with nothing selected takes whatever the pointer is
+  resting on: a card, a paragraph of an answer, an error. Copy is super rather than ctrl so that
   **Ctrl+C** can mean the one thing it means everywhere else: stop what is
   running. Inside a thread that stops the thread's turn and the follow-ups
   typed behind it; on the grid it stops the card the cursor is on.
@@ -99,12 +106,11 @@ The session id comes back in the `init` record and is what `--resume` gets for
 the next turn, which means a conversation started here continues in `claude`
 itself, and vice versa.
 
-**Threads are read once.** A thread gets its cards from one agent pass and
-keeps them. Re-reading one because it had grown meant every turn anyone took —
-here or in another window — rewrote that thread's whole card set underneath
-whoever was looking at it, so cards appeared, moved and reworded themselves at
-random. A thread this window started from a card is never read at all: the
-card already says what the thread is for.
+**A card is a thread.** One each. What is typed into the box is cut into a card
+a line, and every card gets its own `claude -p` in its own conversation. The
+parts used to ride on one thread between them, which meant a card could not be
+opened, stopped or dismissed without the ones typed beside it coming along, and
+every one of those was a special case in the code.
 
 **The sidebar is `~/.claude/projects`.** One JSONL file per session; the scan
 reads the head of each for the first prompt and the working directory, and the
@@ -141,45 +147,44 @@ Projects come in a fixed order, cards within one come newest-made first, and a
 card put down keeps its place until something is made above it or it is
 dismissed. The reader that turned threads into cards is gone with it.
 
-**A card is a piece of work, and the grid folds both ways round it.** One
-thread carries several items, so a thread is several cards: what is typed into
-the box in one go is one prompt to one thread — the second line is usually
-about the first, and cutting it into separate conversations would throw away
-everything each part knows about the others — and the parts are a card each.
-And the same item picked up in several threads is one card: a context that
-filled up, a window closed and opened again, a second run at the same thing
-the next morning are all the same piece of work, so the newest of them is the
-card and it says how many threads are behind it. Wordings are folded down to
-their letters and digits before they are compared, so `Fix the caret.` and
-`fix the caret` are one item. A card nothing has started is never folded into
-another: it is waiting on a person, which is not something to hide behind a
-count.
+**A card is a piece of work, and nothing is folded into anything.** A line
+typed into the box is a card, and that card is a conversation. The grid used to
+fold cards worded alike down to one with a count of the threads behind it — a
+context that filled up, a window closed and opened again, a second run at the
+same thing the next morning — which meant the card you were looking at belonged
+to a thread you had not chosen, and dismissing it took away one of several. A
+card is one row, one thread, one thing to open.
 
-**Turns are slots, and there are four.** A turn started from the grid is
-headless: its own
-`claude -p`, its own thread on disk, no transcript on screen. So four cards go
-out together rather than one after another, each holding a slot until it is
-done, and the fifth waits for one. The card itself says `processing`, and
+**Turns are slots, and there are as many as are asked for.** A turn started
+from the grid is headless: its own
+`claude -p`, its own thread on disk, no transcript on screen. Every card asked
+for goes out the moment it is asked for, however many that is. There was a
+ceiling of four and a queue behind it, and a card in that queue said `queued`
+— which is a card telling you its work is not being done while the machine
+sits idle. The card says `processing`, and
 clicking it opens the thread as soon as the harness has named one. Only the
 turn typed into the composer draws into the transcript, because there is only
 one transcript.
 
 Each slot owns its process, its reader thread and its event list, and the
-slots are a fixed array that is never moved or compacted — the reader thread
-holds a pointer into its own slot. Two turns are never pointed at one thread,
+slots are allocated apart and never moved or compacted — the reader thread
+holds a pointer into its own slot, and a settled slot is reused where it
+stands. Two turns are never pointed at one thread,
 which would be two `--resume`s of a session racing each other, so a follow-up
-typed into a busy thread still waits in the message queue behind it.
+typed into a busy thread still waits in the message queue behind it. That is
+the one thing left that waits, and it waits on the session file, not on a
+slot.
 
 **Ctrl+C** stops one turn: the one in the thread on screen, or the one behind
 the card the cursor is on. One, never all of them. Esc stops nothing at all —
 it used to fall through to killing every turn in flight, and since a killed
 `claude` exits non-zero and arrives as a failure, a press that found nothing
 else to back out of turned every running card red with nothing on screen to
-say why. The run queue survives the auto-reload, which is the one thing that
-takes a window over mid-list.
+say why.
 
-Nothing stops two slots being pointed at the same working directory, so four
-lists written against one project are four processes editing one checkout.
+Nothing stops two slots being pointed at the same working directory, so a
+list written against one project is as many processes editing one checkout as
+there are lines in it.
 
 **Nothing blocks.** The window sleeps on the compositor's socket until
 something happens; a keystroke is drawn on the frame it arrives in rather than
@@ -191,21 +196,16 @@ unresponsive compositor can never park the program inside the driver.
 A thread is not a piece of work. One thread carries the bug that started it,
 the two follow-ups and the thing noticed halfway through, and a grid with one
 card per thread hides every one of them behind the first sentence anyone
-happened to type. So the card is the item, and the two follow from that.
+happened to type. So the card is the item, and the thread follows from it.
 
-A list typed into the box in one go is **one thread and a card a part**. Where
-one item stops and the next begins is worked out from what was written — a
-line, a bullet, a numbered point, a sentence — and the whole of it goes out as
-one prompt, the way it would if it had been typed into a composer. Cutting it
-into separate conversations would throw away what each part knows about the
-rest; the cards are how it reads back on the grid afterwards.
-
-The same item carried in several threads is **one card**. A context that
-filled up, a window closed and opened again, a second run at the same thing
-the next morning are all the same piece of work: the newest of them is the
-card and it says how many threads are behind it. Wordings are folded to their
-letters and digits before they are compared, so `Fix the caret.` and `fix the
-caret` are one item.
+A list typed into the box in one go is **a card a line, and a thread a card**.
+A bullet or a number in front of a line is taken off; nothing else is guessed
+at. The parts used to be joined back into one prompt on one thread — the second
+line is usually about the first — and a full stop inside a line was a split too,
+with a table of thirty words for spotting the sentences that had to be glued
+back together again. All of it went with the shared thread: a guess about where
+a sentence ends is a guess about where a conversation ends, and a line break is
+not a guess.
 
 Cards are made in that box and nowhere else. There was once an agent that read
 every thread on the machine into cards of its own — a second `claude -p` per
@@ -240,7 +240,7 @@ screen pixels the distance ramp spans, which rides along in the vertex.
 | `src/main.odin` | CLI, the frame loop, keyboard shortcuts |
 | `src/app.odin` | app state, session switching, applying stream events |
 | `src/canvas.odin` | the grid of cards, and the panel one zooms open into |
-| `src/todos.odin` | the items themselves: the store, batches, and cutting typed text into them |
+| `src/todos.odin` | the items themselves: the store, and cutting typed text into them |
 | `src/state.odin` | what was on screen, written down and put back |
 | `src/archive.odin` | threads filed away by hand, and the saved model |
 | `src/groups.odin` | which threads are the same task, read off their titles |
@@ -248,7 +248,7 @@ screen pixels the distance ramp spans, which rides along in the vertex.
 | `src/draw.odin` | sidebar, transcript, composer, the text box |
 | `src/chat.odin` | the transcript model shared by the loader and the runner |
 | `src/runner.odin` | `claude -p`, and the NDJSON reader thread |
-| `src/turns.odin` | the slots those run in: several turns at once |
+| `src/turns.odin` | the slots those run in: as many turns at once as asked for |
 | `src/sessions.odin` | reading `~/.claude/projects` |
 | `src/jobs.odin` | the scan and parse worker threads |
 | `src/reload.odin` | noticing a rebuilt binary and exec'ing it over this one |
@@ -291,6 +291,26 @@ same deferred-click path a pointer uses and with a rescan racing each one: it
 is how the transcript reader and the session switching are exercised against
 every session on the machine rather than the handful anyone would click.
 `AITHING_PROFILE=1` reports frame build and draw times, and keystroke latency.
+
+## Looking at it without looking at it
+
+```sh
+./aithing --shot out.png --scene grid      # grid, project, thread, launcher
+./aithing --shot out.png --scene thread --size 1600x1000
+```
+
+One frame, drawn into an image of the program's own and written out as a PNG.
+There is no window and no compositor involved, so it runs over ssh and from an
+agent editing this source; and the state is built rather than arrived at — a
+scene in `src/shot.odin` says what is on the grid, which card is running, what
+the failed one said and which thread is open, so the same picture comes out on
+a machine that has never run a turn. Two runs of a scene are byte-identical:
+the animations are settled at a fixed timestep first and the shader clock is
+put back to zero for the frame that is kept.
+
+The window is see-through where the compositor blurs the desktop through it,
+and a file has no desktop; those places are filled with the window's own colour
+on the way out, so a screenshot is the interface and not a hole.
 
 ## Known limits
 

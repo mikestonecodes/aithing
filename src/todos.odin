@@ -11,14 +11,14 @@ import "core:time"
 // through — and a grid with one card per thread hides every one of them
 // behind the first sentence anyone happened to type.
 //
-// So the card is the todo item, not the thread. Items come from two places:
-// an agent reads each thread and says what is being worked on in it and where
-// in the transcript that is (see agent.odin), and anything typed into the box
-// under the grid is split into an item per part. Opening an item opens its
-// thread at the message it is about.
+// So the card is the todo item, not the thread — and a card is a thread, one
+// each. Everything typed into the box under the grid is split into an item per
+// part, and every part gets its own conversation. It used to be one thread
+// with every part riding on it, which meant a card could not be read, run or
+// stopped without the four beside it coming along.
 //
 // Every item says where its work stands, which is the other half of what a
-// grid is for: waiting, queued, running, done, failed. A thread running in
+// grid is for: waiting, running, done, failed. A thread running in
 // another window moves its items on the next scan, so the grid is current
 // whether the work was started here or not.
 //
@@ -28,14 +28,28 @@ import "core:time"
 // — know nothing about what was ever on screen, and would both put a
 // dismissed card straight back on the next scan.
 
+// Where a piece of work stands. Only Open, Asked, Done and Failed are ever
+// written down: they are what became of the work, and they outlive the
+// process. Running is not the card's to remember — the turns are the only
+// thing that knows it, and todo_display_state reads it off them. Storing it
+// too meant two places had an opinion about a card that was plainly on screen
+// doing something else.
+//
+// Asked is the ending that used to be reported as Done. A turn ends whether
+// the work was finished or the agent stopped to ask which of two things you
+// meant, and the process exits zero either way; see verdict.odin for how the
+// two are told apart now.
+//
+// There was a Queued as well, for a card waiting on one of four turn slots.
+// Cards do not wait any more, so nothing can be in that state; the number 4
+// is Asked in a version 5 file and was Queued in a version 4 one, which is
+// what todos_load reads the version for.
 Todo_State :: enum {
 	Open, // nothing has started it
-	Running, // a turn is working on it
+	Running, // a turn is working on it: derived, never stored
 	Done,
 	Failed,
-	// Lined up behind the turn in flight. Last in the enum on purpose: the
-	// file stores the number, and the four before it are already on disk.
-	Queued,
+	Asked, // the turn ended without the work being finished
 }
 
 Todo :: struct {
@@ -44,12 +58,6 @@ Todo :: struct {
 	cwd:     string,
 	text:    string,
 	state:   Todo_State,
-	// The cards that go out together as one thread. A list typed into the box
-	// is one piece of work said in several sentences, not several pieces of
-	// work: it makes one thread, and every card cut out of it names that
-	// thread here until the harness has named it for real. A card standing on
-	// its own is its own batch, so this is never empty.
-	batch:   string,
 	at:      time.Time, // when it was last touched: the grid is newest first
 }
 
@@ -65,20 +73,19 @@ Todos :: struct {
 	// times is a tenth of a second the window does not have.
 	per_session: map[string]int,
 	dirty:   bool,
-	// Bumped by every change to `list`. Anything derived from the list —
-	// app.todo_view, the canvas grid — carries the version it was built at
-	// and rebuilds itself when they differ, so no index can outlive the list
-	// it points into.
-	ver:     int,
 	next_id: int,
 }
 
 // Bumped when the shape of a row changes. A file the version does not match
 // is not read, and is left where it is until the first save writes over it.
 // 2 dropped the cards that used to be made out of every thread on the machine,
-// 3 the two columns that only those cards ever filled in.
+// 3 the two columns that only those cards ever filled in, and 4 the batch a
+// card belonged to — a card is a thread now, so there is nothing to belong to.
+// 5 gave the number 4 in the state column a new meaning, which is the only
+// reason a version 4 file is still read: dropping every card anyone had
+// written down to make room for one new state is not a trade worth making.
 @(private = "file")
-TODOS_VERSION :: "3"
+TODOS_VERSION :: "5"
 
 // A version line, then one line per item, tab separated, and one `-` line per
 // card dismissed by hand — which is shorter, and that is how it tells itself
@@ -89,7 +96,8 @@ todos_load :: proc(t: ^Todos, path := "") {
 	if err != nil do return
 	it := each_line(string(data))
 	first, _ := iter_next(&it)
-	if strings.trim_space(first) != TODOS_VERSION do return
+	version := strings.trim_space(first)
+	if version != TODOS_VERSION && version != "4" do return
 	for line in iter_next(&it) {
 		row := strings.trim_right_space(line)
 		if row == "" do continue
@@ -98,8 +106,11 @@ todos_load :: proc(t: ^Todos, path := "") {
 			t.hidden[strings.clone(f[1])] = true
 			continue
 		}
-		if len(f) < 7 do continue
+		if len(f) < 6 do continue
 		state, _ := strconv.parse_int(f[0])
+		// 4 is Asked here and was Queued there, and a card that was queued
+		// when a window last quit was a card nothing had started.
+		if version == "4" && state == int(Todo_State.Asked) do state = int(Todo_State.Open)
 		unix, _ := strconv.parse_i64(f[1])
 		td := Todo {
 			state   = Todo_State(clamp(state, 0, len(Todo_State) - 1)),
@@ -107,14 +118,13 @@ todos_load :: proc(t: ^Todos, path := "") {
 			id      = strings.clone(f[2]),
 			session = strings.clone(f[3]),
 			cwd     = strings.clone(f[4]),
-			text    = unescape_line(f[6]),
+			text    = unescape_line(f[5]),
 		}
-		td.batch = strings.clone(f[5] != "" ? f[5] : td.id)
 		session_claim(t, td.session)
-		// Nothing is running or queued at startup: both belong to a process
-		// this launch does not have. A card left mid-turn by a quit or a
-		// crash reads as waiting again, not as work in flight forever.
-		if td.state == .Running || td.state == .Queued do td.state = .Open
+		// Files written before it became derived still have the number in
+		// them, as do the ones written while there was a queue — and neither
+		// means anything without the process that was running at the time.
+		if td.state == .Running do td.state = .Open
 		append(&t.list, td)
 		// Ids are `n-<number>`; the counter has to clear everything on disk.
 		if n, ok := strconv.parse_int(strings.trim_prefix(td.id, "n-")); ok && n >= t.next_id {
@@ -132,13 +142,12 @@ todos_save :: proc(t: ^Todos, path := "") {
 	for td in t.list {
 		fmt.sbprintfln(
 			&b,
-			"%d\t%d\t%s\t%s\t%s\t%s\t%s",
+			"%d\t%d\t%s\t%s\t%s\t%s",
 			int(td.state),
 			time.to_unix_seconds(td.at),
 			td.id,
 			td.session,
 			td.cwd,
-			td.batch,
 			escape_line(one_word_line(td.text)),
 		)
 	}
@@ -198,7 +207,6 @@ todo_free :: proc(td: ^Todo) {
 	delete(td.id)
 	delete(td.session)
 	delete(td.cwd)
-	delete(td.batch)
 	delete(td.text)
 }
 
@@ -210,7 +218,7 @@ todos_find :: proc(t: ^Todos, id: string) -> int {
 // Adds an item and hands back its id, which is what the caller holds on to:
 // the list is re-sorted and rebuilt underneath, so an index is only good for
 // the frame it was taken in.
-todos_add :: proc(t: ^Todos, text, session, cwd: string, state := Todo_State.Open, batch := "") -> string {
+todos_add :: proc(t: ^Todos, text, session, cwd: string, state := Todo_State.Open) -> string {
 	id := fmt.aprintf("n-%d", t.next_id)
 	t.next_id += 1
 	append(
@@ -222,12 +230,10 @@ todos_add :: proc(t: ^Todos, text, session, cwd: string, state := Todo_State.Ope
 			text = strings.clone(strings.trim_space(text)),
 			state = state,
 			at = time.now(),
-			batch = strings.clone(batch != "" ? batch : id),
 		},
 	)
 	session_claim(t, session)
 	t.dirty = true
-	t.ver += 1
 	return id
 }
 
@@ -241,7 +247,6 @@ todos_remove :: proc(t: ^Todos, id: string) {
 	if at < 0 do return
 	todo_drop(t, at)
 	t.dirty = true
-	t.ver += 1
 }
 
 // The x on a card. The card goes and stays gone: the key it would come back
@@ -253,7 +258,6 @@ todos_dismiss :: proc(t: ^Todos, id: string) {
 	if key not_in t.hidden do t.hidden[strings.clone(key)] = true
 	todo_drop(t, at)
 	t.dirty = true
-	t.ver += 1
 }
 
 todos_dismissed :: proc(t: ^Todos, key: string) -> bool {
@@ -275,12 +279,6 @@ item_key :: proc(session, text: string, allocator := context.temp_allocator) -> 
 
 typed_key :: proc(id: string, allocator := context.temp_allocator) -> string {
 	return strings.concatenate({"n\x1f", id}, allocator)
-}
-
-// The wording alone, folded: what the grid matches on when it folds the same
-// piece of work carried in several threads down to one card.
-todo_fold_key :: proc(text: string) -> string {
-	return item_key("", text)
 }
 
 // Letters and digits, lowercased, single spaces between them: everything two
@@ -319,47 +317,36 @@ todo_seq :: proc(td: Todo) -> int {
 	return n
 }
 
-// --- batches -------------------------------------------------------------------
+// --- the thread a card gets ---------------------------------------------------
 
-// Every card that goes out as one thread, by index. On the temp allocator:
-// the list moves, so this is good for as long as nothing touches it.
-todos_batch :: proc(t: ^Todos, batch: string, allocator := context.temp_allocator) -> []int {
-	out := make([dynamic]int, allocator)
-	if batch == "" do return out[:]
-	for td, i in t.list do if td.batch == batch do append(&out, i)
-	return out[:]
-}
-
-// The batch got its thread: every card cut out of the same typed list points
-// at it, because they are all being worked on in the one conversation.
-todos_batch_session :: proc(t: ^Todos, batch, session, cwd: string) {
-	if batch == "" || session == "" do return
-	for &td in t.list {
-		if td.batch != batch || td.session == session do continue
+// The card got its thread. A card is one conversation, so this is one card,
+// and it is written down the moment the harness names the session.
+todo_set_session :: proc(t: ^Todos, id, session, cwd: string) {
+	at := todos_find(t, id)
+	if at < 0 || session == "" do return
+	td := &t.list[at]
+	if td.session != session {
 		session_release(t, td.session)
 		delete(td.session)
 		td.session = strings.clone(session)
 		session_claim(t, session)
-		if td.cwd == "" {
-			delete(td.cwd)
-			td.cwd = strings.clone(cwd)
-		}
+	}
+	if td.cwd == "" {
+		delete(td.cwd)
+		td.cwd = strings.clone(cwd)
 	}
 	t.dirty = true
-	t.ver += 1
 }
 
-// Where the whole batch stands: one thread finishing is every card on it
-// finishing, because there was one turn and it is over.
-todos_batch_state :: proc(t: ^Todos, batch: string, state: Todo_State) {
-	if batch == "" do return
-	for &td in t.list {
-		if td.batch != batch || td.state == state do continue
-		td.state = state
-		td.at = time.now()
-		t.dirty = true
-		t.ver += 1
-	}
+// Marks what became of a card. Only the settled states go through here:
+// running is read off the process that is doing the work.
+todo_set_state :: proc(t: ^Todos, id: string, state: Todo_State) {
+	assert(state != .Running)
+	at := todos_find(t, id)
+	if at < 0 || t.list[at].state == state do return
+	t.list[at].state = state
+	t.list[at].at = time.now()
+	t.dirty = true
 }
 
 // Everything an item can be found by.
@@ -371,11 +358,15 @@ todo_matches :: proc(td: Todo, query: string) -> bool {
 
 // --- typing a list ----------------------------------------------------------
 
-// What was typed, cut into parts, before any model has seen it. A line each,
-// a bullet each, a sentence each: the split anyone would make by hand, done
-// on the spot so the cards appear as Enter is pressed. The agent refines the
-// wording afterwards (see agent.odin) — this is what stands in the meantime,
-// and what stands if no model answers.
+// What was typed, cut into parts: a line each, with a bullet or a number in
+// front of it taken off, and a long line cut again at its full stops. One
+// part is one card and one conversation.
+//
+// A sentence is a part because that is how the box gets written into. Nobody
+// types a newline between "fix the caret" and "then rebake the atlas" — they
+// type a full stop, and a grid that answered a typed list with one card was
+// the thing that made the box feel like it had not heard. The cut only counts
+// when a space follows the stop, so `1.2` and a version number stay whole.
 todos_split :: proc(text: string, allocator := context.temp_allocator) -> []string {
 	out := make([dynamic]string, allocator)
 	body := text
@@ -395,6 +386,9 @@ todos_split :: proc(text: string, allocator := context.temp_allocator) -> []stri
 			cut := -1
 			for i in 0 ..< len(rest) {
 				if rest[i] != '.' && rest[i] != ';' do continue
+				// A stop with anything but a space after it is inside a
+				// word — a version, a file name, a decimal — not the end
+				// of a sentence.
 				if i + 1 < len(rest) && rest[i + 1] != ' ' do continue
 				cut = i
 				break
@@ -408,10 +402,6 @@ todos_split :: proc(text: string, allocator := context.temp_allocator) -> []stri
 			rest = strings.trim_space(rest[cut + 1:])
 		}
 	}
-	if len(out) == 0 {
-		trimmed := strings.trim_space(text)
-		if trimmed != "" do append(&out, trimmed)
-	}
 	return out[:]
 }
 
@@ -419,14 +409,14 @@ todos_split :: proc(text: string, allocator := context.temp_allocator) -> []stri
 
 todo_state_label :: proc(state: Todo_State) -> string {
 	switch state {
-	case .Queued:
-		return "queued"
 	case .Running:
 		return "processing"
 	case .Done:
 		return "complete"
 	case .Failed:
 		return "failed"
+	case .Asked:
+		return "needs you"
 	case .Open:
 		return "waiting"
 	}
@@ -435,14 +425,14 @@ todo_state_label :: proc(state: Todo_State) -> string {
 
 todo_state_color :: proc(state: Todo_State) -> Color {
 	switch state {
-	case .Queued:
-		return ACCENT_DIM
 	case .Running:
 		return ACCENT
 	case .Done:
 		return GREEN
 	case .Failed:
 		return RED
+	case .Asked:
+		return AMBER
 	case .Open:
 		return MUTED
 	}

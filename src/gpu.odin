@@ -31,7 +31,13 @@ Gpu :: struct {
 	device:          vk.Device,
 	queue:           vk.Queue,
 	queue_family:    u32,
+	// The one question "is anyone watching this?" — a run that draws to a file
+	// never makes a surface, and gpu_offscreen is the only thing that asks.
+	// A `headless` flag beside it would be a second copy of the same answer.
 	surface:         vk.SurfaceKHR,
+	// Offscreen only: the memory behind the single target image. A swapchain's
+	// images belong to the driver and have none of ours.
+	target_mem:      vk.DeviceMemory,
 
 	swapchain:       vk.SwapchainKHR,
 	format:          vk.Format,
@@ -85,18 +91,16 @@ vk_check :: proc(res: vk.Result, what: string, loc := #caller_location) {
 	}
 }
 
-gpu_init :: proc(g: ^Gpu, w: ^Window) -> bool {
-	lib, lib_ok := dynlib.load_library("libvulkan.so.1")
-	if !lib_ok {
-		fmt.eprintln("libvulkan.so.1 not found")
-		return false
-	}
-	gipa, _ := dynlib.symbol_address(lib, "vkGetInstanceProcAddr")
-	vk.load_proc_addresses_global(gipa)
+// Whether this device draws into a window or into a file. The surface is the
+// answer — there is no second flag to keep in step with it — and everything
+// that differs between the two runs (which extensions, which queue, what to do
+// with a finished frame) asks here.
+gpu_offscreen :: proc(g: ^Gpu) -> bool {
+	return g.surface == 0
+}
 
-	create_instance(g)
-	vk.load_proc_addresses_instance(g.instance)
-	when ODIN_DEBUG do create_debug_messenger(g)
+gpu_init :: proc(g: ^Gpu, w: ^Window) -> bool {
+	if !load_vulkan(g, windowed = true) do return false
 
 	surface_info := vk.WaylandSurfaceCreateInfoKHR {
 		sType   = .WAYLAND_SURFACE_CREATE_INFO_KHR,
@@ -122,28 +126,64 @@ gpu_init :: proc(g: ^Gpu, w: ^Window) -> bool {
 	return true
 }
 
+// The same device with nothing on the other end of it: no compositor, no
+// surface, no swapchain, one image of our own to draw into and read back. See
+// shot.odin — this is what a screenshot run stands on.
+gpu_init_offscreen :: proc(g: ^Gpu, width, height: int) -> bool {
+	if !load_vulkan(g, windowed = false) do return false
+	if !pick_physical_device(g) do return false
+	create_device(g)
+	vk.load_proc_addresses_device(g.device)
+	vk.GetDeviceQueue(g.device, g.queue_family, 0, &g.queue)
+
+	g.ui_scale = 1
+	create_target(g, u32(width), u32(height))
+	create_frames(g)
+	bindless_init(g)
+	create_ui_pipeline(g)
+	return true
+}
+
 @(private = "file")
-create_instance :: proc(g: ^Gpu) {
+load_vulkan :: proc(g: ^Gpu, windowed: bool) -> bool {
+	lib, lib_ok := dynlib.load_library("libvulkan.so.1")
+	if !lib_ok {
+		fmt.eprintln("libvulkan.so.1 not found")
+		return false
+	}
+	gipa, _ := dynlib.symbol_address(lib, "vkGetInstanceProcAddr")
+	vk.load_proc_addresses_global(gipa)
+
+	create_instance(g, windowed)
+	vk.load_proc_addresses_instance(g.instance)
+	when ODIN_DEBUG do create_debug_messenger(g)
+	return true
+}
+
+@(private = "file")
+create_instance :: proc(g: ^Gpu, windowed: bool) {
 	app := vk.ApplicationInfo {
 		sType            = .APPLICATION_INFO,
 		pApplicationName = "aithing",
 		apiVersion       = vk.API_VERSION_1_3,
 	}
-	exts := [?]cstring {
-		vk.KHR_SURFACE_EXTENSION_NAME,
-		vk.KHR_WAYLAND_SURFACE_EXTENSION_NAME,
-		vk.EXT_DEBUG_UTILS_EXTENSION_NAME,
+	// Built rather than sliced out of a fixed array: an offscreen run asks for
+	// neither surface extension, and a count that had to agree with a list it
+	// was not made from is exactly the kind of thing that goes wrong quietly.
+	exts := make([dynamic]cstring, context.temp_allocator)
+	if windowed {
+		append(&exts, vk.KHR_SURFACE_EXTENSION_NAME, vk.KHR_WAYLAND_SURFACE_EXTENSION_NAME)
 	}
+	when ODIN_DEBUG do append(&exts, vk.EXT_DEBUG_UTILS_EXTENSION_NAME)
 	layers := [?]cstring{"VK_LAYER_KHRONOS_validation"}
 
 	info := vk.InstanceCreateInfo {
 		sType                   = .INSTANCE_CREATE_INFO,
 		pApplicationInfo        = &app,
-		enabledExtensionCount   = len(exts) - 1,
+		enabledExtensionCount   = u32(len(exts)),
 		ppEnabledExtensionNames = raw_data(exts[:]),
 	}
 	when ODIN_DEBUG {
-		info.enabledExtensionCount = len(exts)
 		if validation_layer_available() {
 			info.enabledLayerCount = len(layers)
 			info.ppEnabledLayerNames = raw_data(layers[:])
@@ -197,7 +237,7 @@ pick_physical_device :: proc(g: ^Gpu) -> bool {
 
 	best_score := -1
 	for d in devs {
-		idx, has_queue := find_present_queue(g, d)
+		idx, has_queue := find_queue(g, d)
 		if !has_queue do continue
 		if !supports_bindless(d) do continue
 
@@ -221,13 +261,17 @@ pick_physical_device :: proc(g: ^Gpu) -> bool {
 }
 
 @(private = "file")
-find_present_queue :: proc(g: ^Gpu, d: vk.PhysicalDevice) -> (u32, bool) {
+// A graphics queue, and — when there is a window — one the compositor will
+// take images from. Offscreen there is nobody to present to, so the second
+// half of the question does not exist.
+find_queue :: proc(g: ^Gpu, d: vk.PhysicalDevice) -> (u32, bool) {
 	n: u32
 	vk.GetPhysicalDeviceQueueFamilyProperties(d, &n, nil)
 	fams := make([]vk.QueueFamilyProperties, n, context.temp_allocator)
 	vk.GetPhysicalDeviceQueueFamilyProperties(d, &n, raw_data(fams))
 	for f, i in fams {
 		if .GRAPHICS not_in f.queueFlags do continue
+		if gpu_offscreen(g) do return u32(i), true
 		support: b32
 		vk.GetPhysicalDeviceSurfaceSupportKHR(d, u32(i), g.surface, &support)
 		if support do return u32(i), true
@@ -270,6 +314,7 @@ create_device :: proc(g: ^Gpu) {
 		pQueuePriorities = &priority,
 	}
 	exts := [?]cstring{vk.KHR_SWAPCHAIN_EXTENSION_NAME}
+	ext_count := gpu_offscreen(g) ? 0 : u32(len(exts))
 
 	di := vk.PhysicalDeviceDescriptorIndexingFeatures {
 		sType                                     = .PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES,
@@ -295,7 +340,7 @@ create_device :: proc(g: ^Gpu) {
 		pNext                   = &f2,
 		queueCreateInfoCount    = 1,
 		pQueueCreateInfos       = &qinfo,
-		enabledExtensionCount   = len(exts),
+		enabledExtensionCount   = ext_count,
 		ppEnabledExtensionNames = raw_data(exts[:]),
 	}
 	vk_check(vk.CreateDevice(g.phys, &info, nil, &g.device), "CreateDevice")
@@ -412,6 +457,119 @@ create_swapchain :: proc(g: ^Gpu, width, height: u32) {
 		)
 	}
 
+}
+
+// The offscreen equivalent of a swapchain: one image, ours, that the same
+// pipeline draws into and gpu_capture reads back. It carries the same format
+// the swapchain would have picked, so the shader, the blending and the byte
+// order of a screenshot are the picture the window draws and not a variant of
+// it.
+@(private = "file")
+create_target :: proc(g: ^Gpu, width, height: u32) {
+	g.format = .B8G8R8A8_UNORM
+	g.extent = {max(width, 1), max(height, 1)}
+
+	info := vk.ImageCreateInfo {
+		sType = .IMAGE_CREATE_INFO,
+		imageType = .D2,
+		format = g.format,
+		extent = {g.extent.width, g.extent.height, 1},
+		mipLevels = 1,
+		arrayLayers = 1,
+		samples = MSAA_SAMPLES,
+		tiling = .OPTIMAL,
+		usage = {.COLOR_ATTACHMENT, .TRANSFER_SRC},
+		sharingMode = .EXCLUSIVE,
+		initialLayout = .UNDEFINED,
+	}
+	g.images = make([]vk.Image, 1)
+	vk_check(vk.CreateImage(g.device, &info, nil, &g.images[0]), "CreateImage")
+
+	req: vk.MemoryRequirements
+	vk.GetImageMemoryRequirements(g.device, g.images[0], &req)
+	alloc := vk.MemoryAllocateInfo {
+		sType           = .MEMORY_ALLOCATE_INFO,
+		allocationSize  = req.size,
+		memoryTypeIndex = find_memory_type(g, req.memoryTypeBits, {.DEVICE_LOCAL}),
+	}
+	vk_check(vk.AllocateMemory(g.device, &alloc, nil, &g.target_mem), "AllocateMemory")
+	vk.BindImageMemory(g.device, g.images[0], g.target_mem, 0)
+
+	view_info := vk.ImageViewCreateInfo {
+		sType = .IMAGE_VIEW_CREATE_INFO,
+		image = g.images[0],
+		viewType = .D2,
+		format = g.format,
+		subresourceRange = {aspectMask = {.COLOR}, levelCount = 1, layerCount = 1},
+	}
+	g.views = make([]vk.ImageView, 1)
+	vk_check(vk.CreateImageView(g.device, &view_info, nil, &g.views[0]), "CreateImageView")
+	// Nothing to hand the frame to, so nothing to signal that it was handed
+	// over. gpu_draw skips the present half entirely; see gpu_offscreen.
+	g.present_sems = make([]vk.Semaphore, 0)
+}
+
+// The finished frame, RGBA8, row by row from the top. Only an offscreen target
+// can be read back — a swapchain image is the compositor's the moment it is
+// presented — so this is the one place a screenshot comes from.
+gpu_capture :: proc(g: ^Gpu, allocator := context.allocator) -> []byte {
+	w, h := int(g.extent.width), int(g.extent.height)
+	buf, memory, mapped := create_mapped_buffer(g, vk.DeviceSize(w * h * 4), {.TRANSFER_DST})
+	defer {
+		vk.DestroyBuffer(g.device, buf, nil)
+		vk.FreeMemory(g.device, memory, nil)
+	}
+
+	// One shot, and the frame it is copying is already finished: waiting on the
+	// whole device is heavier than waiting on the frame's fence and costs
+	// nothing anyone can measure once per screenshot.
+	vk.DeviceWaitIdle(g.device)
+
+	cmd: vk.CommandBuffer
+	alloc := vk.CommandBufferAllocateInfo {
+		sType              = .COMMAND_BUFFER_ALLOCATE_INFO,
+		commandPool        = g.cmd_pool,
+		level              = .PRIMARY,
+		commandBufferCount = 1,
+	}
+	vk_check(vk.AllocateCommandBuffers(g.device, &alloc, &cmd), "AllocateCommandBuffers")
+	defer vk.FreeCommandBuffers(g.device, g.cmd_pool, 1, &cmd)
+
+	begin := vk.CommandBufferBeginInfo {
+		sType = .COMMAND_BUFFER_BEGIN_INFO,
+		flags = {.ONE_TIME_SUBMIT},
+	}
+	vk.BeginCommandBuffer(cmd, &begin)
+	region := vk.BufferImageCopy {
+		imageSubresource = {aspectMask = {.COLOR}, layerCount = 1},
+		imageExtent = {g.extent.width, g.extent.height, 1},
+	}
+	// gpu_draw left it in TRANSFER_SRC_OPTIMAL, which is what an offscreen
+	// frame ends in for exactly this reason.
+	vk.CmdCopyImageToBuffer(cmd, g.images[0], .TRANSFER_SRC_OPTIMAL, buf, 1, &region)
+	vk.EndCommandBuffer(cmd)
+
+	cmd_info := vk.CommandBufferSubmitInfo {
+		sType         = .COMMAND_BUFFER_SUBMIT_INFO,
+		commandBuffer = cmd,
+	}
+	submit := vk.SubmitInfo2 {
+		sType                  = .SUBMIT_INFO_2,
+		commandBufferInfoCount = 1,
+		pCommandBufferInfos    = &cmd_info,
+	}
+	vk_check(vk.QueueSubmit2(g.queue, 1, &submit, 0), "QueueSubmit2 (capture)")
+	vk.QueueWaitIdle(g.queue)
+
+	// BGRA off the GPU, RGBA into the file.
+	out := make([]byte, w * h * 4, allocator)
+	for i in 0 ..< w * h {
+		out[i * 4 + 0] = mapped[i * 4 + 2]
+		out[i * 4 + 1] = mapped[i * 4 + 1]
+		out[i * 4 + 2] = mapped[i * 4 + 0]
+		out[i * 4 + 3] = mapped[i * 4 + 3]
+	}
+	return out
 }
 
 @(private = "file")
@@ -554,10 +712,19 @@ gpu_destroy :: proc(g: ^Gpu) {
 	vk.DestroyPipeline(g.device, g.pipeline_punch, nil)
 	vk.DestroyPipelineLayout(g.device, g.pipeline_layout, nil)
 
-	destroy_swapchain_views(g)
-	vk.DestroySwapchainKHR(g.device, g.swapchain, nil)
+	if gpu_offscreen(g) {
+		// The view goes first — it is a view of this image — and then the
+		// image itself, which is ours to free where a swapchain's is not.
+		image := g.images[0]
+		destroy_swapchain_views(g)
+		vk.DestroyImage(g.device, image, nil)
+		vk.FreeMemory(g.device, g.target_mem, nil)
+	} else {
+		destroy_swapchain_views(g)
+		vk.DestroySwapchainKHR(g.device, g.swapchain, nil)
+	}
 	vk.DestroyDevice(g.device, nil)
-	vk.DestroySurfaceKHR(g.instance, g.surface, nil)
+	if g.surface != 0 do vk.DestroySurfaceKHR(g.instance, g.surface, nil)
 	when ODIN_DEBUG {
 		if debug_messenger != 0 do vk.DestroyDebugUtilsMessengerEXT(g.instance, debug_messenger, nil)
 	}

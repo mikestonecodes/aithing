@@ -93,8 +93,6 @@ reload_swap :: proc(app: ^App) {
 		why = "a build is still running"
 	case app_busy(app):
 		why = "a turn is in flight"
-	case len(app.queue) > 0:
-		why = "messages are queued in this process"
 	}
 	if why != "" {
 		// Only when it changes: this is asked twice a second.

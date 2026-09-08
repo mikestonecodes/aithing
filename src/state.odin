@@ -27,7 +27,6 @@ App_State :: struct {
 	cwd:          string,
 	project:      string,
 	sel:          string,
-	queue:        string, // the cards lined up to run, ids separated by spaces
 	draft:        string, // the composer, inside the open thread
 	capture:      string, // the box under the grid
 	model:        Model,
@@ -63,10 +62,7 @@ state_text :: proc(app: ^App) -> string {
 	fmt.sbprintfln(&b, "cwd %s", app.cwd)
 	fmt.sbprintfln(&b, "project %s", app.canvas.project)
 	fmt.sbprintfln(&b, "sel %s", app.canvas.sel)
-	// The run queue rides along, because the auto-reload execs over a window
-	// mid-list often enough that losing it would be the common case.
-	fmt.sbprintfln(&b, "queue %s", strings.join(app.run_queue[:], " ", context.temp_allocator))
-	fmt.sbprintfln(&b, "opened %d", app.canvas.opened ? 1 : 0)
+	fmt.sbprintfln(&b, "opened %d", app.page == .Thread ? 1 : 0)
 	fmt.sbprintfln(&b, "scroll %.0f", app.canvas.scroll.target)
 	fmt.sbprintfln(&b, "capture %s", escape_line(editor_text(&app.capture)))
 	// The draft is last and unquoted, so a message with newlines in it needs
@@ -118,7 +114,8 @@ state_read :: proc(path: string, take := false, allocator := context.allocator) 
 		case "sel":
 			s.sel = strings.clone(value, allocator)
 		case "queue":
-			s.queue = strings.clone(value, allocator)
+			// Written by an older build, when cards queued for one of four
+			// turn slots. Read and dropped, so those files still restore.
 		case "model":
 			s.model, _ = model_parse(value)
 		case "opened":
@@ -146,7 +143,6 @@ state_free :: proc(s: ^App_State) {
 	delete(s.cwd)
 	delete(s.project)
 	delete(s.sel)
-	delete(s.queue)
 	delete(s.draft)
 	delete(s.capture)
 	s^ = {}
@@ -168,18 +164,6 @@ state_restore :: proc(app: ^App, s: App_State, model_set: bool) {
 	app.canvas.scroll.offset = s.scroll
 	editor_set_text(&app.editor, s.draft)
 	editor_set_text(&app.capture, s.capture)
-}
-
-// The cards that were lined up to run. Only a reload puts these back: a
-// rebuilt binary takes the process over mid-list and should carry on, while a
-// window opened by hand hours later should not start a turn nobody asked for
-// twice. The items are already loaded by the time this runs, so an id naming
-// a card that has since gone is simply stepped over when the queue is pumped.
-state_restore_queue :: proc(app: ^App, s: App_State) {
-	if !s.ok do return
-	for id in strings.split(s.queue, " ", context.temp_allocator) {
-		if id != "" do append(&app.run_queue, strings.clone(id))
-	}
 }
 
 // A value that has to stay on one line. Only two characters can break the
