@@ -26,6 +26,13 @@ draw_app :: proc(app: ^App) {
 	full := Rect{0, 0, ui.size.x, ui.size.y}
 	panel, arrived, t := canvas_panel(app, full)
 
+	// Where the chips are is worked out again every frame by whichever box
+	// draws them, and forgotten first, so a picker can never open off a chip
+	// that is not on screen. They used to be written once by the composer and
+	// left there, which was fine while the thread was the only place with
+	// chips and is not now.
+	app.model_chip, app.effort_chip = {}, {}
+
 	// The canvas underneath, only while the panel is still on its way. Once
 	// the panel fills the window the grid is not drawn at all: the thread is
 	// the page now, standing on the same ground the grid stood on — the
@@ -111,20 +118,6 @@ draw_app :: proc(app: ^App) {
 			ui_pop_zoom(ui)
 			ui_pop_clip(ui)
 		}
-		// The pickers open off the composer's own chips, which nothing can
-		// reach until the thread has arrived.
-		if arrived && app.overlay == .Model {
-			if m, picked := draw_picker(app, app.model_chip, slice.enumerated_array(&model_label), int(app.model), "model"); picked {
-				app.model = Model(m)
-				model_save(app.model)
-			}
-		}
-		if arrived && app.overlay == .Effort {
-			if e, picked := draw_picker(app, app.effort_chip, slice.enumerated_array(&effort_label), int(app.effort), "effort"); picked {
-				app.effort = Effort(e)
-				effort_save(app.effort)
-			}
-		}
 	} else {
 		draw_project_head(app, full)
 		if app_capture_open(app) {
@@ -139,6 +132,12 @@ draw_app :: proc(app: ^App) {
 		draw_status(app, {full.x + PAD, bottom, full.w / 2 - PAD, 16})
 	}
 	draw_usage(app, full, strip)
+	// Last, over everything: the corner that says what the harness has cost
+	// is opaque and is drawn after the box the chips sit on, so a picker
+	// drawn where it was chosen from came up behind that corner — a list you
+	// were picking from half blind. Nothing else in the window is a popup, so
+	// there is nothing for it to be under.
+	draw_pickers(app)
 	draw_launcher(app, full)
 	if t > 0 && !arrived do ui_wake_in(ui, 0)
 }
@@ -202,7 +201,7 @@ capture_height :: proc(app: ^App, width: f32) -> f32 {
 	if !app_capture_open(app) do return 0
 	editor_layout_lines(ui, &app.capture, capture_text_width(width), &ui.regular, CAPTURE_PX)
 	_, lines := editor_window(&app.capture, CAPTURE_LINES)
-	return CAPTURE_PAD * 2 + f32(lines) * (CAPTURE_PX * 1.5) + 22
+	return CAPTURE_PAD * 2 + f32(lines) * (CAPTURE_PX * 1.5) + COMPOSER_CHIPS
 }
 
 @(private = "file")
@@ -242,16 +241,15 @@ draw_capture :: proc(app: ^App, full: Rect) {
 		n := len(todos_split(editor_text(&app.capture)))
 		note = n == 1 ? "enter · runs it" : fmt.tprintf("enter · %d cards, a thread each", n)
 	}
+	// The same band along the bottom the composer has, and the same two chips
+	// in the corner of it: what is typed here is what a card runs on, so the
+	// model is chosen where the card is written rather than inside a thread
+	// opened afterwards. The note moves to the left to make room, which is
+	// where the composer's own line of small print already sits.
+	chip_y := box.y + box.h - COMPOSER_CHIPS / 2 - 8
+	draw_chips(app, full, box, chip_y)
 	if note != "" {
-		nw := font_width(&ui.regular, note, 12)
-		ui_text(
-			ui,
-			&ui.regular,
-			note,
-			{box.x + box.w - COMPOSER_SIDE - nw, box.y + box.h - 20},
-			12,
-			FAINT,
-		)
+		ui_text(ui, &ui.regular, note, {box.x + COMPOSER_SIDE, chip_y + 3}, 12, FAINT)
 	}
 }
 
@@ -510,13 +508,7 @@ draw_composer :: proc(app: ^App, r: Rect) {
 	// it thinks. Permissions are whatever the harness is already configured
 	// to do.
 	chip_y := box.y + box.h - COMPOSER_CHIPS / 2 - 8
-	cx := draw_chip(app, ui_id("model-chip"), box.x + box.w - 12, chip_y, model_label[app.model], MUTED)
-	if ui.pressed && ui.hot == ui_id("model-chip") do app.overlay = app.overlay == .Model ? .None : .Model
-	app.model_chip = Rect{cx, chip_y - 5, box.x + box.w - 12 - cx, 26}
-	ex := draw_chip(app, ui_id("effort-chip"), cx - 8, chip_y, effort_label[app.effort], MUTED)
-	if ui.pressed && ui.hot == ui_id("effort-chip") do app.overlay = app.overlay == .Effort ? .None : .Effort
-	app.effort_chip = Rect{ex, chip_y - 5, cx - 8 - ex, 26}
-	cx = ex
+	draw_chips(app, {r.x, 0, r.w, r.y + r.h}, box, chip_y)
 	if app_chat_busy(app) {
 		// While a turn is in flight the same corner says so, and stops it.
 		stop := Rect{box.x + 14, chip_y - 3, 58, 22}
@@ -571,6 +563,10 @@ draw_picker :: proc(
 		return 0, false
 	}
 
+	// And a press inside it belongs to it, whatever has already claimed it:
+	// this is drawn last, over things that are drawn as buttons.
+	ui_claim(ui, r)
+
 	ui_rect(ui, {r.x + 2, r.y + 3, r.w, r.h}, Color(0x50000000), 12)
 	ui_rect(ui, r, PANEL_HI, 12)
 
@@ -588,6 +584,60 @@ draw_picker :: proc(
 		y += row_h
 	}
 	return 0, false
+}
+
+// The two controls the window has: which model answers and how hard it
+// thinks. Every box that starts work carries them — the composer inside a
+// thread and the box under the grid — because the moment the work is written
+// is the moment the choice is about, and for a while the choice could only be
+// made from inside a thread you had to open first.
+//
+// This is also the one place the chip rects are written down. The picker
+// opens off them, and two boxes each keeping their own copy of where their
+// chips were is two popups to keep in step.
+@(private = "file")
+draw_chips :: proc(app: ^App, full, box: Rect, y: f32) {
+	ui := &app.ui
+	right := chips_right(full, box)
+	cx := draw_chip(app, ui_id("model-chip"), right, y, model_label[app.model], MUTED)
+	if ui.pressed && ui.hot == ui_id("model-chip") do app.overlay = app.overlay == .Model ? .None : .Model
+	app.model_chip = Rect{cx, y - 5, right - cx, 26}
+	ex := draw_chip(app, ui_id("effort-chip"), cx - 8, y, effort_label[app.effort], MUTED)
+	if ui.pressed && ui.hot == ui_id("effort-chip") do app.overlay = app.overlay == .Effort ? .None : .Effort
+	app.effort_chip = Rect{ex, y - 5, cx - 8 - ex, 26}
+}
+
+// Where the chip row ends. The box's own right edge, except where the corner
+// that says what the harness has cost is standing in it: that panel keeps a
+// floor under its width and is drawn last and opaque, so at the width the
+// composer actually is — centred, 880 wide, in a 1180 window — it came down
+// over the box's bottom right corner, which is exactly where these two chips
+// are. The chips move in rather than the panel moving out, because where the
+// panel stands is fixed on purpose: it is the one thing in the window that
+// never changes, and it used to jump every time the box grew a line.
+chips_right :: proc(full, box: Rect) -> f32 {
+	right := box.x + box.w - 12
+	if corner := usage_rect(full, box); corner.w > 0 do right = min(right, corner.x - 12)
+	return right
+}
+
+// Whichever picker is open, over whatever box put the chip there. The chip
+// rect is this frame's or it is nothing, so a picker left open by a page that
+// has gone has nothing to hang off and is not drawn.
+@(private = "file")
+draw_pickers :: proc(app: ^App) {
+	if app.overlay == .Model && app.model_chip.w > 0 {
+		if m, picked := draw_picker(app, app.model_chip, slice.enumerated_array(&model_label), int(app.model), "model"); picked {
+			app.model = Model(m)
+			model_save(app.model)
+		}
+	}
+	if app.overlay == .Effort && app.effort_chip.w > 0 {
+		if e, picked := draw_picker(app, app.effort_chip, slice.enumerated_array(&effort_label), int(app.effort), "effort"); picked {
+			app.effort = Effort(e)
+			effort_save(app.effort)
+		}
+	}
 }
 
 // A small text chip, right-aligned at `right`. Returns its left edge.

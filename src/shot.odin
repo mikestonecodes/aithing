@@ -28,6 +28,7 @@ Scene :: enum {
 	Thread, // a card opened: transcript and composer over the grid
 	Opening, // that same card halfway there: the panel still growing out of it
 	Peek, // the same thread with the pointer resting on a tile of its path
+	Picker, // the model picker, open off the composer's chip
 	Launcher, // the menu, with a query typed into it
 }
 
@@ -38,6 +39,7 @@ scene_names := [Scene]string {
 	.Thread   = "thread",
 	.Opening  = "opening",
 	.Peek     = "peek",
+	.Picker   = "picker",
 	.Launcher = "launcher",
 }
 
@@ -238,10 +240,11 @@ shot_build :: proc(app: ^App, scene: Scene) {
 	case .Project:
 		app.canvas.project = PROJ
 		editor_set_text(&app.capture, "split the grid measurement out of the frame\n*\ncheck it at 1200 sessions")
-	case .Thread, .Opening, .Peek:
+	case .Thread, .Opening, .Peek, .Picker:
 		app.canvas.project = PROJ
 		app.page = .Thread
 		shot_thread(app)
+		if scene == .Picker do app.overlay = .Model
 	case .Launcher:
 		app.overlay = .Launcher
 		editor_set_text(&app.search, "grid")

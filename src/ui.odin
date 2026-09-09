@@ -473,6 +473,19 @@ ui_hovered :: proc(ui: ^UI, r: Rect) -> bool {
 // click on the thing that was pressed rather than a drag off it.
 CLICK_SLOP :: f32(4)
 
+// A popup takes the press inside it back from whatever it is covering.
+//
+// Everything here is drawn in the order it is stacked, and a press is claimed
+// by the first widget that is under it — ui_invisible_button will not hover
+// anything at all while another widget is held, which is what stops a drag
+// off a button from lighting up everything it crosses. A popup is drawn last
+// and so asks last, by which time the transcript tile or the card underneath
+// it has already taken the press: every row of the model picker was dead, and
+// clicking a model opened whatever the picker happened to be covering.
+ui_claim :: proc(ui: ^UI, r: Rect) {
+	if ui.pressed && rect_contains(rect_intersect(r, ui.clip), ui.mouse) do ui.active = 0
+}
+
 // The whole button protocol: hot on hover, active while held, fires on release
 // inside. No retained state beyond the two ids on UI.
 //

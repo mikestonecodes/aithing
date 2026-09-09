@@ -221,6 +221,20 @@ USAGE_PAD :: f32(16)
 @(private = "file")
 ROW_H :: f32(42)
 
+// Where the corner stands, and the one place that answers it: the bottom
+// right, in whatever room the box along the bottom leaves beside it. The box
+// asks too — its chip row ends where this begins (see chips_right) — and the
+// two of them working it out separately is how the chips ended up underneath
+// an opaque readout of three numbers.
+usage_rect :: proc(full, strip: Rect) -> Rect {
+	w := USAGE_W
+	if strip.w > 0 {
+		room := full.x + full.w - PAD - (strip.x + strip.w + 12)
+		w = clamp(room, USAGE_MIN, USAGE_W)
+	}
+	return {full.x + full.w - PAD - w, full.y + full.h - PAD - USAGE_H, w, USAGE_H}
+}
+
 // The corner. `strip` is the box along the bottom of the window — the composer
 // or the capture box — and the panel squeezes to sit beside it.
 draw_usage :: proc(app: ^App, full: Rect, strip: Rect) {
@@ -230,14 +244,8 @@ draw_usage :: proc(app: ^App, full: Rect, strip: Rect) {
 	a := ui_anim(ui, ui_id("usage"), show ? 1 : 0, 12)
 	if a < 0.01 do return
 
-	w := USAGE_W
-	if strip.w > 0 {
-		room := full.x + full.w - PAD - (strip.x + strip.w + 12)
-		w = clamp(room, USAGE_MIN, USAGE_W)
-	}
-	x := full.x + full.w - PAD - w
-	y := full.y + full.h - PAD - USAGE_H
-	box := Rect{x, y + (1 - a) * 16, w, USAGE_H}
+	box := usage_rect(full, strip)
+	box.y += (1 - a) * 16
 
 	ui_rect(ui, {box.x + 1, box.y + 5, box.w, box.h}, color_alpha(Color(0xff000000), 0.30 * a), 14)
 	ui_rect(ui, box, color_alpha(PANEL, 0.97 * a), 14)

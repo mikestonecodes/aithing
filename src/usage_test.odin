@@ -156,3 +156,37 @@ test_usage_fable_week_survives_other_models :: proc(t: ^testing.T) {
 	testing.expect_value(t, window_used(app.usage.limits.fable), 0.8)
 }
 
+// The corner is the one thing in the window that never moves, and what it
+// stands on is the box's bottom right corner — which is where the model and
+// effort chips are. It kept a floor under its own width, so at the width the
+// composer actually is there was not room beside it and the panel came down
+// over the chips: the only two controls the window has, under an opaque
+// readout, with the picker opening behind it.
+//
+// Nothing here needs a window or a font, which is the point — it is two
+// numbers agreeing, and they used to be worked out in two places.
+@(test)
+the_corner_never_stands_on_the_chips :: proc(t: ^testing.T) {
+	// Every width from too narrow for the box to wider than it will ever
+	// grow, because the two answers are worked out from the same room and
+	// the failure was a width in the middle of that range.
+	for w := f32(600); w <= 2400; w += 7 {
+		full := Rect{0, 0, w, 800}
+		// The box along the bottom, laid out the way draw_page lays it out:
+		// content width at most, centred, PAD clear either side.
+		bw := min(w - 16 * 2, 880)
+		box := Rect{(w - bw) / 2, 700, bw, 84}
+		corner := usage_rect(full, box)
+		if corner.w <= 0 do continue
+		testing.expectf(
+			t,
+			chips_right(full, box) <= corner.x,
+			"at %v wide the chips end at %v, inside a corner that starts at %v",
+			w,
+			chips_right(full, box),
+			corner.x,
+		)
+		// And the corner is still in the window it was given.
+		testing.expect(t, corner.x + corner.w <= full.w)
+	}
+}
