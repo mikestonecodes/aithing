@@ -102,12 +102,28 @@ app_busy :: proc(app: ^App) -> bool {
 	return false
 }
 
-// A turn running in one particular thread. Two turns in one thread would be
-// two `--resume`s of the same session racing each other, so a follow-up to a
-// busy thread waits even when there is a slot free.
+// A process running in one particular thread, which is not the same question
+// as whether the thread has work coming: a message waiting for that process is
+// work as much as the process is. One answer, so the card, the composer and
+// the send all read the same thing off it.
 app_session_busy :: proc(app: ^App, session: string) -> bool {
-	at := turn_for_session(app, session)
-	return at >= 0 && runner_busy(&app.turns[at].runner)
+	if session == "" do return false
+	if session_running(app, session) do return true
+	for q in app.queued do if q.session == session do return true
+	return false
+}
+
+// Just the process. The queue drains off this rather than off
+// app_session_busy, which counts the queue itself.
+//
+// Every slot, not the first one `turn_for_session` finds: a thread whose last
+// turn has settled and not yet been reaped has two slots naming it for a
+// frame, and the finished one answered for the running one — which let a
+// second message out into a thread that was still busy.
+session_running :: proc(app: ^App, session: string) -> bool {
+	if session == "" do return false
+	for t in app.turns do if t.live && t.session == session && runner_busy(&t.runner) do return true
+	return false
 }
 
 // A turn running in the thread on screen: what the composer draws itself
@@ -205,6 +221,9 @@ turn_start :: proc(app: ^App, cwd, project, session, prompt, todo: string, chat:
 // runner inside it until then.
 turn_release :: proc(app: ^App, at: int) {
 	t := app.turns[at]
+	// Before the slot is zeroed: a message waiting to be told what this turn's
+	// thread is called has to be told now or never.
+	queue_resolve(app, t)
 	runner_destroy(&t.runner)
 	delete(t.session)
 	delete(t.cwd)
@@ -258,6 +277,125 @@ turns_stop_all :: proc(app: ^App) {
 	for t, i in app.turns do if t.live do turn_stop(app, i)
 }
 
+// --- messages waiting for the thread they were typed into -----------------------
+
+// A follow-up typed into a thread that already has a turn in it. It waits for
+// that turn rather than going out beside it.
+//
+// Both ways round have been wrong. There was a queue four slots wide that
+// waited on a turn *saying* it had ended, and a turn that died without saying
+// anything left its follow-ups sitting in it for good — a message that never
+// goes out at all. So the waiting was taken out and every message went the
+// moment it was typed, which is two `claude --resume`s of one session: two
+// harnesses that each read the thread as it stood, each re-send the whole of
+// it, and both append to the one file. What that costs is the conversation
+// paid for twice; what it does is worse — the records interleave, and the
+// second turn comes back on a thread whose messages are out of order.
+//
+// This queue cannot wedge the way the first one did, because nothing tells it
+// anything. It drains off `session_running`, which is a process this window is
+// holding; `turns_reap` lets go of a slot whose process is gone whether or not
+// it ever said so, so a turn that dies silently frees its thread exactly like
+// one that ends properly, and the message behind it goes out on the next
+// frame.
+Queued :: struct {
+	// The thread it goes to. Empty means the turn ahead of it has not been
+	// named yet — the harness names a thread in the first record it writes,
+	// and a message typed inside that second has nothing else to hold on to,
+	// so it holds the turn until the name arrives. Sending it as it stood was
+	// a follow-up that started a second thread of its own.
+	session: string,
+	wait:    ^Turn, // only while session is ""
+	cwd:     string,
+	project: string,
+	prompt:  string,
+}
+
+turn_queue :: proc(app: ^App, session: string, wait: ^Turn, cwd, project, prompt: string) {
+	append(
+		&app.queued,
+		Queued {
+			session = strings.clone(session),
+			wait    = wait,
+			cwd     = strings.clone(cwd),
+			project = strings.clone(project),
+			prompt  = strings.clone(prompt),
+		},
+	)
+}
+
+@(private = "file")
+queued_destroy :: proc(q: ^Queued) {
+	delete(q.session)
+	delete(q.cwd)
+	delete(q.project)
+	delete(q.prompt)
+	q^ = {}
+}
+
+// A turn is giving its slot back, so anything still waiting on it to be named
+// takes the name now. The slot is about to be zeroed and handed to the next
+// turn, and a message left pointing into it would wake up in somebody else's
+// thread.
+queue_resolve :: proc(app: ^App, t: ^Turn) {
+	for &q in app.queued {
+		if q.wait != t do continue
+		delete(q.session)
+		q.session = strings.clone(t.session)
+		q.wait = nil
+	}
+}
+
+// Drops whatever is waiting for a thread. Stopping a turn is stopping the
+// work, and a follow-up that went out the moment the stop landed would be the
+// window carrying on with what you just said to stop.
+turn_unqueue :: proc(app: ^App, session: string, wait: ^Turn = nil) -> bool {
+	dropped := false
+	for i := len(app.queued) - 1; i >= 0; i -= 1 {
+		q := &app.queued[i]
+		if !((session != "" && q.session == session) || (wait != nil && q.wait == wait)) do continue
+		queued_destroy(q)
+		ordered_remove(&app.queued, i)
+		dropped = true
+	}
+	return dropped
+}
+
+// Called once a frame, after the reap: every message whose thread is free now
+// goes out, in the order it was typed. One per thread — starting a turn makes
+// its thread running again, so the second message typed into a thread waits
+// for the first, which is the whole of why it waited.
+turns_pump :: proc(app: ^App) -> bool {
+	sent := false
+	for i := 0; i < len(app.queued); {
+		q := &app.queued[i]
+		// Still nameless: the turn ahead of it has not written its first
+		// record yet. turn_release resolves this if that turn dies first.
+		if q.session == "" && q.wait != nil {
+			i += 1
+			continue
+		}
+		if session_running(app, q.session) {
+			i += 1
+			continue
+		}
+		// Into the transcript if this is the thread on screen, the same as
+		// the message would have been had it gone out when it was typed.
+		if !turn_start(app, q.cwd, q.project, q.session, q.prompt, "", q.session == app.chat.session_id) {
+			app_status(app, "could not start claude")
+		}
+		queued_destroy(q)
+		ordered_remove(&app.queued, i)
+		sent = true
+	}
+	return sent
+}
+
+queue_destroy :: proc(app: ^App) {
+	for &q in app.queued do queued_destroy(&q)
+	delete(app.queued)
+}
+
 turns_destroy :: proc(app: ^App) {
 	// Every process first, then the waiting. Releasing a slot joins its
 	// reader thread, which does not finish until its process has let go of
@@ -267,4 +405,5 @@ turns_destroy :: proc(app: ^App) {
 	for t, i in app.turns do if t.live do turn_release(app, i)
 	for t in app.turns do free(t)
 	delete(app.turns)
+	queue_destroy(app)
 }

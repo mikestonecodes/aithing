@@ -41,8 +41,10 @@ the symptom.
   said is `Asked`, never `Done`.
 - **Where you can type** is `app_capture_open()` — the grid's box exists when
   the grid names one project — and `app_focus()` reads it, so the box and the
-  caret cannot disagree. Nothing waits to go out: a message typed into a busy
-  thread starts its own turn beside the one already running.
+  caret cannot disagree. A message typed into a busy thread waits for the turn
+  ahead of it and then resumes the same session, and what it waits on is the
+  process being gone (`session_running`) — not a turn remembering to say it
+  ended, which is what left the first queue holding follow-ups for good.
 
 ### When a cache is allowed
 
