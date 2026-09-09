@@ -107,6 +107,15 @@ snake_gather :: proc(app: ^App) {
 			}
 		}
 	}
+	// Between one block and the next — the turn is away, and there is nothing
+	// open to be written into — the work is still where the path ends. Read
+	// off the turn rather than written on a tile, so it is right on the frame
+	// the last block closes and there is nothing to clear afterwards.
+	if len(app.snake) > 0 && app_chat_busy(app) {
+		working := false
+		for t in app.snake do if t.live do working = true
+		if !working do app.snake[len(app.snake) - 1].live = true
+	}
 }
 
 @(private = "file")
@@ -134,8 +143,9 @@ tile_of :: proc(b: ^Block, ref: Ref, role: Role, depth: int) -> Tile {
 	case .Tool:
 		t.col, t.icon = tool_style(b.name)
 		t.name = b.name
-		t.live = b.running
 	}
+	// Whatever it is, it is working while it is still being written into.
+	t.live = b.running
 	return t
 }
 
@@ -285,7 +295,9 @@ draw_answer_pipe :: proc(app: ^App, stone, box: Rect) {
 	x := clamp(stone.x + stone.w / 2, box.x + 16, box.x + box.w - 16)
 	r := Rect{x - WIRE / 2, stone.y + stone.h - 2, WIRE, box.y - stone.y - stone.h + 4}
 	if r.h <= 0 do return
-	ui_quad(ui, r, {0, 0}, {1, 1}, color_alpha(GOLD, 0.5), WHITE_TEX, 2, .Wire, 0)
+	// One past the last segment of the path, so the pulse carries on down
+	// into the answer in step with the run it came off rather than restarting.
+	ui_quad(ui, r, {0, 0}, {1, 1}, color_alpha(GOLD, 0.5), WHITE_TEX, 2, .Wire, wire_param(len(app.snake), false))
 }
 
 @(private = "file")
@@ -326,7 +338,7 @@ draw_pipes :: proc(app: ^App, top: f32, view: Rect) {
 				WHITE_TEX,
 				2,
 				.Wire,
-				f32(i) + (back ? 10 : 0),
+				wire_param(i, back),
 			)
 			continue
 		}
@@ -342,9 +354,21 @@ draw_pipes :: proc(app: ^App, top: f32, view: Rect) {
 			WHITE_TEX,
 			2,
 			.Wire,
-			f32(i),
+			wire_param(i, false),
 		)
 	}
+}
+
+// Where a length of pipe sits in the run, and which way that run is read, in
+// the one float a quad gets. The sign is the direction and the magnitude is
+// the position, offset by one so that segment nought still has a sign.
+//
+// They used to be one positive number with 10 added to mean right-to-left,
+// and the eleventh segment of any path is 10: from the eleventh stone on,
+// every forward run and every drop between rows ran its pulse backwards.
+wire_param :: proc(at: int, back: bool) -> f32 {
+	p := f32(at) + 1
+	return back ? -p : p
 }
 
 // One stone. Returns whether it is the one that is open — under the pointer,
@@ -365,19 +389,24 @@ draw_tile :: proc(app: ^App, t: Tile, r: Rect) -> bool {
 	// number each, so a tile that arrives while another is up leaves it alone.
 	born := ui_anim(ui, id + 1, 1, 9)
 	pop := ui_anim(ui, id + 2, open ? 1 : 0, 20)
-	// A subagent's own work is the same stone one step in, so a nested run
-	// reads as nested without a second layout to place it.
-	scale := (0.86 + 0.14 * born + 0.09 * pop) * (t.depth > 0 ? 0.76 : 1)
-	cx, cy := r.x + r.w / 2, r.y + r.h / 2
-	rr := Rect{cx - r.w * scale / 2, cy - r.h * scale / 2, r.w * scale, r.h * scale}
-
+	// A stone that is working breathes, and the sheen the shader crosses a
+	// lit tile with crosses this one too — the halo alone was a stone a
+	// shade warmer than its neighbours, which is not something you notice
+	// unless you already know which one to look at.
 	live := t.live ? 0.5 + 0.5 * math.sin(ui.time * 4.5) : 0
 	if t.live do ui.time_effects = true
+	lift := max(pop, live * 0.6)
+
+	// A subagent's own work is the same stone one step in, so a nested run
+	// reads as nested without a second layout to place it.
+	scale := (0.86 + 0.14 * born + 0.09 * pop + 0.05 * live) * (t.depth > 0 ? 0.76 : 1)
+	cx, cy := r.x + r.w / 2, r.y + r.h / 2
+	rr := Rect{cx - r.w * scale / 2, cy - r.h * scale / 2, r.w * scale, r.h * scale}
 
 	// A halo, only while it is up: the glow is static in the shader, so
 	// leaving one behind costs nothing to hold on screen but says the wrong
 	// thing about a stone nobody is looking at.
-	if pop > 0.01 || live > 0 {
+	if lift > 0.01 {
 		lit := max(pop, live * 0.7)
 		g := f32(24) * lit
 		ui_quad(
@@ -396,7 +425,7 @@ draw_tile :: proc(app: ^App, t: Tile, r: Rect) -> bool {
 		// The picture is the stone. Hovering it gives the picture, which is
 		// the whole reason a screenshot in a thread is worth keeping.
 		ui_image(ui, rr, b.image.tex, TILE_ROUND)
-		ui_quad(ui, rr, {0, 0}, {1, 1}, color_alpha(t.col, 0.1 + 0.45 * pop), WHITE_TEX, TILE_ROUND, .Pop, pop)
+		ui_quad(ui, rr, {0, 0}, {1, 1}, color_alpha(t.col, 0.1 + 0.45 * pop), WHITE_TEX, TILE_ROUND, .Pop, lift)
 		ui_hover_text(ui, rr, t.name)
 		return open
 	}
@@ -404,7 +433,7 @@ draw_tile :: proc(app: ^App, t: Tile, r: Rect) -> bool {
 	base := color_mix(PANEL, t.col, 0.16 + 0.2 * pop + 0.12 * live)
 	if t.answer do base = color_mix(PANEL, GOLD, 0.3 + 0.25 * pop)
 	if t.user do base = color_mix(USER_BG, ACCENT, 0.14 + 0.24 * pop)
-	ui_quad(ui, rr, {0, 0}, {1, 1}, color_alpha(base, born), WHITE_TEX, TILE_ROUND, .Pop, pop)
+	ui_quad(ui, rr, {0, 0}, {1, 1}, color_alpha(base, born), WHITE_TEX, TILE_ROUND, .Pop, lift)
 	draw_icon(ui, t.icon, rr, color_alpha(t.col, (0.85 + 0.15 * pop) * born), base)
 	// Pressed open stays open: a dot in the corner says which ones you left
 	// that way, because otherwise a panel with no pointer near it looks stuck.

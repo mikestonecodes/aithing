@@ -93,12 +93,17 @@ void main() {
 		}
 	} else if (v_effect == EFFECT_WIRE) {
 		// The thread the tiles hang off. A pulse runs along it in the
-		// direction the row is read — v_param is where in the run this
-		// segment sits, and 10 added to it means the row reads right to left,
-		// so the light travels the way the eye does rather than always
-		// rightwards down a snake that turns back on itself.
-		bool back = v_param >= 10.0;
-		float phase = back ? v_param - 10.0 : v_param;
+		// direction the row is read — v_param says where in the run this
+		// segment sits, and its sign says which way that run is read, so the
+		// light travels the way the eye does rather than always rightwards
+		// down a snake that turns back on itself.
+		//
+		// The two used to be packed into one positive number, 10 added to it
+		// meaning right to left. The eleventh segment of any path is 10, so
+		// from the eleventh stone on every forward run and every drop between
+		// rows animated backwards — which is most of a real turn.
+		bool back = v_param < 0.0;
+		float phase = abs(v_param) - 1.0;
 		// Whichever way the segment is long is the way the pulse travels.
 		float along = v_rect.z >= v_rect.w ? p.x : p.y;
 		if (back) along = -along;

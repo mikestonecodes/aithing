@@ -1046,9 +1046,15 @@ app_apply :: proc(app: ^App, at: int, e: ^Event) {
 		if e.parent == "" do app.cur_msg = chat_append(c, .Assistant)
 
 	case .Block_Start:
+		// Every block starts running, whatever it is. It stops when it stops
+		// being written — Block_Stop for anything the model is typing, the
+		// result coming back for a tool, which is what a tool is still doing
+		// after its call is whole. Only tools used to be marked, so while the
+		// model was thinking or writing its answer the path stood perfectly
+		// still and nothing on screen said the turn was alive.
 		block := Block {
 			kind    = e.block_kind,
-			running = e.block_kind == .Tool,
+			running = true,
 		}
 		if e.block_kind == .Tool {
 			block.name = strings.clone(e.name)
