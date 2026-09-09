@@ -93,6 +93,25 @@ turn_for_todo :: proc(app: ^App, id: string) -> int {
 	return -1
 }
 
+// The turn behind what a card says it is doing, or -1. A card is running
+// because a turn is on the card *or* because one is working in the card's own
+// thread — a follow-up typed into the composer, a resolve — and until this
+// existed only the first half of that was asked in most places. The word on
+// the card asked both, so the card said `processing`; the mark beside the word
+// asked only `turn_for_todo`, so there was nothing turning next to it, and Esc
+// on that card stopped nothing.
+//
+// The thread's turn has to be a running one, not the first slot naming the
+// thread: a turn that has settled and not yet been reaped still names it for a
+// frame, and that slot would have answered for a card with nothing left in
+// flight.
+turn_for_card :: proc(app: ^App, td: Todo) -> int {
+	if at := turn_for_todo(app, td.id); at >= 0 do return at
+	if td.session == "" do return -1
+	for t, i in app.turns do if t.live && t.session == td.session && runner_busy(&t.runner) do return i
+	return -1
+}
+
 // The turn drawing into the transcript on screen, or -1.
 turn_chat :: proc(app: ^App) -> int {
 	for t, i in app.turns do if t.live && t.chat do return i

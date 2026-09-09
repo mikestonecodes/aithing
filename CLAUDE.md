@@ -104,8 +104,34 @@ Rebuilding while the app is running is safe — the linker unlinks the output
 first — but the running process keeps the old inode, so say that it needs a
 restart.
 
+All four are about getting written work in front of the user, so a card that
+wrote none has none of them to do. A card that only asked something, or only
+answered a question about the code, has nothing to merge, nothing to push and
+nothing to rebuild — and must not report that it did. Say what you found and
+end with `done`. The four steps read as a checklist that always applies, and a
+card that ran them on an empty tree once reported a merge, a push and a
+rebuild of a commit that did not exist, which is the one thing worse than
+forgetting the last step: the user believed it.
+
 ## Comments
 
 Comments here say *why*, in prose, and usually name what the code used to do
 and what went wrong with it. Match that. A comment restating the line below it
 is noise; a comment explaining the bug that shaped the line is the point.
+
+Which rules out three shapes that keep turning up, all of them a card talking
+about itself instead of about the code:
+
+- **The diff narrated.** `// now uses X instead of Y`, `// changed to handle
+  the empty case`, `// added in the fold pass`. A month later there is no
+  diff to be the other half of this, only a sentence about a version of the
+  file nobody can read. Say what the code does wrong without the guard, and
+  the reason survives on its own.
+- **The banner.** `// ---- layout ----`, `// helpers`, a header restating the
+  proc name above the proc. The name is already there.
+- **The section that says what the block below does.** If a block needs
+  announcing it wants a name, so pull it out into a proc; if it does not, the
+  announcement is a line of upkeep that will drift.
+
+A file that gains no comment in a card is a normal outcome. Comment count is
+not a measure of care taken.
