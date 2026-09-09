@@ -766,9 +766,21 @@ ui_begin_scroll :: proc(ui: ^UI, r: Rect, s: ^Scroll, content_height: f32, also 
 	// does.
 	if ui.pressed && hovered do s.vel, s.gliding = 0, false
 
+	// How far a gesture carries is measured against what is on screen and not
+	// against the wheel alone. A flat 280 pixels a click is a step down a
+	// grid and two thirds of a stone's peek, which is 470 pixels at its
+	// tallest — one notch and the panel had thrown most of itself past the
+	// top, and a flick on the pad ran it end to end before the fingers were
+	// off. So a notch moves at most a fifth of the view and a glide is left
+	// with at most a screenful and a half of reach in it, which keeps the old
+	// step on anything a tall window's worth high and slows the short panels
+	// that the complaint was about.
+	notch := min(f32(28), r.h / 50)
+	reach := max(r.h, 1) * 1.5
+
 	if hovered && ui.scroll != 0 {
-		// One wheel notch arrives as ~10 units; this lands it near three rows.
-		s.target -= ui.scroll * 28
+		// One wheel notch arrives as ~10 units.
+		s.target -= ui.scroll * notch
 		s.vel, s.gliding = 0, false
 	}
 	if hovered && ui.scroll_px != 0 {
@@ -782,6 +794,8 @@ ui_begin_scroll :: proc(ui: ^UI, r: Rect, s: ^Scroll, content_height: f32, also 
 		s.vel = s.vel * 0.7 + inst * 0.3
 		s.gliding = false
 	} else if hovered && ui.scroll_end {
+		// A glide travels its speed over the friction before it dies out.
+		s.vel = clamp(s.vel, -reach * SCROLL_FRICTION, reach * SCROLL_FRICTION)
 		s.gliding = abs(s.vel) > SCROLL_STOP
 	} else if s.gliding {
 		s.vel *= math.exp(-SCROLL_FRICTION * ui.dt)
