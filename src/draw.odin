@@ -612,6 +612,7 @@ draw_composer :: proc(app: ^App, r: Rect) {
 	// on the grid, where cards actually run, it was never drawn at all.
 	chip_y := box.y + box.h - COMPOSER_CHIPS / 2 - 8
 	draw_chips(app, box, chip_y)
+	draw_context(app, box, chip_y)
 
 	// Last, so it is over the box rather than under it.
 	grow := ui_spring(ui, ui_id("composer-peek"), peek_at >= 0 ? 1 : 0, 320, 18)
@@ -664,6 +665,54 @@ draw_image_peek :: proc(app: ^App, thumb: Rect, a: Attachment, grow: f32) {
 	// behind the picture is the desktop, not the transcript it is covering.
 	ui_punch(ui, {box.x - 7, box.y - 7, box.w + 14, box.h + 14}, COMPOSER_BG, 12)
 	ui_image(ui, box, a.tex, 8)
+}
+
+// How much context the thread on screen is carrying, in the empty left half
+// of the chip band. The question it answers is "why is this costing what it
+// is costing", and it was unanswerable from inside this window: the prompt
+// this program adds to a card is one short paragraph, and every turn opens on
+// twenty thousand tokens of the harness's own — its system prompt, its tools,
+// the project's CLAUDE.md, the skills it lists. A figure counted here would
+// have said a few hundred and been wrong about all of it, so the figure is
+// the harness's: what it says it handed the model on the last message it
+// started. See turns.odin.
+//
+// It is only there while a turn is, because that is the only time anybody has
+// said. A thread sitting still has not been measured, and a number left over
+// from the last turn is a measurement of a thread that has since been added
+// to.
+@(private = "file")
+draw_context :: proc(app: ^App, box: Rect, y: f32) {
+	ui := &app.ui
+	at := turn_here(app)
+	if at < 0 || app.turns[at].tokens <= 0 do return
+	n := app.turns[at].tokens
+	label := fmt.tprintf("%s context", tokens_say(n))
+	// It fades in rather than appearing: the first message of a turn lands a
+	// second or two after Enter, and a word switching on beside the chips
+	// reads as something having gone wrong.
+	tid := ui_id("context-in", at)
+	in_ := ui_anim(ui, tid, 1, 9)
+	r := Rect{box.x + COMPOSER_SIDE, y - 5, font_width(&ui.regular, label, 13) + 8, 26}
+	// The chips have the band by right — they are the two controls, this is a
+	// readout — so in a window too narrow for both it is the readout that goes.
+	// draw_chips wrote where the leftmost one ended up this frame, which is
+	// why this is drawn after it and not beside it.
+	if r.x + r.w > app.model_chip.x - 10 do return
+	ui_text(ui, &ui.regular, label, {r.x, y + 1}, 13, color_alpha(FAINT, clamp(in_, 0, 1)))
+	// Rounded on screen, exact under the pointer: "24k" is the size and the
+	// figure is what you take to `/context` in the harness and compare.
+	ui_hover_text(ui, r, fmt.tprintf("%d tokens handed to the model on the last message", n))
+}
+
+// A token count as a person reads it. Thousands, because the numbers this
+// deals in start at twenty thousand and nobody is counting the last three
+// digits of that; one decimal below ten thousand, where the difference
+// between 3.2k and 3.9k is the whole of what is being asked.
+tokens_say :: proc(n: int) -> string {
+	if n < 1000 do return fmt.tprintf("%d", n)
+	if n < 10000 do return fmt.tprintf("%.1fk", f32(n) / 1000)
+	return fmt.tprintf("%dk", (n + 500) / 1000)
 }
 
 // What the window has to say for itself, in the same corner on every page:

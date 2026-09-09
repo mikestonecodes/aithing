@@ -1075,6 +1075,50 @@ a_later_message_takes_the_claim_back :: proc(t: ^testing.T) {
 	testing.expect_value(t, app.todos.list[0].state, Todo_State.Asked)
 }
 
+// How big the context is, off the harness rather than off anything counted
+// here. The window's own addition to a card's prompt is one paragraph; the
+// twenty thousand tokens a turn opens on are the harness's system prompt, its
+// tools and the project's CLAUDE.md, and none of that is visible from inside
+// this program. So the figure is the one the stream reports, and a subagent's
+// is not the thread's: a Task that reads half the repo runs on a context of
+// its own and used to be the only thing anyone would have seen.
+@(test)
+a_turn_carries_the_context_the_harness_reported :: proc(t: ^testing.T) {
+	scratch_dir(t)
+	app := scratch_app()
+	defer scratch_free(app)
+	app.cwd = strings.clone("/tmp")
+
+	editor_set_text(&app.capture, "bake the atlas")
+	app_capture(app)
+
+	first := Event{kind = .Msg_Start, tokens = 23592}
+	defer event_destroy(&first)
+	app_apply_event_for_test(app, 0, &first)
+	testing.expect_value(t, app.turns[0].tokens, 23592)
+
+	sub := Event{kind = .Msg_Start, tokens = 140000, parent = strings.clone("toolu_1")}
+	defer event_destroy(&sub)
+	app_apply_event_for_test(app, 0, &sub)
+	testing.expect_value(t, app.turns[0].tokens, 23592)
+
+	// And a record with no usage on it leaves the last reading standing: it
+	// is not a message that was sent on an empty context.
+	bare := Event{kind = .Msg_Start}
+	defer event_destroy(&bare)
+	app_apply_event_for_test(app, 0, &bare)
+	testing.expect_value(t, app.turns[0].tokens, 23592)
+}
+
+// How a token count reads. Thousands, because these numbers start at twenty
+// thousand and the last three digits of that are noise.
+@(test)
+a_token_count_reads_in_thousands :: proc(t: ^testing.T) {
+	testing.expect_value(t, tokens_say(940), "940")
+	testing.expect_value(t, tokens_say(3715), "3.7k")
+	testing.expect_value(t, tokens_say(23592), "24k")
+}
+
 // A card you asked for never reads as one you have not. `waiting` is the word
 // for a card nothing has started, and a turn that went away without ever
 // saying Done or Failed used to be put back to it — so the grid showed a card

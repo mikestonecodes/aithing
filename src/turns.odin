@@ -46,6 +46,16 @@ Turn :: struct {
 	// stream as it goes past — and the cards are where it is read.
 	tool:    string,
 	arg:     string,
+	// How much context the turn is carrying: what the harness said it handed
+	// the model on the last message it started. Off the stream, not counted
+	// here — the prompt this window sends is a few hundred words and the
+	// twenty thousand tokens around it are the harness's own, so a figure
+	// worked out from what we sent would be wrong by two orders of magnitude
+	// and confidently so. It lives on the turn and nowhere else: a thread
+	// with nothing running has not told anybody how big it is, and a number
+	// kept past the process that read it would be a guess wearing a
+	// measurement's clothes.
+	tokens:  int,
 	// The last thing the agent said about its own work, and the last thing it
 	// said at all. A turn ending is not the work being finished — see
 	// verdict.odin — and this is the only thing that knows the difference.
@@ -89,6 +99,17 @@ turn_chat :: proc(app: ^App) -> int {
 	return -1
 }
 
+// Whatever turn is working in the thread on screen, or -1. Not the same
+// question as turn_chat: a card's turn is headless and never sets `chat`, and
+// clicking the card opens its thread — so the thread you are reading has a
+// process behind it that never asked for the transcript. The named thread
+// answers first because a turn typed into the composer is still `chat` after
+// the harness has named its session, and a card's turn is not.
+turn_here :: proc(app: ^App) -> int {
+	if at := turn_for_session(app, app.chat.session_id); at >= 0 do return at
+	return turn_chat(app)
+}
+
 app_turns_live :: proc(app: ^App) -> int {
 	n := 0
 	for t in app.turns do if t.live do n += 1
@@ -124,6 +145,10 @@ app_chat_busy :: proc(app: ^App) -> bool {
 turn_note :: proc(t: ^Turn, e: ^Event) {
 	#partial switch e.kind {
 	case .Msg_Start:
+		// How big the request was. Only the agent's own messages: a subagent
+		// runs on a context of its own, and a Task reading half the repo
+		// would otherwise be reported as the thread's size.
+		if e.parent == "" && e.tokens > 0 do t.tokens = e.tokens
 		// Back to writing: whatever it was running has come back.
 		turn_set_tool(t, "", "")
 		// And whatever it last claimed about the work is about the message

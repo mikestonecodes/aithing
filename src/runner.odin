@@ -36,6 +36,9 @@ Event :: struct {
 	verdict:    Verdict,
 	limits:     Limits,
 	index:      int,
+	// How big the request behind this message was, on `Msg_Start`: everything
+	// the model was handed, the cached part included. See turns.odin.
+	tokens:     int,
 	text:       string, // owned by the event; the UI frees it after applying
 	name:       string,
 	id:         string,
@@ -362,7 +365,14 @@ runner_line :: proc(r: ^Runner, line: string) {
 		index := jint(ev, "index")
 		switch jstr(ev, "type") {
 		case "message_start":
-			runner_emit(r, Event{kind = .Msg_Start, parent = strings.clone(parent)})
+			// The size of the context, off the harness's own reckoning rather
+			// than anything counted here. It is on the first record of every
+			// message and it is the whole of what was sent: the fresh part,
+			// the part written into the cache and the part read back out of
+			// it. Read as one number because it is one question — how much
+			// the model was given — and splitting it into cached and not is
+			// a question about the bill, which this window does not answer.
+			runner_emit(r, Event{kind = .Msg_Start, tokens = msg_tokens(ev), parent = strings.clone(parent)})
 		case "content_block_start":
 			cb, ok := jobj(ev, "content_block")
 			if !ok do return
@@ -497,6 +507,18 @@ runner_line :: proc(r: ^Runner, line: string) {
 		r.result = strings.clone(sub == "success" ? "" : sub)
 		sync.mutex_unlock(&r.mu)
 	}
+}
+
+// What the model was handed for one message, off the `usage` on its
+// `message_start`. Zero when the record carries no usage at all, which reads
+// on screen as nothing rather than as an empty context.
+@(private = "file")
+msg_tokens :: proc(ev: json.Value) -> int {
+	msg, has := jobj(ev, "message")
+	if !has do return 0
+	u, has_usage := jobj(msg, "usage")
+	if !has_usage do return 0
+	return jint(u, "input_tokens") + jint(u, "cache_creation_input_tokens") + jint(u, "cache_read_input_tokens")
 }
 
 // A number that may have come back as either shape, as a float. The
