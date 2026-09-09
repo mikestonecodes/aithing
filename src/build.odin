@@ -115,7 +115,6 @@ build_start :: proc(app: ^App, project: string) {
 	g_build.running = true
 	g_build.ready = false
 	sync.mutex_unlock(&g_build.mu)
-	app_status(app, "building...")
 
 	g_build.worker = thread.create_and_start_with_poly_data(
 		strings.clone(g_build.repo),
@@ -154,10 +153,13 @@ build_start :: proc(app: ^App, project: string) {
 	)
 }
 
-// Called once a frame. Both endings are said out loud, which they were not
-// when a build that worked was immediately followed by the window replacing
-// itself: that was the announcement. Now nothing visible happens when a build
-// succeeds unless this says so.
+// Called once a frame. Only a failure is said out loud. The two lines this
+// used to print — "building..." on the way in and "built — restart to pick it
+// up" on the way out — were a running commentary on something nobody asked
+// for: the build starts on its own when a card lands, and a build that worked
+// changes nothing you can see until the next launch anyway, so the status
+// corner sat there reporting the weather. A failure is different: it is the
+// one ending that needs somebody to go and read the log.
 build_poll :: proc(app: ^App) -> bool {
 	build_reap()
 	sync.mutex_lock(&g_build.mu)
@@ -168,7 +170,7 @@ build_poll :: proc(app: ^App) -> bool {
 	// Only a build that worked counts: one that failed has to be tried again
 	// on the next landing, even if nothing changed in between.
 	if ok do g_build.built = g_build.pending
-	app_status(app, ok ? "built — restart to pick it up" : "build failed; see last-build.log")
+	if !ok do app_status(app, "build failed; see last-build.log")
 	return true
 }
 
