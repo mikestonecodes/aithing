@@ -30,6 +30,7 @@ layout(location = 0) out vec4 out_col;
 #define EFFECT_PUNCH    5u // replaces what is under it, alpha and all
 #define EFFECT_POP      6u // a transcript tile: inner light and a hover rim
 #define EFFECT_WIRE     7u // the thread between tiles, with a pulse on it
+#define EFFECT_DIAL     8u // a ring with a slice of it filled: see ui_dial
 
 // The distance a multi-channel field encodes is the median of its three
 // channels — the channels disagree exactly at a corner, and taking the middle
@@ -111,6 +112,41 @@ void main() {
 		float head = fract(pc.time * 0.22 - phase * 0.08);
 		float d = abs(fract(u - head + 0.5) - 0.5);
 		c.a *= 0.5 + 1.6 * exp(-pow(d * 9.0, 2.0));
+	} else if (v_effect == EFFECT_DIAL) {
+		// One allowance, as the slice of a ring that is gone. The quad is the
+		// circle's bounding box, so p is already the unit disc; v_uv.x is how
+		// thick the ring is as a fraction of its radius and v_param is how far
+		// round it goes, 0..1 clockwise from twelve o'clock.
+		//
+		// It is one quad rather than a fan of triangles because a fan wide
+		// enough to look round at 116 pixels is forty vertices per ring and
+		// three rings a frame, and because the cap at each end wants to be a
+		// half-circle, which a fan gives you as a flat chord.
+		float ht = v_uv.x * 0.5;   // half the ring's thickness
+		float rm = 1.0 - ht;       // the radius the ring is centred on
+		float turn = atan(p.x, -p.y) / 6.28318531;
+		if (turn < 0.0) turn += 1.0;
+		float d;
+		if (turn <= v_param || v_param >= 1.0) {
+			d = abs(length(p) - rm) - ht;
+		} else {
+			// Past the end of the slice the shape is whichever cap is nearer,
+			// which rounds both ends for free and keeps a slice of nothing
+			// from vanishing: at 0% the two caps sit on each other and leave
+			// a bead at twelve o'clock, which is what "none of it yet" looks
+			// like on a dial.
+			float th = v_param * 6.28318531;
+			d = min(length(p - vec2(0.0, -rm)), length(p - vec2(sin(th), -cos(th)) * rm)) - ht;
+		}
+		// The quad is square, so either half extent is the pixel size. v_uv.y
+		// widens the edge from that one pixel out to a fade, which is the
+		// difference between an arc and the light coming off one: the halo is
+		// the same slice drawn fatter, and drawn hard it read as a second arc
+		// with a dark seam down the middle of it.
+		float px = 1.0 / max(v_rect.z, 1.0);
+		float edge = max(v_uv.y, px);
+		float cover = 1.0 - smoothstep(-edge, edge, d);
+		c.a *= v_uv.y > 0.0 ? cover * cover : cover;
 	} else if (v_effect == EFFECT_RING) {
 		// Thin annulus at the quad's edge, fading as it expands.
 		float d = length(p);

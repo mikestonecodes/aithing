@@ -191,6 +191,30 @@ the_corner_never_stands_on_the_chips :: proc(t: ^testing.T) {
 	}
 }
 
+// The panel is one of two shapes and there is nothing in between: the full
+// corner, dial and names, or a square with just the dial in it. A width in
+// between is a panel with a small dial floating in the middle of a lot of
+// nothing, which is what it was while the names were dropped on their own room
+// running out and the panel kept whatever width it had been squeezed to.
+@(test)
+the_corner_is_the_dial_or_the_dial_and_its_names :: proc(t: ^testing.T) {
+	for w := f32(600); w <= 2400; w += 7 {
+		full := Rect{0, 0, w, 800}
+		bw := min(w - 16 * 2, 880)
+		box := Rect{(w - bw) / 2, 700, bw, 84}
+		corner := usage_rect(full, box)
+		testing.expectf(t, corner.w >= USAGE_MIN, "at %v wide the corner is %v, under its own dial", w, corner.w)
+		if corner.w == USAGE_MIN {
+			testing.expectf(t, corner.h == corner.w, "the dial on its own is %v by %v", corner.w, corner.h)
+		} else {
+			testing.expectf(t, corner.h == USAGE_H, "a corner with names in it is %v tall", corner.h)
+		}
+		// Whichever shape it is, its bottom right corner is the window's.
+		testing.expect_value(t, corner.x + corner.w, full.w - PAD)
+		testing.expect_value(t, corner.y + corner.h, full.h - PAD)
+	}
+}
+
 // How far along the green-to-warning run a colour has got, 0 at GREEN and 1 at
 // ACCENT. Read off the one channel the two differ in most, which is enough to
 // say whether a figure looks green or looks gold.
@@ -203,8 +227,8 @@ toward_warning :: proc(c: Color) -> f32 {
 
 // A window with four fifths of it left is not a warning. The ramp used to run
 // straight from nothing to half, so 18% of the week gone came out a third of
-// the way to the warning colour — visibly gold beside the green figures either
-// side of it, for a window nobody needed to think about.
+// the way to the warning colour — a gold ring and a gold figure beside two
+// green ones, for a window nobody needed to think about.
 @(test)
 a_barely_used_window_reads_green :: proc(t: ^testing.T) {
 	testing.expectf(
