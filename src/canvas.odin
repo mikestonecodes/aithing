@@ -235,8 +235,17 @@ draw_card :: proc(app: ^App, card: Card, r: Rect) {
 	stamp := ""
 	stamp_buf: [16]u8
 	if td.session != "" do stamp = relative_time(td.at, stamp_buf[:])
-	corner := font_width(&ui.regular, stamp, 12)
-	if stamp != "" do ui_text(ui, &ui.regular, stamp, {r.x + r.w - pad - corner, ty + 1}, 12, FAINT)
+	// The x lands in the same corner, and the two were drawn over each other:
+	// a cross with `34m` printed through it. The stamp is the thing you can
+	// do without while your hand is on the card, so it stands down and the
+	// cross takes its place. The room kept for it does not change with the
+	// hover — text that reflowed as the pointer crossed the card was the
+	// first try at this — and is never less than the cross needs.
+	corner := math.max(font_width(&ui.regular, stamp, 12), f32(28))
+	if stamp != "" && !hovered {
+		w := font_width(&ui.regular, stamp, 12)
+		ui_text(ui, &ui.regular, stamp, {r.x + r.w - pad - w, ty + 1}, 12, FAINT)
+	}
 
 	// The item itself, which is the whole point of the card — and what a copy
 	// with nothing selected takes, because a card is not something that can be
