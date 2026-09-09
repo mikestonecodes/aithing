@@ -500,8 +500,10 @@ draw_card :: proc(app: ^App, card: Card, base: Rect) {
 		side := min(base.y + base.h - pad - 20 - 8 - rest_top, f32(38))
 		if side >= 20 {
 			ix := tx
+			rest_x := base.x + pad
 			for a in imgs {
-				if ix + side > base.x + base.w - pad do break
+				if rest_x + side > base.x + base.w - pad do break
+				rest_x += side + 6
 				ui_image_cover(ui, {ix, ty + 2, side, side}, a.tex, a.width, a.height, 5)
 				ix += side + 6
 			}
