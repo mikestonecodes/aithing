@@ -180,3 +180,21 @@ i_enters_the_selected_cards_project :: proc(t: ^testing.T) {
 	testing.expect(t, !app.on_cards)
 	testing.expect_value(t, app_focus(app), Focus.Capture)
 }
+
+// Picking a project out of the launcher drops you straight into its box. `/`
+// is reached from the cards, which leaves on_cards set, and the narrowed grid
+// used to come up in card mode: the first thing typed after searching walked
+// the grid instead of landing in the box.
+@(test)
+the_launcher_lands_the_caret_in_the_box :: proc(t: ^testing.T) {
+	app := seven_cards()
+	defer drop_app(app)
+
+	app.on_cards = true
+	testing.expect(t, grid_command(app, '/'))
+	testing.expect_value(t, app.overlay, Overlay.Launcher)
+	launcher_take(app, Hit{session = -1, cwd = "/tmp/proj"})
+	testing.expect_value(t, app.canvas.project, "/tmp/proj")
+	testing.expect(t, !app.on_cards)
+	testing.expect_value(t, app_focus(app), Focus.Capture)
+}

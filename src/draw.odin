@@ -458,6 +458,12 @@ launcher_take :: proc(app: ^App, hit: Hit) {
 		canvas_filter_project(app, hit.cwd)
 		app.overlay = .None
 		editor_clear(&app.search)
+		// Straight into the box. Searching is typing, and the mode you were
+		// in before you opened the menu is not an answer to what you meant by
+		// the row you just picked: `/` from the cards left on_cards set, so
+		// the grid you asked for came up with the caret out of the box and
+		// the next thing typed walked the cards instead of being written down.
+		app.on_cards = false
 		return
 	}
 	canvas_open(app, app.sessions[hit.session].id)
