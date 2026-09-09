@@ -489,12 +489,19 @@ draw_card :: proc(app: ^App, card: Card, base: Rect) {
 	// the pill: a card whose path had been taken out of its text otherwise
 	// gave no sign it was carrying a screenshot at all.
 	pill_top := r.y + r.h - pad - 20
+	// Whether there is room for them is asked of `base`, the cell the card
+	// rests in, and not of `r`, which is swelling on the hover springs. Asked
+	// of `r`, a card with words nearly down to the pill had no room at rest
+	// and room a moment later, so the picture popped into the middle of the
+	// wobble and left again when it settled. The card grows around it either
+	// way; what is drawn does not change halfway through.
 	if imgs := text_images(app, td.text); len(imgs) > 0 {
-		side := min(pill_top - 8 - ty, f32(38))
+		rest_top := base.y + pad + (ty - (r.y + pad))
+		side := min(base.y + base.h - pad - 20 - 8 - rest_top, f32(38))
 		if side >= 20 {
 			ix := tx
 			for a in imgs {
-				if ix + side > r.x + r.w - pad do break
+				if ix + side > base.x + base.w - pad do break
 				ui_image_cover(ui, {ix, ty + 2, side, side}, a.tex, a.width, a.height, 5)
 				ix += side + 6
 			}
