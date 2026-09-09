@@ -122,8 +122,15 @@ void main() {
 		// enough to look round at 116 pixels is forty vertices per ring and
 		// three rings a frame, and because the cap at each end wants to be a
 		// half-circle, which a fan gives you as a flat chord.
-		float ht = v_uv.x * 0.5;   // half the ring's thickness
-		float rm = 1.0 - ht;       // the radius the ring is centred on
+		// The quad is the circle's box plus room for the fade to land in, so
+		// the disc's outer edge sits short of the quad by exactly the fade:
+		// see ui_dial, which pads the quad and hands both numbers over as
+		// fractions of the padded half extent. Drawn without that room the
+		// fade ran into the quad's own edge and a ripple came out as a square
+		// with a bright disc in it.
+		float ht = v_uv.x * 0.5;        // half the ring's thickness
+		float outer = 1.0 - v_uv.y;     // where the circle ends inside the quad
+		float rm = outer - ht;          // the radius the ring is centred on
 		float turn = atan(p.x, -p.y) / 6.28318531;
 		if (turn < 0.0) turn += 1.0;
 		float d;

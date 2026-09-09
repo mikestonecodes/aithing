@@ -528,12 +528,21 @@ ui_circle :: proc(ui: ^UI, centre: [2]f32, radius: f32, col: Color) {
 // one pixel, which is how a slice is drawn as the light coming off itself.
 ui_dial :: proc(ui: ^UI, centre: [2]f32, radius, thickness, sweep: f32, col: Color, soft: f32 = 0) {
 	if radius <= 0 || thickness <= 0 do return
-	t := clamp(thickness / radius, 0, 1)
+	// The quad used to be the circle's bounding box exactly, which leaves the
+	// fade nowhere to go: it ran off the edge of the quad and stopped there,
+	// so a ripple — whose fade is nearly as wide as its radius — arrived as a
+	// bright disc inside a hard square. The box is grown by the fade instead,
+	// and both numbers go over as fractions of the grown half extent, which
+	// is what the shader reads them as.
+	s := clamp(soft, 0, 1)
+	half := radius * (1 + s)
+	t := clamp(thickness / half, 0, 1)
+	fade := s / (1 + s)
 	ui_quad(
 		ui,
-		{centre.x - radius, centre.y - radius, radius * 2, radius * 2},
-		{t, soft},
-		{t, soft},
+		{centre.x - half, centre.y - half, half * 2, half * 2},
+		{t, fade},
+		{t, fade},
 		col,
 		WHITE_TEX,
 		NO_ROUND,
