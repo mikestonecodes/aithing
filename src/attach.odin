@@ -271,9 +271,10 @@ text_without_images :: proc(text: string, allocator := context.temp_allocator) -
 block_picture :: proc(b: ^Block) -> string {
 	if b.kind == .Image do return b.image
 	if b.kind != .Tool do return ""
-	start, end, ok := image_word(b.arg, 0)
-	if !ok || start != 0 || end != len(b.arg) do return ""
-	return b.arg
+	arg := block_arg(b)
+	start, end, ok := image_word(arg, 0)
+	if !ok || start != 0 || end != len(arg) do return ""
+	return arg
 }
 
 // A person's turn as the transcript shows it: the pictures they named become

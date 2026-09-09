@@ -180,7 +180,9 @@ turn_note :: proc(t: ^Turn, e: ^Event) {
 		// is a second or two before anyone knows what they are.
 		if e.block_kind == .Tool do turn_set_tool(t, e.name, "")
 	case .Tool_Input:
-		turn_set_tool(t, e.name, e.text)
+		// The event carries the whole input now; a line under a card's title
+		// has room for one argument of it.
+		turn_set_tool(t, e.name, tool_arg(e.text, e.name))
 	}
 }
 

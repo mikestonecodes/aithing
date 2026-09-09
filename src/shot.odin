@@ -30,6 +30,8 @@ Scene :: enum {
 	Thread, // a card opened: transcript and composer over the grid
 	Opening, // that same card halfway there: the panel still growing out of it
 	Peek, // the same thread with the pointer resting on a tile of its path
+	Command, // the pointer on a shell stone: the command, and what it printed
+	Plan, // the pointer on a plan stone: its items, with their boxes
 	Picker, // the model picker, open off the composer's chip
 	Launcher, // the menu, with a query typed into it
 	Usage, // the pointer on the dial, so what each ring is is on screen
@@ -45,6 +47,8 @@ scene_names := [Scene]string {
 	.Thread   = "thread",
 	.Opening  = "opening",
 	.Peek     = "peek",
+	.Command  = "command",
+	.Plan     = "plan",
 	.Picker   = "picker",
 	.Launcher = "launcher",
 	.Usage    = "usage",
@@ -120,10 +124,13 @@ shot_run :: proc(path: string, scene: Scene, width, height: int) -> bool {
 
 	// Except where the picture is of what the pointer does: a stone on the
 	// path carries a mark and nothing else, and the panel that opens under it
-	// is where every word of the transcript now lives. The spot is a tool stone
-	// on the first row — the one with an argument and something back to show.
-	if scene == .Peek {
-		app.win.input.mouse = {349, 39}
+	// is where every word of the transcript now lives. Which stone, worked out
+	// from the path's own spacing rather than written down as a pixel — the
+	// spot used to be {349, 39}, which said nothing about which of the
+	// seventeen stones it was and would have to be found again by hand every
+	// time one was added to the scene.
+	if at := scene_stone(scene); at >= 0 {
+		app.win.input.mouse = {SNAKE_PAD + f32(at) * (TILE + TILE_GAP) + TILE / 2, PAD + TILE / 2}
 		app.win.input.has_mouse = true
 	}
 
@@ -335,7 +342,7 @@ shot_build :: proc(app: ^App, scene: Scene) {
 		app.canvas.project = PROJ
 		png := shot_png()
 		editor_set_text(&app.capture, fmt.tprintf("the ring is too pale here %s", png))
-	case .Thread, .Opening, .Peek, .Picker:
+	case .Thread, .Opening, .Peek, .Command, .Plan, .Picker:
 		app.canvas.project = PROJ
 		app.page = .Thread
 		shot_thread(app)
@@ -346,6 +353,23 @@ shot_build :: proc(app: ^App, scene: Scene) {
 		app.overlay = .Launcher
 		editor_set_text(&app.search, "grid")
 	}
+}
+
+// Which stone of the path a scene rests the pointer on, counting from the
+// start of the thread, and -1 for a scene that is not about a stone. They are
+// all on the first row: nineteen fit across a shot, and shot_thread is
+// seventeen stones long.
+@(private = "file")
+scene_stone :: proc(scene: Scene) -> int {
+	#partial switch scene {
+	case .Peek:
+		return 5 // the edit — a diff is what the panel is most for
+	case .Command:
+		return 4 // a shell command, and what it printed
+	case .Plan:
+		return 8 // a plan, with its boxes
+	}
+	return -1
 }
 
 // A picture to have pasted: a corner of a window with a ring in it, drawn
@@ -446,20 +470,20 @@ shot_thread :: proc(app: ^App) {
 	// and enough kinds of them, that the snake turns a row and every tile
 	// style is in the picture — including a tool nothing here has heard of,
 	// which gets the generic tile rather than being dropped off the path.
-	shot_tool(app, "Read", "src/canvas.odin", "126: canvas_layout :: proc(app: ^App) -> f32 {\n127:\tc := &app.canvas\n128:\tapp_filter(app)")
-	shot_tool(app, "Grep", "canvas_layout", "src/canvas.odin:126\nsrc/draw.odin:41\nsrc/app.odin:812")
-	shot_tool(app, "Bash", "odin test src -define:ODIN_TEST_FANCY=false", "grid, nothing typed: 0.380 ms\nmenu, searching: 0.678 ms\nAll tests were successful.")
-	shot_tool(app, "Edit", "src/grid_cost_test.odin", "applied")
-	shot_tool(app, "WebFetch", "https://odin-lang.org/docs/overview", "200 OK, 41kb")
-	shot_tool(app, "Agent", "measure the sweep at 1200 sessions", "the worktree cache was asked for once per session")
-	shot_tool(app, "ReportFindings", "one finding", "mkdir per session per call")
-	shot_tool(app, "Write", "src/grid_cost_test.odin", "wrote 118 lines")
-	shot_tool(app, "Read", "src/app.odin", "148: heights: [dynamic]f32,")
-	shot_tool(app, "Bash", "./build.sh", "built ./aithing")
-	shot_tool(app, "Glob", "src/*.odin", "36 files")
-	shot_tool(app, "Sparkle", "a tool this build has never heard of", "and it still gets a stone")
-	shot_tool(app, "Edit", "src/canvas.odin", "applied")
-	shot_tool(app, "Bash", "odin test src", "All tests were successful.")
+	shot_tool(app, "Read", `{"file_path": "src/canvas.odin", "offset": 120, "limit": 40}`, "   126→canvas_layout :: proc(app: ^App) -> f32 {\n   127→\tc := &app.canvas\n   128→\tapp_filter(app)\n   129→\tfor id, i in app.todo_view {\n   130→\t\tcanvas_place(app, id, i)\n   131→\t}")
+	shot_tool(app, "Grep", `{"pattern": "canvas_layout", "path": "src", "output_mode": "files_with_matches"}`, "src/canvas.odin:126\nsrc/draw.odin:41\nsrc/app.odin:812")
+	shot_tool(app, "Bash", `{"command": "odin test src -define:ODIN_TEST_FANCY=false", "description": "Run the suite with the new cost test in it"}`, "grid, nothing typed: 0.380 ms\nmenu, searching: 0.678 ms\n[204/204] the_grid_is_cheap_to_rebuild\nAll tests were successful.")
+	shot_tool(app, "Edit", `{"file_path": "src/canvas.odin", "old_string": "\tcols := max(1, int(width / TILE))\n\tfor i in 0 ..< len(app.snake) {\n\t\tt := &app.snake[i]\n\t\tt.r = {left + f32(i % cols) * TILE, f32(i / cols) * TILE, TILE, TILE}\n\t}\n", "new_string": "\tcols := max(1, int((width + TILE_GAP) / (TILE + TILE_GAP)))\n\tfor i in 0 ..< len(app.snake) {\n\t\tt := &app.snake[i]\n\t\trow := i / cols\n\t\tcol := i % cols\n\t\tif row % 2 == 1 do col = cols - 1 - col\n\t\tt.r = {left + f32(col) * (TILE + TILE_GAP), f32(row) * (TILE + TILE_ROW), TILE, TILE}\n\t}\n"}`, "The file src/canvas.odin has been updated.")
+	shot_tool(app, "WebFetch", `{"url": "https://odin-lang.org/docs/overview", "prompt": "how dynamic arrays are grown"}`, "A dynamic array grows by doubling; append is amortised constant time and the backing memory belongs to the array's allocator.")
+	shot_tool(app, "Task", `{"description": "measure the sweep", "prompt": "Measure the session sweep at 1200 sessions and say where the time goes. Do not change anything; report the numbers."}`, "The worktree cache was asked for once per session, which is a mkdir per session per call, and the search lowercased four fields of every session into fresh copies on top.")
+	shot_tool(app, "TodoWrite", `{"todos": [{"content": "measure the rebuild at 1200 sessions", "status": "completed"}, {"content": "pin the cost in a test", "status": "in_progress"}, {"content": "take the mkdir out of the sweep", "status": "pending"}, {"content": "stop lowercasing four fields a session", "status": "pending"}]}`, "Todos have been modified successfully.")
+	shot_tool(app, "Write", `{"file_path": "src/grid_cost_test.odin", "content": "package aithing\n\nimport \"core:testing\"\n\n// The number in CLAUDE.md is a test, not a claim.\n@(test)\nthe_grid_is_cheap_to_rebuild :: proc(t: ^testing.T) {\n\tlist := shot_sessions(1200)\n\tdefer delete(list)\n}\n"}`, "Wrote 118 lines to src/grid_cost_test.odin")
+	shot_tool(app, "Read", `{"file_path": "src/app.odin", "offset": 140, "limit": 12}`, "   148→\theights: [dynamic]f32,\n   149→\tchat_ver: int,")
+	shot_tool(app, "Bash", `{"command": "./build.sh", "description": "Rebuild the binary the user launches"}`, "built ./aithing")
+	shot_tool(app, "Glob", `{"pattern": "src/*.odin"}`, "src/app.odin\nsrc/canvas.odin\nsrc/peek.odin\nsrc/snake.odin\n36 files")
+	shot_tool(app, "Sparkle", `{"wish": "a tool this build has never heard of", "count": 3}`, "and it still gets a stone, and a panel that says what it was called with")
+	shot_tool(app, "Edit", `{"file_path": "src/sessions.odin", "old_string": "\tfor s in sessions {\n\t\tif worktree_of(s.cwd) == cwd do return s\n\t}\n", "new_string": "\tfor s in sessions {\n\t\tif s.cwd == cwd do return s\n\t}\n"}`, "The file src/sessions.odin has been updated.")
+	shot_tool(app, "Bash", `{"command": "odin test src", "description": "The suite, once more"}`, "All tests were successful.")
 	shot_err(app, "turn stopped: the harness closed the stream mid-answer")
 	shot_text(
 		app,
@@ -486,15 +510,16 @@ shot_err :: proc(app: ^App, text: string) {
 }
 
 @(private = "file")
-shot_tool :: proc(app: ^App, name, arg, result: string) {
+shot_tool :: proc(app: ^App, name, input, result: string) {
 	m := chat_append(&app.chat, .Assistant)
 	b := Block {
 		kind   = .Tool,
 		text   = strings.builder_make(),
 		name   = name,
-		arg    = arg,
+		input  = strings.builder_make(),
 		result = strings.builder_make(),
 	}
+	strings.write_string(&b.input, input)
 	strings.write_string(&b.result, result)
 	msg_append_block(&app.chat, m, b)
 }

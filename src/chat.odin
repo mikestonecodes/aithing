@@ -28,8 +28,14 @@ Block :: struct {
 	kind:      Block_Kind,
 	text:      strings.Builder, // grows as deltas arrive
 	name:      string, // tool name
-	arg:       string, // one-line summary of the tool input
-	arg_json:  strings.Builder, // partial input JSON, while streaming
+	// What the tool was called with, as the harness gave it: the whole input
+	// object, JSON and all. It used to be a one-line summary and nothing
+	// else, so a panel that wanted to show an edit as a diff had nothing to
+	// show — the strings had been thrown away at the door. The summary is
+	// worked out from this whenever something asks for it (block_arg) rather
+	// than kept beside it, because two of them is two things that can
+	// disagree about the same call.
+	input:     strings.Builder, // partial while streaming, whole once it parses
 	result:    strings.Builder,
 	tool_id:   string,
 	running:   bool,
@@ -144,10 +150,9 @@ chat_find_tool :: proc(c: ^Chat, id: string) -> Ref {
 
 block_destroy :: proc(b: ^Block) {
 	strings.builder_destroy(&b.text)
-	strings.builder_destroy(&b.arg_json)
+	strings.builder_destroy(&b.input)
 	strings.builder_destroy(&b.result)
 	delete(b.name)
-	delete(b.arg)
 	delete(b.tool_id)
 	delete(b.lines)
 	for &s in b.sub do block_destroy(&s)
@@ -195,10 +200,30 @@ jarr :: proc(v: json.Value, key: string) -> (json.Array, bool) {
 	return a, is_arr
 }
 
+// A tool call in one line: the argument worth printing beside the name.
+// Derived from the input every time it is asked for, so a call whose input is
+// still arriving says whatever the pieces so far amount to and never a stale
+// summary of them.
+block_arg :: proc(b: ^Block, allocator := context.temp_allocator) -> string {
+	return tool_arg(strings.to_string(b.input), b.name, allocator)
+}
+
+tool_arg :: proc(input, name: string, allocator := context.temp_allocator) -> string {
+	if strings.trim_space(input) == "" do return ""
+	// Half an object, because the model is still typing it: what there is of
+	// it, on one line. Whether it parses is what tells the two apart — the
+	// deltas are cut wherever the bytes happened to arrive.
+	v, err := json.parse_string(input, .JSON, false, context.temp_allocator)
+	if err != nil do return strings.clone(one_line(input, 200), allocator)
+	return tool_summary(name, v, allocator)
+}
+
 // A tool call's most interesting argument, for the one-line summary next to
 // the tool name: the command for Bash, the path for a file tool, and so on.
 tool_summary :: proc(name: string, input: json.Value, allocator := context.allocator) -> string {
-	for key in ([?]string{"command", "file_path", "path", "pattern", "prompt", "url", "query", "description", "skill"}) {
+	// The pattern before the path: a search says what it was looking for, and
+	// a grep given both used to be summarised as the directory it ran in.
+	for key in ([?]string{"command", "file_path", "pattern", "path", "prompt", "url", "query", "description", "skill"}) {
 		if s := jstr(input, key); s != "" {
 			line := s
 			if idx := strings.index_byte(line, '\n'); idx >= 0 do line = line[:idx]

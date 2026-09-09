@@ -619,12 +619,18 @@ load_assistant_message :: proc(
 			block = Block{kind = .Text}
 			strings.write_string(&block.text, t)
 		case "tool_use":
-			input, _ := jobj(item, "input")
+			input, has_input := jobj(item, "input")
 			block = Block {
 				kind    = .Tool,
 				name    = strings.clone(jstr(item, "name")),
 				tool_id = strings.clone(jstr(item, "id")),
-				arg     = tool_summary(jstr(item, "name"), input),
+			}
+			// Written back out as text, which is the shape the streaming path
+			// leaves it in: one thing for the panels to read, whether the
+			// turn happened a second ago or a year ago.
+			if has_input {
+				opt := json.Marshal_Options{}
+				_ = json.unparse_to_builder(&block.input, input, &opt)
 			}
 		case:
 			continue

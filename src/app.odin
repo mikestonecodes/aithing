@@ -183,6 +183,10 @@ App :: struct {
 	// at a time mid-stream, and every index in it a bounds trap the moment it
 	// did.
 	snake:     [dynamic]Tile,
+	// And the rows of whichever stone is open, on the same terms: peek_rows
+	// builds them from the block every time the panel is measured or drawn,
+	// so nothing here has to be told that a result grew a line.
+	rows:      [dynamic]Row,
 	open:      map[u64]Ref, // stream content-block index -> where it landed
 	// What the harness has cost, by day: see usage.odin.
 	usage:     Ledger,
@@ -264,6 +268,7 @@ app_destroy :: proc(app: ^App) {
 	app_previews_destroy(app)
 	delete(app.open)
 	delete(app.snake)
+	delete(app.rows)
 	delete(app.status)
 	delete(app.route_text)
 	delete(app.cwd)
@@ -1277,7 +1282,6 @@ app_apply :: proc(app: ^App, at: int, e: ^Event) {
 		if e.block_kind == .Tool {
 			block.name = strings.clone(e.name)
 			block.tool_id = strings.clone(e.id)
-			block.arg = strings.clone("")
 		}
 		ref := NO_REF
 		if e.parent != "" {
@@ -1307,9 +1311,7 @@ app_apply :: proc(app: ^App, at: int, e: ^Event) {
 		if !has do return
 		b := chat_block(c, ref)
 		if b == nil do return
-		strings.write_string(&b.arg_json, e.text)
-		delete(b.arg)
-		b.arg = strings.clone(one_line(strings.to_string(b.arg_json), 200))
+		strings.write_string(&b.input, e.text)
 
 	case .Block_Stop:
 		key := open_key(e.parent, e.index)
@@ -1335,10 +1337,13 @@ app_apply :: proc(app: ^App, at: int, e: ^Event) {
 		}
 
 	case .Tool_Input:
+		// The whole input, replacing however far the deltas got: the same
+		// call, said properly, so what the panel parses is a whole object
+		// rather than the last piece of one.
 		b := chat_block(c, chat_find_tool(c, e.id))
 		if b == nil do return
-		delete(b.arg)
-		b.arg = strings.clone(e.text)
+		strings.builder_reset(&b.input)
+		strings.write_string(&b.input, e.text)
 
 	case .Tool_Result:
 		b := chat_block(c, chat_find_tool(c, e.id))

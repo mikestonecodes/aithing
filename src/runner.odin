@@ -20,10 +20,10 @@ Ev_Kind :: enum {
 	Msg_Start,
 	Block_Start,
 	Delta,
-	Arg_Delta, // streaming tool input, shown as the tool's one-line summary
+	Arg_Delta, // a slice of the tool's input JSON, as the model types it
 	Block_Stop,
 	Tool_Result,
-	Tool_Input, // the tool call's finished input, once it parses
+	Tool_Input, // the tool call's whole input, once it parses
 	Verdict, // the agent's own word on whether the work is finished
 	Limits, // how much of the plan's allowance is gone: see usage.odin
 	Done,
@@ -408,8 +408,12 @@ runner_line :: proc(r: ^Runner, line: string) {
 
 	case "assistant":
 		// The finished message. The text was already streamed; what is worth
-		// taking from it is each tool call's parsed input, which is nicer than
-		// the half-escaped JSON the deltas carry.
+		// taking from it is each tool call's input, whole and well-formed,
+		// which is nicer than the deltas cut wherever the bytes arrived. It
+		// used to be reduced to a one-line summary here, which is the panel
+		// deciding what it can show a year before it is drawn: an edit's two
+		// strings never made it past this line, so no panel could ever show a
+		// diff. It goes on whole and whoever draws it takes what it needs.
 		msg, has := jobj(v, "message")
 		if !has do return
 		content, is_arr := jarr(msg, "content")
@@ -423,11 +427,14 @@ runner_line :: proc(r: ^Runner, line: string) {
 			if jstr(item, "type") != "tool_use" do continue
 			input, _ := jobj(item, "input")
 			name := jstr(item, "name")
+			opt := json.Marshal_Options{}
+			body := strings.builder_make(context.temp_allocator)
+			_ = json.unparse_to_builder(&body, input, &opt)
 			runner_emit(r, Event{
 				kind = .Tool_Input,
 				id   = strings.clone(jstr(item, "id")),
 				name = strings.clone(name),
-				text = tool_summary(name, input),
+				text = strings.clone(strings.to_string(body)),
 			})
 		}
 		// Off the finished message rather than the deltas: the marker is one
