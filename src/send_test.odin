@@ -1,5 +1,7 @@
 package aithing
 
+import "core:os"
+import "core:strings"
 import "core:testing"
 
 // What happens to a message typed into a thread that is already busy. It has
@@ -99,4 +101,35 @@ sending_leaves_nothing_on_the_status_line :: proc(t: ^testing.T) {
 
 	testing.expect_value(t, app_turns_live(app), 1)
 	testing.expect_value(t, app.status, "")
+}
+
+// Starting again on something you had put down. Dismissing a card takes it off
+// the grid and files its thread; the search still finds that thread, so the
+// way back to the work is to open it and say the next thing. That used to run
+// the turn and leave the grid as empty as it was.
+@(test)
+send_into_a_cardless_thread_makes_a_card :: proc(t: ^testing.T) {
+	_ = os.set_env("AITHING_CONFIG", "/tmp/aithing-test-config")
+	app := scratch_app()
+	defer scratch_free(app)
+	defer todos_destroy(&app.todos)
+	defer archive_destroy(&app.archive)
+	app.chat.session_id = strings.clone("s-1")
+	archive_set(&app.archive, "s-1", true) // the last card of it was dismissed
+
+	editor_set_text(&app.editor, "pick this back up")
+	app_send(app)
+
+	testing.expect_value(t, len(app.todos.list), 1)
+	testing.expect_value(t, app.todos.list[0].session, "s-1")
+	testing.expect_value(t, app.todos.list[0].text, "pick this back up")
+	// Not `waiting`: a turn went out for it.
+	testing.expect_value(t, app.todos.list[0].state, Todo_State.Asked)
+	// And the thread comes back out of the archive with it.
+	testing.expect(t, !archive_is(&app.archive, "s-1"), "the thread is still filed away")
+
+	// A second message is the same card's work, not another card.
+	editor_set_text(&app.editor, "and this too")
+	app_send(app)
+	testing.expect_value(t, len(app.todos.list), 1)
 }

@@ -1053,6 +1053,18 @@ app_submit :: proc(app: ^App, text, prompt: string) -> bool {
 		app_status(app, "could not start claude")
 		return false
 	}
+	// Work asked for in a thread with no card is work with nowhere to show.
+	// Dismissing a card takes it off the grid and files its thread away, and
+	// the search still finds that thread — so the way back to something you
+	// had put down is to open it and say the next thing. That used to run the
+	// turn and leave the grid exactly as empty as it was: the only trace of
+	// having started again was the thread you were already looking at.
+	//
+	// One card per thread, so this only fires when the thread has none: a
+	// follow-up typed into a card's own thread is that card's work, not a
+	// second card's.
+	app_card_for_thread(app, text)
+
 	app.cur_msg = -1
 	app.stick = true
 	// The status line is not told. It used to say "thinking...", and only a
@@ -1062,6 +1074,28 @@ app_submit :: proc(app: ^App, text, prompt: string) -> bool {
 	// turn is in flight is read off the turns (`app_chat_busy`, and on the
 	// grid the card itself), never written down beside them.
 	return true
+}
+
+// Gives the open thread a card if it has none, so that work started from the
+// composer is on the grid like any other. The state is Asked rather than Open:
+// a turn went out, so the card is not one nothing has touched, and a composer
+// turn is never asked for a verdict — Asked is what turn_outcome makes of a
+// turn that ended without saying, and it is what this card would read as if
+// the turn owned it.
+//
+// The thread is taken off the archive at the same time. Dismissing the last
+// card of a thread files it; giving the thread a card again is the other half
+// of that, and leaving it filed would be a thread on the grid that the
+// launcher still treated as put away.
+@(private = "file")
+app_card_for_thread :: proc(app: ^App, text: string) {
+	session := app.chat.session_id
+	if session == "" do return // a thread with no name yet is a card being run
+	if todos_has(&app.todos, session) do return
+	id := todos_add(&app.todos, text, session, app_project(app), .Asked)
+	canvas_set_sel(app, id) // where the cursor lands when you go back
+	archive_set(&app.archive, session, false)
+	todos_save(&app.todos)
 }
 
 // --- applying what the runner streams ---------------------------------------
