@@ -259,6 +259,23 @@ text_without_images :: proc(text: string, allocator := context.temp_allocator) -
 	return strings.trim_space(strings.to_string(b))
 }
 
+// The picture a stone on the path is holding, if it is holding one: the paste
+// a turn carried, and the file a tool opened when that file is a picture.
+// Reading a screenshot used to say `/tmp/g-paste.png` and `nothing back`,
+// which is the two things about it worth knowing least — the harness hands the
+// pixels to the model and has nothing to print, and the panel had the path and
+// stopped there.
+//
+// A tool counts only when the whole of its argument is one path: `cat
+// /tmp/a.png` is a command that mentions a picture, not a picture.
+block_picture :: proc(b: ^Block) -> string {
+	if b.kind == .Image do return b.image
+	if b.kind != .Tool do return ""
+	start, end, ok := image_word(b.arg, 0)
+	if !ok || start != 0 || end != len(b.arg) do return ""
+	return b.arg
+}
+
 // A person's turn as the transcript shows it: the pictures they named become
 // stones of their own and the paths come out of the words. Both the message
 // just typed and the one read back off a session file come through here, so a
