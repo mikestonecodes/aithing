@@ -547,7 +547,7 @@ draw_card :: proc(app: ^App, card: Card, base: Rect) {
 	// are reading and which are running something without reading a word;
 	// the words themselves are still there, under the pointer.
 	room := r.w - pad * 2 - pill.w - 14
-	if turn := turn_for_todo(app, td.id); turn >= 0 {
+	if turn := turn_for_card(app, td); turn >= 0 {
 		if room > DOING do draw_doing(app, app.turns[turn], {r.x + r.w - pad - DOING / 2, pill.y + pill.h / 2}, id)
 	} else if state == .Failed || state == .Asked {
 		// Why. A headless turn has no transcript to read it out of, and a

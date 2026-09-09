@@ -733,8 +733,11 @@ app_todo_finished :: proc(app: ^App, id: string, state: Todo_State) {
 // by a quit or a crash is not that and reads as waiting again.
 todo_display_state :: proc(app: ^App, td: Todo) -> Todo_State {
 	// A turn on this card, or a turn in the card's own thread — one typed
-	// into the composer, say — both show on the card as running.
-	if turn_for_todo(app, td.id) >= 0 do return .Running
+	// into the composer, say — both show on the card as running, and
+	// turn_for_card is the one place that asks both. app_session_busy is
+	// still asked after it because a message waiting its turn in a thread has
+	// no process yet and is work all the same.
+	if turn_for_card(app, td) >= 0 do return .Running
 	if td.session != "" && app_session_busy(app, td.session) do return .Running
 	return td.state
 }
@@ -758,12 +761,16 @@ app_drop_todo :: proc(app: ^App, id: string) {
 	at := todos_find(&app.todos, id)
 	if at < 0 do return
 	session := strings.clone(app.todos.list[at].session, context.temp_allocator)
+	// Which turn is the card's is asked while the card is still there to ask
+	// about — todos_dismiss takes the item out of the list and the strings
+	// with it.
+	running := turn_for_card(app, app.todos.list[at])
 	todos_dismiss(&app.todos, id)
 	// Taking a card off the grid is saying you are done with it, so the turn
 	// running it stops. This is the way to stop one from the grid, and it is
 	// deliberate — which is the whole difference between it and what Esc used
 	// to do.
-	if at := turn_for_todo(app, id); at >= 0 do turn_stop(app, at)
+	if running >= 0 do turn_stop(app, running)
 	// Including anything typed into that thread and still waiting: a card off
 	// the grid must not start a turn a second later.
 	if session != "" do _ = turn_unqueue(app, session)
@@ -1568,7 +1575,10 @@ app_start_resolve :: proc(app: ^App, id: string) {
 	at := todos_find(&app.todos, id)
 	if at < 0 do return
 	td := app.todos.list[at]
-	if turn_for_todo(app, id) >= 0 do return
+	// Anything already working the card, including a message typed into its
+	// thread: a resolve started beside one of those is two processes on one
+	// session.
+	if turn_for_card(app, td) >= 0 do return
 	project := td.cwd != "" ? td.cwd : app.cwd
 	tree := worktree_path(project, id, context.temp_allocator)
 	if !worktree_merging(tree) do return
