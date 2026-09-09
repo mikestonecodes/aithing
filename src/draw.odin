@@ -543,19 +543,52 @@ draw_status :: proc(app: ^App, at: Rect) {
 // The picker itself: rows stacked above the chip that opened it. Both chips
 // share it — the model's and the effort's are the same popup with a different
 // list, and a second copy of this is a second popup to keep in step.
+//
+// What is different between them is data, not code. It used to be a column of
+// bare words as narrow as the chip that opened it, which is enough to show
+// which one is ticked and nothing at all about why you would tick another;
+// every row now carries the line that says what it is for, and the popup is
+// as wide and as tall as those lines need. So it is sized off its own content
+// rather than off the chip: nothing here is a number chosen to look right
+// next to a particular list.
 @(private = "file")
 draw_picker :: proc(
 	app: ^App,
 	chip: Rect,
+	head: string,
 	labels: []string,
+	notes: []string,
 	at: int,
 	tag: string,
 ) -> (choice: int, picked: bool) {
 	ui := &app.ui
-	row_h := f32(34)
-	w := max(chip.w, 150)
-	h := row_h * f32(len(labels)) + 10
-	r := Rect{chip.x + chip.w - w, chip.y - h - 6, w, h}
+	LABEL_PX :: f32(15)
+	NOTE_PX :: f32(12.5)
+	PAD_X :: f32(16)
+	DOT_X :: f32(16) // where the tick sits, from the row's left edge
+	TEXT_X :: f32(34)
+
+	row_h := f32(48)
+	head_h := f32(28)
+	// As wide as the widest thing in it, and no wider. The old width was
+	// max(chip.w, 150), which is the chip's business and not the list's.
+	w := font_width(&ui.bold, head, 12) + TEXT_X + PAD_X
+	for label, i in labels {
+		line := font_width(&ui.regular, label, LABEL_PX)
+		if i < len(notes) do line = max(line, font_width(&ui.regular, notes[i], NOTE_PX))
+		w = max(w, line + TEXT_X + PAD_X)
+	}
+	w = min(w, ui.size.x - 24)
+	h := head_h + row_h * f32(len(labels)) + 12
+
+	r := Rect{chip.x + chip.w - w, chip.y - h - 8, w, h}
+	// It opens upward off a chip that sits near the bottom of the window, but
+	// a list this tall in a short window can run off the top, and one this
+	// wide off the left. Both edges are checked here rather than by keeping
+	// the popup small enough that neither could happen.
+	if r.y < 8 do r.y = min(chip.y + chip.h + 8, ui.size.y - h - 8)
+	r.y = max(r.y, 8)
+	r.x = clamp(r.x, 8, max(8, ui.size.x - w - 8))
 
 	// Anywhere else closes it.
 	if ui.pressed && !rect_contains(r, ui.mouse) && !rect_contains(chip, ui.mouse) {
@@ -567,16 +600,25 @@ draw_picker :: proc(
 	// this is drawn last, over things that are drawn as buttons.
 	ui_claim(ui, r)
 
-	ui_rect(ui, {r.x + 2, r.y + 3, r.w, r.h}, Color(0x50000000), 12)
-	ui_rect(ui, r, PANEL_HI, 12)
+	ui_rect(ui, {r.x + 3, r.y + 5, r.w, r.h}, Color(0x60000000), 14)
+	ui_rect(ui, r, PANEL_HI, 14)
 
-	y := r.y + 5
+	// What you are choosing, said once at the top. Two chips sit side by side
+	// and open the same shaped list, and without this the only way to tell
+	// which one you had clicked was to read the words in it.
+	ui_text(ui, &ui.bold, head, {r.x + TEXT_X, r.y + 9}, 12, FAINT)
+
+	y := r.y + head_h + 6
 	for label, i in labels {
-		row := Rect{r.x + 5, y, r.w - 10, row_h}
+		row := Rect{r.x + 6, y, r.w - 12, row_h - 4}
 		clicked, hovered := ui_invisible_button(ui, ui_id(tag, i), row)
-		if hovered do ui_rect(ui, row, PANEL, 8)
-		if i == at do ui_circle(ui, {row.x + 14, row.y + row_h / 2}, 3.5, ACCENT)
-		ui_text(ui, &ui.regular, label, {row.x + 26, y + 8}, 15, i == at ? TEXT : MUTED)
+		if i == at do ui_rect(ui, row, PANEL, 10)
+		else if hovered do ui_rect(ui, row, color_alpha(PANEL, 0.6), 10)
+		if i == at do ui_circle(ui, {row.x + DOT_X - 6, row.y + row_h / 2 - 2}, 3.5, ACCENT)
+		ui_text(ui, &ui.regular, label, {row.x + TEXT_X - 6, y + 6}, LABEL_PX, i == at ? TEXT : MUTED)
+		if i < len(notes) {
+			ui_text(ui, &ui.regular, notes[i], {row.x + TEXT_X - 6, y + 25}, NOTE_PX, i == at ? MUTED : FAINT)
+		}
 		if clicked {
 			app.overlay = .None
 			return i, true
@@ -627,13 +669,29 @@ chips_right :: proc(full, box: Rect) -> f32 {
 @(private = "file")
 draw_pickers :: proc(app: ^App) {
 	if app.overlay == .Model && app.model_chip.w > 0 {
-		if m, picked := draw_picker(app, app.model_chip, slice.enumerated_array(&model_label), int(app.model), "model"); picked {
+		if m, picked := draw_picker(
+			app,
+			app.model_chip,
+			"which model answers",
+			slice.enumerated_array(&model_label),
+			slice.enumerated_array(&model_note),
+			int(app.model),
+			"model",
+		); picked {
 			app.model = Model(m)
 			model_save(app.model)
 		}
 	}
 	if app.overlay == .Effort && app.effort_chip.w > 0 {
-		if e, picked := draw_picker(app, app.effort_chip, slice.enumerated_array(&effort_label), int(app.effort), "effort"); picked {
+		if e, picked := draw_picker(
+			app,
+			app.effort_chip,
+			"how hard it thinks",
+			slice.enumerated_array(&effort_label),
+			slice.enumerated_array(&effort_note),
+			int(app.effort),
+			"effort",
+		); picked {
 			app.effort = Effort(e)
 			effort_save(app.effort)
 		}

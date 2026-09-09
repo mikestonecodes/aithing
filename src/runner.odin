@@ -77,6 +77,17 @@ model_label := [Model]string {
 	.Fable  = "Fable 5.1",
 }
 
+// The line under the name in the picker. A list of four bare model names
+// tells you which one is ticked and nothing about why you would tick another,
+// and the answer was living outside the window — in the docs, or in whatever
+// you happened to remember about the last release.
+model_note := [Model]string {
+	.Haiku  = "the cheapest turn there is",
+	.Sonnet = "the everyday middle",
+	.Opus   = "the heaviest thinking",
+	.Fable  = "the default here: quick, and strong",
+}
+
 MODEL_DEFAULT :: Model.Fable
 
 // Accepts the short name or the full ID.
@@ -112,6 +123,16 @@ effort_label := [Effort]string {
 	.High   = "High",
 	.Xhigh  = "Xhigh",
 	.Max    = "Max",
+}
+
+// Same job as model_note, and more needed: five words that are only a ladder
+// say nothing about where on the ladder you are standing.
+effort_note := [Effort]string {
+	.Low    = "answers, barely thinks",
+	.Medium = "what the harness picks on its own",
+	.High   = "thinks the work through first",
+	.Xhigh  = "longer reasoning, slower turns",
+	.Max    = "everything it has, for the hard ones",
 }
 
 // Medium is what the harness itself would have picked, so a window that has
