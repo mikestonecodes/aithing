@@ -785,6 +785,27 @@ app_cancel :: proc(app: ^App) -> bool {
 	return false
 }
 
+// Walking whichever picker is open, from the keyboard. There is no pending
+// selection kept beside the value while you walk: the row the caret is on is
+// the choice, made and saved as you land on it, because a "highlighted row"
+// remembered next to the model itself is a second copy of the same question —
+// and it would be the copy left behind when the picker is shut by a click
+// somewhere else entirely.
+//
+// It does not wrap. Ctrl m and ctrl e cycle, which is what wrapping is for;
+// running off the end of a list you are looking at is how you lose the top of
+// it without seeing where it went.
+app_picker_step :: proc(app: ^App, d: int) {
+	#partial switch app.overlay {
+	case .Model:
+		app.model = Model(clamp(int(app.model) + d, 0, len(Model) - 1))
+		model_save(app.model)
+	case .Effort:
+		app.effort = Effort(clamp(int(app.effort) + d, 0, len(Effort) - 1))
+		effort_save(app.effort)
+	}
+}
+
 // Asking for a thread. The page moves to it in the same breath, so the chat
 // under it has to move now as well — the reading of the file is what waits.
 //

@@ -780,6 +780,41 @@ one_var_says_what_is_on_screen :: proc(t: ^testing.T) {
 	testing.expect_value(t, app_focus(app), Focus.None)
 }
 
+// Walking the picker writes the choice as it goes, and there is nowhere else
+// for it to be written. The row you are on used to be a candidate you then had
+// to confirm, which meant a picker shut by a click on the transcript left the
+// highlight on one model and the chip saying another.
+@(test)
+walking_the_picker_is_choosing :: proc(t: ^testing.T) {
+	scratch_dir(t)
+	app := scratch_app()
+	defer scratch_free(app)
+
+	app.model = .Opus
+	app.overlay = .Model
+	app_picker_step(app, -1)
+	testing.expect_value(t, app.model, Model.Sonnet)
+
+	// The ends hold: a list you are looking at does not jump to its other end
+	// under you.
+	app_picker_step(app, -1)
+	app_picker_step(app, -1)
+	app_picker_step(app, -1)
+	testing.expect_value(t, app.model, Model.Haiku)
+
+	// One picker at a time, and the keys go to whichever is open.
+	app.effort = .Medium
+	app.overlay = .Effort
+	app_picker_step(app, 1)
+	testing.expect_value(t, app.effort, Effort.High)
+	testing.expect_value(t, app.model, Model.Haiku)
+
+	// And with nothing open they are nobody's.
+	app.overlay = .None
+	app_picker_step(app, 1)
+	testing.expect_value(t, app.effort, Effort.High)
+}
+
 // The box is under the grid exactly when the grid names one project, and it
 // is the same answer the caret gets. It has been tried the other way twice:
 // there only while narrowed, with nothing on screen saying so, which left a

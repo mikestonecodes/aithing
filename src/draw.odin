@@ -540,50 +540,146 @@ draw_status :: proc(app: ^App, at: Rect) {
 	ui_text(ui, &ui.regular, msg, {at.x, at.y}, 13, FAINT)
 }
 
+// How long the picker takes to arrive, and how far it starts from where it
+// ends up. Short enough that it is under the pointer by the time the pointer
+// has got there, and long enough to say which chip it came out of.
+PICKER_OPEN :: f32(0.11)
+PICKER_ANIM :: 101 // salts on the tag, clear of the row ids, which are 0..n
+PICKER_PILL :: 102
+GAUGE_W :: f32(38)
+
 // The picker itself: rows stacked above the chip that opened it. Both chips
 // share it — the model's and the effort's are the same popup with a different
 // list, and a second copy of this is a second popup to keep in step.
+//
+// It grows out of the chip rather than appearing over it. The two chips sit
+// side by side and the popup is wider than either, so a list that was simply
+// there gave no sign of which of the two it was a list of; the movement says
+// it, and says it in the only place anyone is looking.
+//
+// Every row also carries what the label does not: the exact release a model
+// name runs — the ids are pinned so "Fable 5.1" cannot quietly become a
+// different build, and the picker was the one place that promise was not
+// visible — and, for effort, a gauge, because nothing in the words "High",
+// "Xhigh" and "Max" says which way round they go.
 @(private = "file")
 draw_picker :: proc(
 	app: ^App,
 	chip: Rect,
 	labels: []string,
+	hints: []string, // what each row runs, right-aligned; nil draws a gauge
 	at: int,
 	tag: string,
+	open: bool,
 ) -> (choice: int, picked: bool) {
 	ui := &app.ui
+	// Shut is a length of time from open, not a frame. The tween is ticked
+	// whether or not there is a chip to hang the popup off, so a picker the
+	// page took away with it cannot come back halfway through its own
+	// movement the next time it is asked for.
+	t := ui_tween(ui, ui_id(tag, PICKER_ANIM), open ? 1 : 0, PICKER_OPEN)
+	if t <= 0 || chip.w <= 0 do return 0, false
+
 	row_h := f32(34)
-	w := max(chip.w, 150)
-	h := row_h * f32(len(labels)) + 10
-	r := Rect{chip.x + chip.w - w, chip.y - h - 6, w, h}
-
-	// Anywhere else closes it.
-	if ui.pressed && !rect_contains(r, ui.mouse) && !rect_contains(chip, ui.mouse) {
-		app.overlay = .None
-		return 0, false
+	head_h := f32(26)
+	text_w, hint_w := f32(0), GAUGE_W
+	for label in labels do text_w = max(text_w, font_width(&ui.regular, label, 15))
+	if hints != nil {
+		hint_w = 0
+		for hint in hints do hint_w = max(hint_w, font_width(&ui.mono, hint, 11))
+	}
+	w := max(chip.w, 27 + text_w + 22 + hint_w + 14)
+	h := head_h + row_h * f32(len(labels)) + 6
+	r := Rect{chip.x + chip.w - w, chip.y - h - 8, w, h}
+	row_at :: proc(r: Rect, head_h, row_h: f32, i: int) -> Rect {
+		return {r.x + 5, r.y + head_h + f32(i) * row_h, r.w - 10, row_h}
 	}
 
-	// And a press inside it belongs to it, whatever has already claimed it:
-	// this is drawn last, over things that are drawn as buttons.
-	ui_claim(ui, r)
-
-	ui_rect(ui, {r.x + 2, r.y + 3, r.w, r.h}, Color(0x50000000), 12)
-	ui_rect(ui, r, PANEL_HI, 12)
-
-	y := r.y + 5
-	for label, i in labels {
-		row := Rect{r.x + 5, y, r.w - 10, row_h}
-		clicked, hovered := ui_invisible_button(ui, ui_id(tag, i), row)
-		if hovered do ui_rect(ui, row, PANEL, 8)
-		if i == at do ui_circle(ui, {row.x + 14, row.y + row_h / 2}, 3.5, ACCENT)
-		ui_text(ui, &ui.regular, label, {row.x + 26, y + 8}, 15, i == at ? TEXT : MUTED)
-		if clicked {
-			app.overlay = .None
-			return i, true
+	// What the pointer is on, asked before anything is drawn: the lit row
+	// goes under the labels, and finding it means asking every row first.
+	// While it is on its way out it asks nothing — a popup nobody can see any
+	// more must not be eating presses meant for what is behind it.
+	hover := -1
+	if open {
+		// Anywhere else closes it.
+		if ui.pressed && !rect_contains(r, ui.mouse) && !rect_contains(chip, ui.mouse) do app.overlay = .None
+		// And a press inside it belongs to it, whatever has already claimed
+		// it: this is drawn last, over things that are drawn as buttons.
+		ui_claim(ui, r)
+		for i in 0 ..< len(labels) {
+			clicked, hovered := ui_invisible_button(ui, ui_id(tag, i), row_at(r, head_h, row_h, i))
+			if hovered do hover = i
+			if clicked {
+				app.overlay = .None
+				choice, picked = i, true
+			}
 		}
-		y += row_h
 	}
-	return 0, false
+
+	// Anchored at the corner the chip is under, so it comes up out of the
+	// chip and not out of the middle of nothing. Only the drawing moves: the
+	// rows are hit where they have settled, which is where they are for all
+	// but a tenth of a second.
+	e := ease_out(t)
+	s := 0.96 + 0.04 * e
+	ui_push_zoom(ui, s, {(r.x + r.w) * (1 - s), (r.y + r.h) * (1 - s) + (1 - e) * 12})
+	defer ui_pop_zoom(ui)
+	a := t
+
+	SHADOW :: Color(0xff000000)
+	ui_rect(ui, {r.x - 10, r.y + 2, r.w + 20, r.h + 18}, color_alpha(SHADOW, 0.10 * a), 24)
+	ui_rect(ui, {r.x - 2, r.y + 3, r.w + 4, r.h + 8}, color_alpha(SHADOW, 0.22 * a), 15)
+	// A hairline of the type colour around it, so the panel has an edge
+	// against the transcript it covers instead of melting into it.
+	ui_rect(ui, {r.x - 1, r.y - 1, r.w + 2, r.h + 2}, color_alpha(TEXT, 0.12 * a), 13)
+	ui_rect(ui, r, color_alpha(PANEL_HI, a), 12)
+
+	ui_text(ui, &ui.bold, tag, {r.x + 16, r.y + 7}, 11, color_alpha(FAINT, a))
+	ui_rect(ui, {r.x + 12, r.y + head_h - 3, r.w - 24, 1}, color_alpha(TEXT, 0.08 * a))
+
+	// One lit row that slides between them, rather than a rectangle blinking
+	// on and off wherever the pointer lands. It rests on the row that is
+	// chosen when the pointer is elsewhere, so the list is never showing
+	// nothing at all — and where it slid from is what says the two rows are
+	// the same kind of thing.
+	pos := ui_anim(ui, ui_id(tag, PICKER_PILL), f32(hover >= 0 ? hover : at), 30)
+	pill := row_at(r, head_h, row_h, 0)
+	pill.y += pos * row_h
+	ui_rect(ui, pill, color_alpha(color_mix(PANEL, ACCENT, hover >= 0 ? 0.34 : 0.16), a), 9)
+
+	for label, i in labels {
+		row := row_at(r, head_h, row_h, i)
+		mid := row.y + row_h / 2
+		on := i == at
+		if on {
+			ui_circle(ui, {row.x + 15, mid}, 7, color_alpha(ACCENT_DIM, 0.4 * a))
+			ui_circle(ui, {row.x + 15, mid}, 3.5, color_alpha(ACCENT, a))
+		}
+		lit := on || i == hover
+		ui_text_middle(ui, on ? &ui.bold : &ui.regular, label, row.x + 27, row, 15, color_alpha(lit ? TEXT : MUTED, a))
+		if hints != nil {
+			hw := font_width(&ui.mono, hints[i], 11)
+			ui_text_middle(ui, &ui.mono, hints[i], row.x + row.w - 14 - hw, row, 11, color_alpha(lit ? MUTED : FAINT, a))
+		} else {
+			draw_gauge(ui, {row.x + row.w - 14 - GAUGE_W, mid}, i, len(labels), lit, a)
+		}
+	}
+	return
+}
+
+// How hard it thinks, as a shape: the rung this row is on, out of the rungs
+// there are. The words are five claims that it is a lot, and only somebody
+// who has read the enum knows that Max is past Xhigh.
+@(private = "file")
+draw_gauge :: proc(ui: ^UI, left_mid: [2]f32, level, of: int, lit: bool, a: f32) {
+	bar := f32(5)
+	gap := (GAUGE_W - bar * f32(of)) / f32(max(of - 1, 1))
+	for j in 0 ..< of {
+		bh := 4 + f32(j) * 2
+		col := color_alpha(TEXT, 0.12)
+		if j <= level do col = lit ? ACCENT : color_mix(ACCENT, MUTED, 0.45)
+		ui_rect(ui, {left_mid.x + f32(j) * (bar + gap), left_mid.y + 6 - bh, bar, bh}, color_alpha(col, a), 1.5)
+	}
 }
 
 // The two controls the window has: which model answers and how hard it
@@ -599,10 +695,10 @@ draw_picker :: proc(
 draw_chips :: proc(app: ^App, full, box: Rect, y: f32) {
 	ui := &app.ui
 	right := chips_right(full, box)
-	cx := draw_chip(app, ui_id("model-chip"), right, y, model_label[app.model], MUTED)
+	cx := draw_chip(app, ui_id("model-chip"), right, y, model_label[app.model], app.overlay == .Model)
 	if ui.pressed && ui.hot == ui_id("model-chip") do app.overlay = app.overlay == .Model ? .None : .Model
 	app.model_chip = Rect{cx, y - 5, right - cx, 26}
-	ex := draw_chip(app, ui_id("effort-chip"), cx - 8, y, effort_label[app.effort], MUTED)
+	ex := draw_chip(app, ui_id("effort-chip"), cx - 8, y, effort_label[app.effort], app.overlay == .Effort)
 	if ui.pressed && ui.hot == ui_id("effort-chip") do app.overlay = app.overlay == .Effort ? .None : .Effort
 	app.effort_chip = Rect{ex, y - 5, cx - 8 - ex, 26}
 }
@@ -621,35 +717,58 @@ chips_right :: proc(full, box: Rect) -> f32 {
 	return right
 }
 
-// Whichever picker is open, over whatever box put the chip there. The chip
-// rect is this frame's or it is nothing, so a picker left open by a page that
-// has gone has nothing to hang off and is not drawn.
+// Both of them, every frame, whether or not they are open: the movement in
+// and out is the picker's own, so it has to be asked even while it is shut.
+// The chip rect is this frame's or it is nothing, so a picker left open by a
+// page that has gone has nothing to hang off and is not drawn.
 @(private = "file")
 draw_pickers :: proc(app: ^App) {
-	if app.overlay == .Model && app.model_chip.w > 0 {
-		if m, picked := draw_picker(app, app.model_chip, slice.enumerated_array(&model_label), int(app.model), "model"); picked {
-			app.model = Model(m)
-			model_save(app.model)
-		}
+	if m, picked := draw_picker(
+		app,
+		app.model_chip,
+		slice.enumerated_array(&model_label),
+		slice.enumerated_array(&model_flag),
+		int(app.model),
+		"model",
+		app.overlay == .Model,
+	); picked {
+		app.model = Model(m)
+		model_save(app.model)
 	}
-	if app.overlay == .Effort && app.effort_chip.w > 0 {
-		if e, picked := draw_picker(app, app.effort_chip, slice.enumerated_array(&effort_label), int(app.effort), "effort"); picked {
-			app.effort = Effort(e)
-			effort_save(app.effort)
-		}
+	if e, picked := draw_picker(
+		app,
+		app.effort_chip,
+		slice.enumerated_array(&effort_label),
+		nil,
+		int(app.effort),
+		"effort",
+		app.overlay == .Effort,
+	); picked {
+		app.effort = Effort(e)
+		effort_save(app.effort)
 	}
 }
 
 // A small text chip, right-aligned at `right`. Returns its left edge.
+//
+// `open` is whether the popup hanging off it is up, and it is the chip's own
+// question because the popup is drawn somewhere else entirely: a list came up
+// over the transcript with both chips still sitting there unlit, and which of
+// the two it belonged to was a guess. The chip it came from wears the accent
+// while it is open.
 @(private = "file")
-draw_chip :: proc(app: ^App, id: u64, right, y: f32, label: string, col: Color) -> f32 {
+draw_chip :: proc(app: ^App, id: u64, right, y: f32, label: string, open: bool) -> f32 {
 	ui := &app.ui
 	w := font_width(&ui.regular, label, 14) + 30
 	r := Rect{right - w, y - 5, w, 26}
 	_, hovered := ui_invisible_button(ui, id, r)
-	ui_rect(ui, r, hovered ? PANEL_HI : color_alpha(PANEL_HI, 0.5), 13)
-	ui_circle(ui, {r.x + 12, r.y + 13}, 3.5, ACCENT)
-	ui_text(ui, &ui.regular, label, {r.x + 21, y}, 14, hovered ? TEXT : col)
+	// Eased rather than switched, so the chip and the popup it belongs to are
+	// one movement instead of a light going on next to one.
+	lit := ui_anim(ui, id, open ? 1 : 0, 26)
+	bg := color_mix(hovered ? PANEL_HI : color_alpha(PANEL_HI, 0.5), color_mix(PANEL_HI, ACCENT, 0.55), lit)
+	ui_rect(ui, r, bg, 13)
+	ui_circle(ui, {r.x + 12, r.y + 13}, 3.5, color_mix(ACCENT, TEXT, lit))
+	ui_text(ui, &ui.regular, label, {r.x + 21, y}, 14, color_mix(hovered ? TEXT : MUTED, TEXT, lit))
 	return r.x
 }
 
