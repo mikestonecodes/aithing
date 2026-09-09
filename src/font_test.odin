@@ -59,3 +59,45 @@ type_sits_in_the_middle_of_its_line_box :: proc(t: ^testing.T) {
 		below,
 	)
 }
+
+// A word wider than the card it is on.
+//
+// A card's body is greedy word wrap, and a pasted path or URL is one word with
+// no space anywhere in it. That case used to be handled by taking the word
+// whole and drawing it, which put the first line of the top-left card straight
+// over the card's right edge and into its neighbour.
+@(test)
+a_word_with_no_spaces_stays_inside_its_card :: proc(t: ^testing.T) {
+	g_atlas = Atlas{width = 1, height = 1, distance_range = 4, em_px = 48}
+
+	f: Font
+	f.ascent, f.descent = 1.069, -0.293
+	f.baseline = ((f.ascent - f.descent) + 0.7) / 2
+	f.dense[int('a' - DENSE_FIRST)] = Glyph {
+		code    = u32('a'),
+		advance = 0.5,
+		plane   = {0, 0, 0.5, 0.7},
+		atlas   = {0, 0, 1, 1},
+	}
+
+	ui: UI
+	defer ui_destroy(&ui)
+	input: Input
+	ui_begin(&ui, 800, 600, &input, 1.0 / 60)
+
+	SIZE :: f32(20)
+	X :: f32(30)
+	W :: f32(5 * 0.5 * SIZE) // room for five letters
+	draw_wrapped(&ui, &f, "aaaaaaaaaaaaaaaaaaaa", X, 0, W, SIZE, TEXT, 10)
+
+	testing.expect(t, len(ui.verts) > 0, "nothing was drawn")
+	right: f32
+	for v in ui.verts do right = max(right, v.pos.x)
+	testing.expectf(
+		t,
+		right <= X + W + 0.01,
+		"the text reaches %v, past the %v it was given",
+		right,
+		X + W,
+	)
+}

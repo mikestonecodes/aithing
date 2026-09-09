@@ -321,7 +321,10 @@ draw_wrapped :: proc(ui: ^UI, font: ^Font, text: string, x, y, w, size: f32, col
 			next := strings.index_byte(rest[end:], ' ')
 			cand := next < 0 ? len(rest) : end + next
 			if font_width(font, rest[:cand], size) > w {
-				if last_fit == 0 do last_fit = cand // one long word
+				// A word wider than the line has no space to break at, so it
+				// is broken where it stops fitting. It used to be taken whole
+				// here, which drew a pasted path clean over the card's edge.
+				if last_fit == 0 do last_fit = font_fit(font, rest, size, w)
 				break
 			}
 			last_fit = cand

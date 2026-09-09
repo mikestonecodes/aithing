@@ -252,3 +252,18 @@ font_ellipsize :: proc(f: ^Font, text: string, size: f32, max_width: f32, buf: [
 	}
 	return text
 }
+
+// How many bytes of `text` fit in `max_width`, never fewer than one rune so a
+// caller looping on the remainder cannot spin. Wrapping needs this for the
+// word that is wider than the line it is on — a pasted path or URL, which has
+// no space to break at and used to be drawn whole, straight over the edge of
+// its card.
+font_fit :: proc(f: ^Font, text: string, size: f32, max_width: f32) -> int {
+	w: f32
+	for ch, byte_index in text {
+		next := w + font_glyph(f, ch).advance * size
+		if next > max_width && byte_index > 0 do return byte_index
+		w = next
+	}
+	return len(text)
+}
