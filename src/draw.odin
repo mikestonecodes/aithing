@@ -231,26 +231,18 @@ draw_capture :: proc(app: ^App, full: Rect) {
 	}
 	draw_editor(app, &app.capture, text_r, &ui.regular, CAPTURE_PX, focused, CAPTURE_LINES)
 
-	// What Enter will do with what is in the box. A `*` is the only thing
-	// that makes a second card — and a second thread with it — and the count
-	// is what says the one just typed was read as one. It went away with the
-	// line above the box, and taking it away made the split look broken:
-	// cards appeared out of one line with no warning.
-	note := ""
-	if strings.trim_space(editor_text(&app.capture)) != "" {
-		n := len(todos_split(editor_text(&app.capture)))
-		note = n == 1 ? "enter · runs it" : fmt.tprintf("enter · %d cards, a thread each", n)
-	}
 	// The same band along the bottom the composer has, and the same two chips
 	// in the corner of it: what is typed here is what a card runs on, so the
 	// model is chosen where the card is written rather than inside a thread
-	// opened afterwards. The note moves to the left to make room, which is
-	// where the composer's own line of small print already sits.
+	// opened afterwards.
+	//
+	// Nothing else sits in that band. It used to print what Enter would do —
+	// "enter · runs it", "enter · 3 cards, a thread each" — which is a line
+	// that says the same thing on every frame forever after it has been read
+	// once, and the cards it was warning about appear the moment Enter is
+	// pressed anyway.
 	chip_y := box.y + box.h - COMPOSER_CHIPS / 2 - 8
 	draw_chips(app, full, box, chip_y)
-	if note != "" {
-		ui_text(ui, &ui.regular, note, {box.x + COMPOSER_SIDE, chip_y + 3}, 12, FAINT)
-	}
 }
 
 // --- the launcher ------------------------------------------------------------
