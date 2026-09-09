@@ -158,3 +158,25 @@ with_no_box_the_letters_are_always_the_cards :: proc(t: ^testing.T) {
 	testing.expect(t, grid_command(app, 'l'), "no box, so l walks the grid")
 	testing.expect_value(t, app.canvas.sel, grid_id(app, 1))
 }
+
+// `i` on the grid of every project is the way into one: the project of the
+// card under the cursor. It used to only mean "put the caret back in the box",
+// which on a grid that has no box was a key that did nothing at all.
+@(test)
+i_enters_the_selected_cards_project :: proc(t: ^testing.T) {
+	app := seven_cards()
+	defer drop_app(app)
+
+	canvas_set_sel(app, grid_id(app, 3))
+	testing.expect(t, grid_command(app, 'i'))
+	testing.expect_value(t, app.canvas.project, "/tmp/proj")
+	// And the cursor is still on the card that named it, with the keyboard
+	// still on the cards rather than dropped into the box that just appeared.
+	testing.expect_value(t, app.canvas.sel, grid_id(app, 3))
+	testing.expect(t, app.on_cards)
+
+	// Inside a project the same key means the box again.
+	testing.expect(t, grid_command(app, 'i'))
+	testing.expect(t, !app.on_cards)
+	testing.expect_value(t, app_focus(app), Focus.Capture)
+}

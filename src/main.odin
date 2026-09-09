@@ -580,7 +580,8 @@ app_input :: proc(app: ^App) {
 }
 
 // A letter the grid answers to itself rather than typing: hjkl walks the
-// cards, x takes one off, i puts the caret back in the box. False means it is
+// cards, x takes one off, i goes in — into the box on a project's grid, and
+// into the selected card's project on the grid of all of them. False means it is
 // not one of those and the letter is text after all.
 //
 // What decides is app.on_cards, through app_focus — the same one answer that
@@ -610,6 +611,25 @@ grid_command :: proc(app: ^App, c: rune) -> bool {
 	case 'x':
 		canvas_dismiss_sel(app)
 	case 'i':
+		// Two ways in, and which one is meant is answered by whether there is
+		// a box to go into. On a grid narrowed to one project there is, and
+		// `i` puts the caret back in it. On the grid of every project there
+		// is not — `i` used to be a keystroke that did nothing there, since
+		// on_cards says nothing on a grid with no box — so it means the other
+		// way in: the project of the card under the cursor, which is the only
+		// thing the cursor can tell you that the grid is not already showing.
+		if !app_capture_open(app) {
+			if at := todos_find(&app.todos, app.canvas.sel); at >= 0 {
+				if cwd := app.todos.list[at].cwd; cwd != "" {
+					canvas_filter_project(app, cwd)
+					// The project now has a box, and a window that has never
+					// been told otherwise types into it. You got here by
+					// walking the cards, so the keyboard stays on them.
+					app.on_cards = true
+				}
+			}
+			return true
+		}
 		app.on_cards = false
 	case:
 		return false
