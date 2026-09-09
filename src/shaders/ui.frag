@@ -28,6 +28,8 @@ layout(location = 0) out vec4 out_col;
 #define EFFECT_RING     3u // a ring that fades outward, for click ripples
 #define EFFECT_TEXT     4u // a glyph: the texture is a distance field
 #define EFFECT_PUNCH    5u // replaces what is under it, alpha and all
+#define EFFECT_POP      6u // a transcript tile: inner light and a hover rim
+#define EFFECT_WIRE     7u // the thread between tiles, with a pulse on it
 
 // The distance a multi-channel field encodes is the median of its three
 // channels — the channels disagree exactly at a corner, and taking the middle
@@ -72,6 +74,38 @@ void main() {
 		float head = fract(pc.time * 0.30) * 1.7 - 0.35;
 		float band = exp(-pow((x - head) * 5.0, 2.0));
 		c.rgb += band * 0.45;
+	} else if (v_effect == EFFECT_POP) {
+		// A tile is a lit surface, not a flat swatch: brighter towards the
+		// top-left corner the light comes from, and its rim brightens as the
+		// pointer takes it. v_param is how far it has been taken, 0..1, so a
+		// resting transcript is still and only what is under the pointer
+		// moves — the whole grid shimmering at once read as noise, and cost a
+		// redraw every frame to say nothing.
+		float lit = clamp(1.0 - length(p - vec2(-0.6, -0.9)) * 0.55, 0.0, 1.0);
+		c.rgb += lit * lit * (0.055 + 0.16 * v_param);
+		float edge = max(abs(p.x), abs(p.y));
+		c.rgb += smoothstep(0.82, 1.0, edge) * (0.05 + 0.5 * v_param);
+		if (v_param > 0.01) {
+			// The sheen only exists while the tile is up, and it crosses the
+			// long way, so a wide tile is swept and a small one blinks.
+			float head = fract(pc.time * 0.55) * 2.4 - 0.7;
+			c.rgb += exp(-pow((p.x - head) * 3.0, 2.0)) * 0.28 * v_param;
+		}
+	} else if (v_effect == EFFECT_WIRE) {
+		// The thread the tiles hang off. A pulse runs along it in the
+		// direction the row is read — v_param is where in the run this
+		// segment sits, and 10 added to it means the row reads right to left,
+		// so the light travels the way the eye does rather than always
+		// rightwards down a snake that turns back on itself.
+		bool back = v_param >= 10.0;
+		float phase = back ? v_param - 10.0 : v_param;
+		// Whichever way the segment is long is the way the pulse travels.
+		float along = v_rect.z >= v_rect.w ? p.x : p.y;
+		if (back) along = -along;
+		float u = along * 0.5 + 0.5;
+		float head = fract(pc.time * 0.22 - phase * 0.08);
+		float d = abs(fract(u - head + 0.5) - 0.5);
+		c.a *= 0.5 + 1.6 * exp(-pow(d * 9.0, 2.0));
 	} else if (v_effect == EFFECT_RING) {
 		// Thin annulus at the quad's edge, fading as it expands.
 		float d = length(p);

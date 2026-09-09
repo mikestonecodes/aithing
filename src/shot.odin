@@ -27,6 +27,7 @@ Scene :: enum {
 	Project, // narrowed to one, so the box under the grid is there
 	Thread, // a card opened: transcript and composer over the grid
 	Opening, // that same card halfway there: the panel still growing out of it
+	Peek, // the same thread with the pointer resting on a tile of its path
 	Launcher, // the menu, with a query typed into it
 }
 
@@ -36,6 +37,7 @@ scene_names := [Scene]string {
 	.Project  = "project",
 	.Thread   = "thread",
 	.Opening  = "opening",
+	.Peek     = "peek",
 	.Launcher = "launcher",
 }
 
@@ -99,6 +101,16 @@ shot_run :: proc(path: string, scene: Scene, width, height: int) -> bool {
 	// whatever the layout happens to put in the corner, and a lit card is not
 	// what the scene asked for.
 	app.win.input.mouse = {-1e6, -1e6}
+
+	// Except where the picture is of what the pointer does: a tile of the
+	// snake only says one line until something is resting on it, and the panel
+	// that opens under it is most of what the transcript is now. The spot is
+	// in the second row of the path, which is where a turn that did a dozen
+	// things has its interesting half.
+	if scene == .Peek {
+		app.win.input.mouse = {330, 148}
+		app.win.input.has_mouse = true
+	}
 
 	// The opening scene is the one picture that is not of a settled window:
 	// it is the card on its way to being a thread, stopped partway, which is
@@ -226,7 +238,7 @@ shot_build :: proc(app: ^App, scene: Scene) {
 	case .Project:
 		app.canvas.project = PROJ
 		editor_set_text(&app.capture, "split the grid measurement out of the frame\n*\ncheck it at 1200 sessions")
-	case .Thread, .Opening:
+	case .Thread, .Opening, .Peek:
 		app.canvas.project = PROJ
 		app.page = .Thread
 		shot_thread(app)
@@ -303,7 +315,20 @@ shot_thread :: proc(app: ^App) {
 		.Text,
 		"Measuring it rather than guessing. `canvas_layout` walks the cards and `app_filter` rebuilds the view; both are one pass, so the answer should scale with the number of cards and not with the sessions behind them.",
 	)
-	shot_tool(app, "Read", "src/canvas.odin", "126: canvas_layout :: proc(app: ^App) -> f32 {")
+	// A turn's worth of moves, which is what the path is for: enough of them,
+	// and enough kinds of them, that the snake turns a row and every tile
+	// style is in the picture — including a tool nothing here has heard of,
+	// which gets the generic tile rather than being dropped off the path.
+	shot_tool(app, "Read", "src/canvas.odin", "126: canvas_layout :: proc(app: ^App) -> f32 {\n127:\tc := &app.canvas\n128:\tapp_filter(app)")
+	shot_think(app, "The layout is one pass over the view, so the cost should be the cards and not the sessions behind them. Worth timing before touching anything.")
+	shot_tool(app, "Grep", "canvas_layout", "src/canvas.odin:126\nsrc/draw.odin:41\nsrc/app.odin:812")
+	shot_tool(app, "Bash", "odin test src -define:ODIN_TEST_FANCY=false", "grid, nothing typed: 0.380 ms\nmenu, searching: 0.678 ms\nAll tests were successful.")
+	shot_tool(app, "Edit", "src/grid_cost_test.odin", "applied")
+	shot_tool(app, "WebFetch", "https://odin-lang.org/docs/overview", "200 OK, 41kb")
+	shot_tool(app, "Agent", "measure the sweep at 1200 sessions", "the worktree cache was asked for once per session")
+	shot_tool(app, "ReportFindings", "one finding", "mkdir per session per call")
+	shot_tool(app, "Write", "src/grid_cost_test.odin", "wrote 118 lines")
+	shot_err(app, "turn stopped: the harness closed the stream mid-answer")
 	shot_text(
 		app,
 		.Assistant,
@@ -321,7 +346,16 @@ shot_text :: proc(app: ^App, role: Role, kind: Block_Kind, text: string) {
 	}
 	strings.write_string(&b.text, text)
 	msg_append_block(&app.chat, m, b)
-	app.chat_ver += 1
+}
+
+@(private = "file")
+shot_think :: proc(app: ^App, text: string) {
+	shot_text(app, .Assistant, .Thinking, text)
+}
+
+@(private = "file")
+shot_err :: proc(app: ^App, text: string) {
+	shot_text(app, .Assistant, .Error, text)
 }
 
 @(private = "file")
@@ -336,5 +370,4 @@ shot_tool :: proc(app: ^App, name, arg, result: string) {
 	}
 	strings.write_string(&b.result, result)
 	msg_append_block(&app.chat, m, b)
-	app.chat_ver += 1
 }

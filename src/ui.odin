@@ -38,6 +38,8 @@ Effect :: enum u32 {
 	Ring  = 3, // fading annulus
 	Text  = 4, // a glyph: the texture is a distance field, not coverage
 	Punch = 5, // replaces what is under it: see ui_punch
+	Pop   = 6, // a transcript tile: lit from inside, rim brightening on hover
+	Wire  = 7, // the snake's thread, with a pulse travelling along it
 }
 
 Vertex :: struct {

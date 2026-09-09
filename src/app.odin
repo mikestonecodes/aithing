@@ -145,13 +145,14 @@ App :: struct {
 	effort_chip: Rect,
 	cwd:       string, // where a new chat runs
 	cur_msg:   int,
-	// Message heights, cached: measuring a long transcript every frame is what
-	// would make typing feel heavy. Rebuilt when the width or the chat change.
-	heights:   [dynamic]f32,
-	heights_w: f32,
-	heights_at: int,
-	chat_ver:  int,
-	total_h:   f32,
+	// The transcript's tiles: scratch, not state. snake_gather rebuilds the
+	// whole path from the chat every frame — placing a tile is one font
+	// measurement of one short line, and the two expensive layouts (the
+	// answer, and whichever tile is open) cache on the block itself. A list
+	// kept between frames would be a second copy of a chat that grows a block
+	// at a time mid-stream, and every index in it a bounds trap the moment it
+	// did.
+	snake:     [dynamic]Tile,
 	open:      map[u64]Ref, // stream content-block index -> where it landed
 	// What the harness has cost, by day: see usage.odin.
 	usage:     Ledger,
@@ -226,7 +227,7 @@ app_destroy :: proc(app: ^App) {
 	delete(app.visible)
 	for &a in app.attach do attachment_destroy(&a)
 	delete(app.open)
-	delete(app.heights)
+	delete(app.snake)
 	delete(app.status)
 	delete(app.route_text)
 	delete(app.cwd)
@@ -320,7 +321,6 @@ app_poll_jobs :: proc(app: ^App) -> bool {
 		// since the agent last read them are queued to be read again.
 		app_sync_todos(app)
 		todos_save(&app.todos)
-		app.chat_ver += 1
 		changed = true
 	}
 
@@ -331,7 +331,6 @@ app_poll_jobs :: proc(app: ^App) -> bool {
 		app.chat = chat
 		app.cur_msg = -1
 		app.stick = true
-		app.chat_ver += 1
 		app.transcript.offset = 1e9 // clamped to the bottom on the next layout
 		app.transcript.target = 1e9
 		app_status(app, "ready")
@@ -811,7 +810,6 @@ app_select :: proc(app: ^App, id: string) {
 	app.chat.cwd = strings.clone(app_session_cwd(app, id))
 	app.cur_msg = -1
 	app.stick = true
-	app.chat_ver += 1
 	app.transcript.offset = 0
 	app.transcript.target = 0
 	turns_rebind(app)
@@ -834,7 +832,6 @@ chat_new :: proc(app: ^App) {
 	app.chat.title = strings.clone("New chat")
 	app.cur_msg = -1
 	app.stick = true
-	app.chat_ver += 1
 	app.transcript.target = 0
 	app.transcript.offset = 0
 	turns_rebind(app)
@@ -868,7 +865,6 @@ app_open :: proc(app: ^App, index: int) {
 	}
 	app.cur_msg = -1
 	app.stick = true
-	app.chat_ver += 1
 	app.transcript.offset = 0
 	app.transcript.target = 0
 	turns_rebind(app)
@@ -936,7 +932,6 @@ app_submit :: proc(app: ^App, text, prompt: string) -> bool {
 		_ = img
 	}
 	clear(&app.attach) // the blocks own the attachments now
-	app.chat_ver += 1
 
 	// The thread's own directory, checked out again if it was a card's tree
 	// and the card has since finished with it.
@@ -1031,7 +1026,6 @@ app_apply :: proc(app: ^App, at: int, e: ^Event) {
 		}
 		return
 	}
-	app.chat_ver += 1
 
 	switch e.kind {
 	case .Session:
