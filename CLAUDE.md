@@ -104,6 +104,15 @@ Rebuilding while the app is running is safe — the linker unlinks the output
 first — but the running process keeps the old inode, so say that it needs a
 restart.
 
+All four are about getting written work in front of the user, so a card that
+wrote none has none of them to do. A card that only asked something, or only
+answered a question about the code, has nothing to merge, nothing to push and
+nothing to rebuild — and must not report that it did. Say what you found and
+end with `done`. The four steps read as a checklist that always applies, and a
+card that ran them on an empty tree once reported a merge, a push and a
+rebuild of a commit that did not exist, which is the one thing worse than
+forgetting the last step: the user believed it.
+
 ## Comments
 
 Comments here say *why*, in prose, and usually name what the code used to do
