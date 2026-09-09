@@ -18,10 +18,7 @@ PAD :: f32(16)
 COMPOSER_BG :: Color(0x66202224)
 BLINK :: f32(0.55) // caret on/off, in seconds
 // How wide the block caret is where there is no character under it to take
-// its width from, as a fraction of the type size. Where a box with nothing in
-// it prints what it is for, that line has to start clear of this: it used to
-// start at the same x, so "Reply to Claude..." read as a block and then
-// "eply to Claude...".
+// its width from, as a fraction of the type size.
 CARET_EMPTY :: f32(0.55)
 RESULT_BYTES :: 4000 // how much of a tool result is ever shown
 RESULT_LINES :: 40
@@ -512,12 +509,6 @@ strip_box_height :: proc(app: ^App, e: ^Editor, width: f32) -> f32 {
 	return COMPOSER_PAD * 2 + f32(lines) * (COMPOSER_PX * 1.5) + COMPOSER_CHIPS
 }
 
-// Where the line an empty box prints starts: past the caret sitting at the
-// head of it, with a hair of air after.
-placeholder_x :: proc(x: f32) -> f32 {
-	return x + COMPOSER_PX * CARET_EMPTY + 4
-}
-
 // The room the whole strip takes: the box plus the 6px of air above it and the
 // 12px below it that the draw insets by, and never less than the floor.
 strip_height :: proc(box_h: f32) -> f32 {
@@ -601,12 +592,9 @@ draw_composer :: proc(app: ^App, r: Rect) {
 	_, lines := editor_window(&app.editor, COMPOSER_LINES)
 	text_h := f32(lines) * (COMPOSER_PX * 1.5)
 	text_r := Rect{box.x + COMPOSER_SIDE, inner_y, text_w, text_h}
-	// What the box is for, whenever there is nothing in it. It used to be
-	// hidden as soon as the box had the caret, which on a thread is always —
-	// so the line existed and was never once seen.
-	if editor_text(&app.editor) == "" {
-		ui_text(ui, &ui.regular, "Reply to Claude...", {placeholder_x(text_r.x), text_r.y + 2}, COMPOSER_PX, FAINT)
-	}
+	// An empty box prints nothing. It used to print "Reply to Claude...",
+	// which named the wrong thing on the grid and told you what a text box
+	// with a caret in it already tells you.
 	draw_editor(app, &app.editor, text_r, &ui.regular, COMPOSER_PX, focused, COMPOSER_LINES)
 
 	// The only two controls in the window: which model answers and how hard
