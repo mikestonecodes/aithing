@@ -1,5 +1,6 @@
 package aithing
 
+import "core:fmt"
 import "core:os"
 import "core:slice"
 import "core:strings"
@@ -1739,4 +1740,67 @@ history_gives_the_draft_back :: proc(t: ^testing.T) {
 	testing.expect_value(t, editor_text(&app.capture), "two")
 	testing.expect(t, app_history(app, -1))
 	testing.expect_value(t, editor_text(&app.capture), "mine now")
+}
+
+// The wheel gets to the bottom of the grid, and stays there.
+//
+// Keeping the cursor's card on screen used to be part of drawing the grid, so
+// it ran on every frame and not on the move that asked for it. The cursor is
+// only moved by the keyboard, so it sat where it was last left while the
+// wheel took the grid past it — and the frame after that dragged the whole
+// grid back onto it. The rows below the cursor's card could not be reached:
+// "scrolling gets stuck and I can't see the bottom ones". It now hangs off
+// canvas_set_sel, the one place the cursor is written.
+@(test)
+the_wheel_reaches_the_bottom_of_the_grid :: proc(t: ^testing.T) {
+	scratch_dir(t)
+	app := scratch_app()
+	defer scratch_free(app)
+	ui := &app.ui
+	defer ui_destroy(ui)
+	input: Input
+	defer delete(input.keys)
+	defer delete(input.text)
+
+	sessions := make([]Session, 1)
+	sessions[0] = fake_session("sess-1", "a long list")
+	app.sessions = sessions
+	for i in 0 ..< 60 do todos_add(&app.todos, fmt.tprintf("card %d", i), "sess-1", "/tmp/proj")
+
+	app.canvas.view = {0, 0, 1180, 800}
+	content := canvas_layout(app)
+	view := Rect{0, GRID_TOP, 1180, 800 - GRID_TOP - capture_height(app, 1180)}
+	limit := content - view.h
+	testing.expect(t, limit > 0, "sixty cards fit on one screen; nothing to scroll past")
+
+	// The cursor is on the card at the top of the grid, which is where it
+	// lands after a restore or after a card is made.
+	top := app.todos.list[app.canvas.cards[0].todo].id
+	canvas_set_sel(app, top)
+	testing.expect_value(t, app.canvas.scroll.target, 0)
+
+	// A wheel spin far past the end, with the pointer over the grid.
+	input.has_mouse = true
+	input.mouse = {view.x + view.w / 2, view.y + view.h / 2}
+	input.scroll = -1000
+	ui_begin(ui, 1180, 800, &input, 1.0 / 60)
+	draw_canvas(app, app.canvas.view)
+	ui_end(ui)
+	testing.expect_value(t, app.canvas.scroll.target, limit)
+
+	// And the frames after it, with the cursor still on the top card, leave
+	// the bottom of the grid where the wheel put it. This is the frame that
+	// used to drag it back.
+	input.scroll = 0
+	for _ in 0 ..< 3 {
+		ui_begin(ui, 1180, 800, &input, 1.0 / 60)
+		draw_canvas(app, app.canvas.view)
+		ui_end(ui)
+	}
+	testing.expect_value(t, app.canvas.scroll.target, limit)
+
+	// Moving the cursor is still what brings its card back: the top card is
+	// off the screen now, and putting the cursor on it brings the grid to it.
+	canvas_set_sel(app, top)
+	testing.expect_value(t, app.canvas.scroll.target, 0)
 }
