@@ -697,6 +697,7 @@ app_capture :: proc(app: ^App) {
 	for part in parts {
 		id := todos_add(&app.todos, part, "", cwd)
 		if first == "" do first = id
+		canvas_born(app, id)
 		app_start_todo(app, id)
 	}
 	editor_clear(&app.capture)

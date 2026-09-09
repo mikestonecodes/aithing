@@ -34,6 +34,7 @@ Scene :: enum {
 	Launcher, // the menu, with a query typed into it
 	Usage, // the pointer on the dial, so what each ring is is on screen
 	Dismiss, // a card's x just pressed: the card imploding and the wave leaving it
+	Added, // a line just sent from the box: the card rising out of it, the row making room
 }
 
 @(private = "file")
@@ -48,6 +49,7 @@ scene_names := [Scene]string {
 	.Launcher = "launcher",
 	.Usage    = "usage",
 	.Dismiss  = "dismiss",
+	.Added    = "added",
 }
 
 scene_parse :: proc(name: string) -> (Scene, bool) {
@@ -85,6 +87,8 @@ SHOT_OPENING :: 2
 // Frames after the x is let go before the dismissal is caught: the ghost is
 // mid-implosion and the wave is about a third of the way across the grid.
 SHOT_DISMISS :: 8
+// Frames after the line is sent: partway up, the section still shifting.
+SHOT_ADDED :: 6
 
 shot_run :: proc(path: string, scene: Scene, width, height: int) -> bool {
 	// Nothing here is allowed to read or write the real thing: a screenshot
@@ -180,6 +184,21 @@ shot_run :: proc(path: string, scene: Scene, width, height: int) -> bool {
 		app.win.input.mouse = {-1e6, -1e6}
 		_ = app_apply_clicks(app)
 		for _ in 0 ..< SHOT_DISMISS {
+			ui_begin(&app.ui, width, height, &app.win.input, SHOT_DT)
+			draw_app(app)
+			ui_end(&app.ui)
+		}
+	}
+	// Adding is a moment the same way: the grid is settled, then a line is
+	// sent from the box, and the picture is of the card on its way up out of
+	// it with the row still sliding along to make room.
+	if scene == .Added {
+		// By hand rather than through app_capture, which would start a turn
+		// — a real process — behind the card.
+		id := todos_add(&app.todos, "pin the cost of a rebuild", "", PROJ)
+		canvas_born(app, id)
+		canvas_set_sel(app, id)
+		for _ in 0 ..< SHOT_ADDED {
 			ui_begin(&app.ui, width, height, &app.win.input, SHOT_DT)
 			draw_app(app)
 			ui_end(&app.ui)
@@ -313,7 +332,7 @@ shot_build :: proc(app: ^App, scene: Scene) {
 		app.page = .Thread
 		shot_thread(app)
 		if scene == .Picker do app.overlay = .Model
-	case .Usage, .Dismiss:
+	case .Usage, .Dismiss, .Added:
 		app.canvas.project = PROJ
 	case .Launcher:
 		app.overlay = .Launcher
