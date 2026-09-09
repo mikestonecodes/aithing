@@ -72,12 +72,35 @@ Both must pass before anything is finished.
 
 ## Finishing a card
 
-A card is not done when the work is written. It is done when it is **built,
-merged into `main`, and pushed** — every time, follow-ups included. The window
-does not rebuild itself: auto reload and `dev.sh` were deleted, so a card whose
-work is only committed is a card that does nothing when the app is restarted.
-Run `./build.sh` and `git push origin main` as the last step, not as something
-to ask about.
+A card is not done when the work is written. It is done when the binary the
+user launches — `/home/mike/Source/aithing/aithing` — has the work in it. That
+is four steps, not two, and the last one is the one that gets forgotten:
+
+```sh
+git fetch origin && git merge --no-edit origin/main   # in the card's worktree
+git push origin HEAD:main
+git -C /home/mike/Source/aithing merge --ff-only origin/main
+/home/mike/Source/aithing/build.sh
+```
+
+Do all four every time, follow-ups included, as the last step and not as
+something to ask about. Then check that
+`git -C /home/mike/Source/aithing log --oneline -1` is what you just pushed.
+
+The last two are not ceremony. A card runs in a worktree, which cannot check
+out `main` because the primary checkout is holding it, so `git push origin
+HEAD:main` moves the *remote* ref and nothing else: the primary checkout stays
+on whatever commit it was on, and `./build.sh` run from the worktree builds a
+binary in the worktree that nobody launches. The window does not rebuild itself
+either — auto reload and `dev.sh` were deleted — so a card that stops after the
+push has changed nothing the user can see. This has already happened once: a
+finished card was pushed, the app was restarted, the old version came up, and
+the question was whether a merge had overwritten the work. It had not. The
+build had gone somewhere nobody was looking.
+
+Rebuilding while the app is running is safe — the linker unlinks the output
+first — but the running process keeps the old inode, so say that it needs a
+restart.
 
 ## Comments
 
