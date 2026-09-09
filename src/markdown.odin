@@ -180,12 +180,12 @@ md_layout :: proc(ui: ^UI, b: ^Block, width: f32) {
 		case strings.has_prefix(trimmed, "#"):
 			body := strings.trim_left(trimmed, "#")
 			wrap_into(ui, &b.lines, strings.trim_left_space(body), width, .Heading, indent)
-		case strings.has_prefix(trimmed, "- "), strings.has_prefix(trimmed, "* "):
-			wrap_into(ui, &b.lines, trimmed, width - indent - 12, .Bullet, indent + 12)
+		case strings.has_prefix(trimmed, "- "), strings.has_prefix(trimmed, "* "),
+		     is_ordered_item(trimmed):
+			_, _, gutter := md_marker(ui, trimmed)
+			wrap_into(ui, &b.lines, trimmed, width - indent - gutter, .Bullet, indent + gutter)
 		case strings.has_prefix(trimmed, "> "):
 			wrap_into(ui, &b.lines, trimmed[2:], width - 12, .Quote, indent + 12)
-		case is_ordered_item(trimmed):
-			wrap_into(ui, &b.lines, trimmed, width - indent - 12, .Bullet, indent + 12)
 		case:
 			wrap_into(ui, &b.lines, line, width - indent, .Body, indent)
 		}
@@ -194,6 +194,40 @@ md_layout :: proc(ui: ^UI, b: ^Block, width: f32) {
 	h: f32
 	for l in b.lines do h += md_line_height(ui, l, width)
 	b.height = h
+}
+
+// The marker a list line opens with, and how far left of the text it hangs.
+//
+// The gutter was a flat 12 pixels, which is a dash and a space and nothing
+// more. A numbered list drew "1. " into it, ran over the right edge of it and
+// printed the number on top of the first word — the screenshot that started
+// this had "1Tick 300 is far outside" in it. So an ordered list is measured,
+// and measured against "99." rather than its own number, so that the text of
+// every item in a list up to two digits starts in the same column instead of
+// stepping right when the count reaches ten.
+@(private = "file")
+md_marker :: proc(ui: ^UI, s: string) -> (marker: string, skip: int, gutter: f32) {
+	skip = 2
+	ordered := is_ordered_item(s)
+	if ordered {
+		skip = 0
+		for skip < len(s) && s[skip] != ' ' do skip += 1
+		skip += 1
+	}
+	skip = min(skip, len(s))
+	// The space a marker is written with is not part of the marker: the gutter
+	// is what puts air between the two, and drawing the space as well would
+	// put that air in twice.
+	marker = strings.trim_right_space(s[:skip])
+	gutter = 12
+	if ordered {
+		font, px, _ := line_style_font(ui, .Bullet)
+		// Against "99." rather than the item's own number, so the tenth item
+		// does not step right while the nine above it stay put.
+		w := max(md_line_width(ui, marker, font, px), md_line_width(ui, "99.", font, px))
+		gutter = max(gutter, w + 5)
+	}
+	return
 }
 
 @(private = "file")
@@ -318,17 +352,13 @@ md_draw_line :: proc(ui: ^UI, l: Line, x, y, width: f32, col: Color, dim: Color)
 
 	text := l.text
 	if l.style == .Bullet {
-		// Draw the marker in the accent colour and indent the rest of the text.
-		marker_len := 2
-		if is_ordered_item(text) {
-			marker_len = 0
-			for marker_len < len(text) && text[marker_len] != ' ' do marker_len += 1
-			marker_len += 1
-		}
-		marker := text[:min(marker_len, len(text))]
-		w := ui_text(ui, font, marker, {pen - 12, y}, px, ACCENT)
-		_ = w
-		text = text[min(marker_len, len(text)):]
+		// Draw the marker in the accent colour, in the gutter the wrap left
+		// for it. The gutter has to be the one md_layout reserved or the two
+		// disagree, which is why both ask md_marker rather than either
+		// writing the width down.
+		marker, skip, gutter := md_marker(ui, text)
+		ui_text(ui, font, marker, {pen - gutter, y}, px, ACCENT)
+		text = text[skip:]
 	}
 
 	// Not `Span_Pen{}`: a line opens in whatever face the wrap left open at

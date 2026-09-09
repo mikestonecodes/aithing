@@ -270,3 +270,65 @@ a_rule_row_says_how_a_column_is_aligned :: proc(t: ^testing.T) {
 	testing.expect(t, m.align[1] == .Center, "the second column is not centred")
 	testing.expect(t, m.align[2] == .Right, "the third column is not right aligned")
 }
+
+// The gutter a list marker is drawn in used to be a flat 12 pixels, which is
+// the width of a dash and a space and nothing else. A numbered item drew
+// "1. " into that same 12 and the number landed on top of the first word of
+// the line: the screenshot that started this read "1Tick 300 is far outside".
+//
+// Asked of the drawing, and by colour, because that is the only thing that
+// tells the marker from the prose: the marker is set in ACCENT and the body
+// in whatever colour the caller passed.
+@(test)
+a_numbered_marker_does_not_sit_on_top_of_its_line :: proc(t: ^testing.T) {
+	g_atlas = Atlas{width = 1, height = 1, distance_range = 4, em_px = 48}
+
+	ui: UI
+	defer ui_destroy(&ui)
+	ui.regular = even_font(0.5)
+	ui.bold = even_font(0.5)
+	ui.mono = even_font(0.5)
+
+	b: Block
+	defer strings.builder_destroy(&b.text)
+	strings.write_string(&b.text, "1. tick 300\n9. walk back\n10. apply ten\n- a dash\n")
+
+	WIDTH :: f32(400)
+	md_layout(&ui, &b, WIDTH)
+	testing.expectf(t, len(b.lines) == 4, "expected four lines, got %v", len(b.lines))
+
+	input: Input
+	body_left: [dynamic]f32
+	defer delete(body_left)
+	for l in b.lines {
+		ui_begin(&ui, 800, 600, &input, 1.0 / 60)
+		md_draw_line(&ui, l, 0, 0, WIDTH, TEXT, FAINT)
+		marker_right, text_left := f32(-1e9), f32(1e9)
+		for v in ui.verts {
+			if v.col == ACCENT do marker_right = max(marker_right, v.pos.x)
+			if v.col == TEXT do text_left = min(text_left, v.pos.x)
+		}
+		ui_end(&ui)
+		testing.expectf(
+			t,
+			marker_right <= text_left,
+			"%q draws its marker out to %v over text starting at %v",
+			l.text,
+			marker_right,
+			text_left,
+		)
+		append(&body_left, text_left)
+	}
+
+	// Ten does not push its own line right and leave the ones under nine
+	// behind it: an ordered list is measured against the widest marker it can
+	// hold, not against its own number.
+	testing.expectf(
+		t,
+		body_left[0] == body_left[1] && body_left[1] == body_left[2],
+		"items start at %v, %v and %v",
+		body_left[0],
+		body_left[1],
+		body_left[2],
+	)
+}
