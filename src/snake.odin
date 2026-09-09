@@ -298,6 +298,15 @@ draw_transcript :: proc(app: ^App, r: Rect) {
 	// is asked with the wheel taken away, and given it back after.
 	top := r.y + PAD - app.transcript.offset
 	open := snake_open(app, r, top)
+	// A panel that has changed hands starts at the top and starts folded. The
+	// scroll and the fold are one each for whichever panel is up, so the
+	// change of owner is the only thing that has to put them back — and it is
+	// done here, where which stone is open is worked out, rather than inside
+	// the drawing, which runs twice a frame and would have measured the panel
+	// against a fold it was about to close.
+	if ui_changed(&app.ui, ui_id("peek-of"), f32(open.msg * 4096 + open.block * 16 + open.sub)) {
+		app.peek, app.peek_raw = {}, false
+	}
 	peek: Peek
 	if ref_valid(open) do peek = peek_layout(app, open, r, top)
 	taken := peek.ok && peek.tall && (ui_hovered(ui, peek.stone) || ui_hovered(ui, peek.box))
@@ -469,13 +478,17 @@ draw_tile :: proc(app: ^App, t: Tile, r: Rect, open: bool) {
 	if b == nil do return
 	id := ui_id_ptr(b)
 
-	// A press on a stone does nothing yet. The button is still asked for,
-	// because it is what puts the stone under `ui.active`, and that is what
-	// the squash below is read off — the give is the whole of the answer for
-	// now. A press used to pin the panel open with a dot in the corner to say
-	// which one you had left that way, and that dot was a second thing on
-	// screen saying what the pointer already says.
-	_, hovered := ui_invisible_button(ui, id, r)
+	// A press unfolds the rest of the panel: the command that ran and the raw
+	// text that came back, which sit under a fold because they are the two
+	// longest things a call carries and the least of what it did. The stone is
+	// what takes the press because the stone is what the pointer is on — a
+	// panel is only up while it is, so a click anywhere while one is open is a
+	// click on the stone that opened it. A press used to pin the panel open
+	// instead, with a dot in the corner to say which one you had left that
+	// way, and that dot was a second thing on screen saying what the pointer
+	// already says.
+	clicked, hovered := ui_invisible_button(ui, id, r)
+	if clicked do app.peek_raw = !app.peek_raw
 
 	// It arrives by growing into place, and it comes up under the pointer the
 	// way a card on the grid does: its width and height swell on two springs

@@ -67,6 +67,28 @@ an_edit_opens_as_a_diff :: proc(t: ^testing.T) {
 	testing.expect_value(t, count(rows, .Skip), 1)
 }
 
+// An edit's result is a sentence saying the edit happened, which the diff has
+// already said better: it goes under the fold. One that says the edit did not
+// happen does not — that is the whole of what the panel has to say.
+@(test)
+a_receipt_folds_away_and_a_failure_does_not :: proc(t: ^testing.T) {
+	app := new(App)
+	defer free(app)
+	defer delete(app.rows)
+
+	input := `{"file_path": "a.odin", "old_string": "one", "new_string": "two"}`
+	ok := tool_block("Edit", input, "The file a.odin has been updated.")
+	defer block_destroy(&ok)
+	rows := rows_of(app, &ok)
+	testing.expect(t, !has_row(rows, .Mono, "The file a.odin has been updated."), "the receipt is on the panel")
+	testing.expect_value(t, count(rows, .More), 1)
+
+	bad := tool_block("Edit", input, "Error: String to replace not found in file.")
+	defer block_destroy(&bad)
+	rows = rows_of(app, &bad)
+	testing.expect(t, has_row(rows, .Mono, "Error: String to replace not found in file."), "the failure is under a fold")
+}
+
 // A new file is all one side of the same diff.
 @(test)
 a_write_is_all_additions :: proc(t: ^testing.T) {
@@ -89,11 +111,20 @@ a_tool_opens_in_its_own_shape :: proc(t: ^testing.T) {
 	defer free(app)
 	defer delete(app.rows)
 
+	// What a command did is what it printed, so that is what the panel opens
+	// with; the command itself is under the fold, which is what the arrow at
+	// the bottom of every panel is.
 	bash := tool_block("Bash", `{"command": "odin test src", "description": "the suite"}`, "ok\ndone")
 	defer block_destroy(&bash)
 	rows := rows_of(app, &bash)
-	testing.expect(t, has_row(rows, .Cmd, "odin test src"), "the command is not on the panel")
 	testing.expect_value(t, count(rows, .Mono), 2)
+	testing.expect_value(t, count(rows, .Cmd), 0)
+	testing.expect_value(t, count(rows, .More), 1)
+
+	app.peek_raw = true
+	rows = rows_of(app, &bash)
+	testing.expect(t, has_row(rows, .Cmd, "odin test src"), "the command is not on the panel once it is unfolded")
+	app.peek_raw = false
 
 	todo := tool_block(
 		"TodoWrite",

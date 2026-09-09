@@ -81,12 +81,15 @@ Row_Kind :: enum {
 	Skip, // where a run of unchanged lines was left out
 	Path, // a file the tool found or touched
 	Check, // one item of a plan, with its box
+	More, // the fold the command and the raw result sit under
 	Gap, // a blank line that means something
 }
 
 row_h :: proc(kind: Row_Kind) -> f32 {
 	switch kind {
 	case .Head:
+		return 26
+	case .More:
 		return 26
 	case .Check:
 		return 23
@@ -122,7 +125,8 @@ peek_rows :: proc(app: ^App, b: ^Block, inner: f32) -> []Row {
 	// file is a diff, the same as the edit tool's, because that is what
 	// happened. See shell.odin.
 	from := 0
-	if cmd := jstr(input, "command"); cmd != "" {
+	cmd := jstr(input, "command")
+	if cmd != "" {
 		from = rows_shell(app, input, cmd, inner)
 	} else do switch icon {
 	case .Edit:
@@ -140,8 +144,49 @@ peek_rows :: proc(app: ^App, b: ^Block, inner: f32) -> []Row {
 	case .You, .Said, .Answer, .Error, .Image, .Tool:
 		rows_any(app, input, inner)
 	}
-	rows_result(app, b, inner, icon, from)
+	// What came back is either the news or the receipt for it. A command's
+	// output is the whole of what it did and belongs at the top; an edit's
+	// result is a sentence saying the edit happened, which the diff above has
+	// already said better, and it goes under the fold with the command.
+	receipt := result_is_receipt(b, icon)
+	if !receipt do rows_result(app, b, inner, icon, from)
+	rows_more(app, b, inner, icon, cmd, receipt, from)
 	return rows[:]
+}
+
+// Whether the text that came back is a receipt rather than the point of the
+// call. Only an edit and a plan get one — `The file has been updated`, `Todos
+// have been modified successfully` — and only when it went well: an edit that
+// could not find its string says so in the same place, and that is the one
+// thing on the panel worth reading.
+@(private = "file")
+result_is_receipt :: proc(b: ^Block, icon: Icon) -> bool {
+	if icon != .Edit && icon != .Plan do return false
+	result := strings.trim_space(strings.to_string(b.result))
+	if result == "" do return false
+	head := len(result) > 200 ? result[:200] : result
+	for sign in ([?]string{"rror", "ailed", "annot", "not found", "No such", "Traceback", "denied"}) {
+		if strings.contains(head, sign) do return false
+	}
+	return true
+}
+
+// The fold. What is under it is the mechanics of the call — the command as it
+// was typed, and the raw text the harness handed back — which are the two
+// longest things a stone carries and the least of what it did. A twenty-line
+// heredoc at the top of the panel buried the two lines of diff that were the
+// whole news of the turn.
+@(private = "file")
+rows_more :: proc(app: ^App, b: ^Block, inner: f32, icon: Icon, cmd: string, receipt: bool, from: int) {
+	if cmd == "" && !receipt do return
+	label := cmd != "" && receipt ? "command and result" : cmd != "" ? "command" : "result"
+	append(&app.rows, Row{kind = .More, text = label, num = app.peek_raw ? 1 : 0})
+	if !app.peek_raw do return
+	if cmd != "" {
+		row_head(app, "command")
+		rows_cmd(app, cmd, inner)
+	}
+	if receipt do rows_result(app, b, inner, icon, from)
 }
 
 // An edit, as a diff. Write has no old side and Edit has both; either way the
@@ -239,8 +284,6 @@ rows_shell :: proc(app: ^App, input: json.Value, cmd: string, inner: f32) -> int
 		row_head(app, swap.file != "" ? swap.file : swap.old == "" ? "written" : "changed")
 		rows_diff(app, swap.old, swap.new, inner - PEEK_SIGN - 14)
 	}
-	row_head(app, "command")
-	rows_cmd(app, cmd, inner)
 	return sh.from
 }
 
@@ -827,7 +870,11 @@ draw_peek :: proc(app: ^App, p: Peek) {
 	// to fight the tint it was printed on.
 	ui_rect(ui, box, color_alpha(tile.col, 0.14), 10)
 
-	rows := b.kind == .Tool && p.pic == "" ? peek_rows(app, b, p.rows_w) : nil
+	// The list peek_layout just built, rather than a second build of it: the
+	// panel's own width was decided from these rows, and building them again
+	// against that width would fold them differently. It is also half the
+	// work.
+	rows := b.kind == .Tool && p.pic == "" ? app.rows[:] : nil
 	draw_peek_head(app, p, rows)
 
 	// The text under the head scrolls, and the wheel reaches it from the
@@ -836,7 +883,6 @@ draw_peek :: proc(app: ^App, p: Peek) {
 	// at the top: the scroll is one number, and it belongs to whichever
 	// panel is up, so the change of owner is what resets it.
 	body_box := Rect{box.x, box.y + PEEK_HEAD, box.w, box.h - PEEK_HEAD - 8}
-	if ui_changed(ui, ui_id("peek-of"), f32(ui_id_ptr(b) & 0xffff)) do app.peek = {}
 	ui_begin_scroll(ui, body_box, &app.peek, p.body_h + 8, p.stone)
 	iy := body_box.y - app.peek.offset
 	ix := box.x + 14
@@ -971,6 +1017,28 @@ draw_row :: proc(app: ^App, row: Row, r: Rect, box: Rect, gut: f32) {
 		line := r.x + w + 8
 		ui_rect(ui, {line, y + 6, max(box.x + box.w - 14 - line, 0), 1}, color_alpha(BORDER, 0.7), 0)
 
+	case .More:
+		// A chevron and what is behind it: pointing along while it is shut,
+		// down once it is open. Drawn rather than typed, like every other mark
+		// here — the atlas is one alphabet.
+		y := r.y + 13
+		open := row.num > 0
+		col := color_alpha(MUTED, 0.9)
+		if open {
+			ui_line(ui, {r.x + 2, y - 2}, {r.x + 6, y + 2}, 1.8, col)
+			ui_line(ui, {r.x + 6, y + 2}, {r.x + 10, y - 2}, 1.8, col)
+		} else {
+			ui_line(ui, {r.x + 4, y - 4}, {r.x + 8, y}, 1.8, col)
+			ui_line(ui, {r.x + 8, y}, {r.x + 4, y + 4}, 1.8, col)
+		}
+		// Only while it is shut does it name what is behind it; once it is
+		// open the sections below carry their own names, and the row saying
+		// `command` directly above a heading saying `command` was the panel
+		// stuttering.
+		line := r.x + 16
+		if !open do line += ui_text(ui, &ui.regular, row.text, {r.x + 16, r.y + 5}, 11, col) + 8
+		ui_rect(ui, {line, y, max(box.x + box.w - 14 - line, 0), 1}, color_alpha(BORDER, 0.7), 0)
+
 	case .Note:
 		ui_text(ui, &ui.regular, row.text, {r.x, r.y + 2}, PEEK_TX, color_mix(TEXT, MUTED, 0.25))
 
@@ -1071,7 +1139,7 @@ rows_gut :: proc(rows: []Row) -> f32 {
 @(private = "file")
 row_width :: proc(ui: ^UI, row: Row, gut: f32) -> f32 {
 	switch row.kind {
-	case .Head, .Gap, .Skip:
+	case .Head, .More, .Gap, .Skip:
 		return 0 // a label with a rule after it fits whatever it is given
 	case .Mono:
 		return gut + fold_in(ui, row) + font_width(&ui.mono, tabbed(row.text), PEEK_PX)

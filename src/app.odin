@@ -167,6 +167,11 @@ App :: struct {
 	// nothing here to leave behind when the chat it pointed into is thrown
 	// away.
 	peek:      Scroll,
+	// Whether the open panel is showing the mechanics under it — the command
+	// as it was typed, and the text the harness handed back. One flag, not one
+	// per stone: only one panel is ever up, and it belongs to whichever that
+	// is, so the change of owner is what puts it back (see draw_transcript).
+	peek_raw:  bool,
 
 	status:    string,
 	model:     Model,
