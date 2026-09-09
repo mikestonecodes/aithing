@@ -2,6 +2,7 @@ package aithing
 
 import "core:math"
 import "core:path/filepath"
+import "core:slice"
 import "core:strings"
 
 // The home view is a fixed grid: every todo item is a card, cards are grouped
@@ -67,6 +68,15 @@ Canvas :: struct {
 	ghosts:   [dynamic]Ghost,
 }
 
+// A card and where it is drawn this frame, for the ones held back to be
+// drawn last.
+@(private = "file")
+Placed :: struct {
+	card: Card,
+	r:    Rect,
+	left: f32, // distance squared to where it is going
+}
+
 Ghost :: struct {
 	r:    Rect, // content space, like a card
 	text: string, // its own copy: the todo it came from is freed
@@ -99,6 +109,24 @@ CARD_SW :: 4 // width swell, hovered
 CARD_SH :: 5 // height swell, hovered — a different rate, so it wobbles
 CARD_PRESS :: 6
 HEAD_Y :: 7
+CARD_BORN :: 8 // 0 the frame a card is made, 1 once it has arrived
+
+// The moment a card is made from the box: it is seeded under the box, small,
+// so its first frame draws it rising out of where it was typed. Before this a
+// new card was simply there, at the head of its section, and the only thing
+// that moved was every other card in the section sliding along a slot to make
+// room — motion with no cause on screen, which is what "the shifting is
+// weird" was. Now the cause is in the picture: the card comes up out of the
+// box and the others get out of its way. The seeds only take on an id the
+// springs have never seen, so a card that already has a place keeps it.
+canvas_born :: proc(app: ^App, id: string) {
+	ui := &app.ui
+	c := &app.canvas
+	// Content space, like a card: the box sits just under the grid's view.
+	ui_spring_seed(ui, ui_id(id, CARD_X), c.view.x + c.view.w / 2 - CARD_W / 2)
+	ui_spring_seed(ui, ui_id(id, CARD_Y), c.scroll.offset + c.view.h - GRID_TOP)
+	ui_spring_seed(ui, ui_id(id, CARD_BORN), 0)
+}
 
 // The moment a card is dismissed: it is copied out to implode where it was,
 // and the wave that starts from it. Called from both places a card can be
@@ -217,15 +245,23 @@ draw_canvas :: proc(app: ^App, r: Rect) {
 	canvas_keep_sel_in_view(app, view)
 
 	ui_begin_scroll(ui, view, &c.scroll, content)
+	moving := make([dynamic]Placed, context.temp_allocator)
 	// Where a card is drawn is where it is laid out, chased by a spring: a
 	// card whose row moved — one before it went, the window narrowed — slides
 	// there and settles rather than being there. Every card's springs are
 	// ticked, on screen or not, so one scrolled back into view is where it
 	// belongs and not sliding in from where it was last seen.
+	//
+	// Damped to just short of critical. At 13 the springs rang, and a card
+	// shoved along a slot by one made above it went past the slot and came
+	// back, every card in the section at once — a row of things overshooting
+	// looks like a mistake being corrected, not like room being made. The
+	// wave a dismissed card sends still moves them: a kick shows as a
+	// displacement and a return either way.
 	for card in c.cards {
 		if card.head {
 			hy := ui_id(card.name, HEAD_Y)
-			y := ui_spring(ui, hy, card.r.y, 170, 15)
+			y := ui_spring(ui, hy, card.r.y, 170, 22)
 			cr := Rect{card.r.x, y - c.scroll.offset + view.y, card.r.w, card.r.h}
 			if cr.y > view.y + view.h || cr.y + cr.h < view.y do continue
 			draw_section_head(app, card, cr)
@@ -234,12 +270,28 @@ draw_canvas :: proc(app: ^App, r: Rect) {
 		td := app.todos.list[card.todo]
 		kx, ky := ui_id(td.id, CARD_X), ui_id(td.id, CARD_Y)
 		canvas_wave(app, card.r, kx, ky, ui_id(td.id, CARD_SW), ui_id(td.id, CARD_SH))
-		x := ui_spring(ui, kx, card.r.x, 170, 13)
-		y := ui_spring(ui, ky, card.r.y, 170, 13)
+		x := ui_spring(ui, kx, card.r.x, 170, 22)
+		y := ui_spring(ui, ky, card.r.y, 170, 22)
 		cr := Rect{x, y - c.scroll.offset + view.y, card.r.w, card.r.h}
 		if cr.y > view.y + view.h || cr.y + cr.h < view.y do continue
+		// A card on the move goes over the ones sitting still. The card at
+		// the end of a row that has to make room crosses the grid to the
+		// start of the next, and drawn in list order it went under every card
+		// laid out after it — cut through by the things it was passing.
+		// Every card in the section is moving when room is being made, so
+		// the order among them is by how far each has left to go: the one
+		// crossing the grid from the end of a row to the start of the next
+		// is the one furthest from home, and goes over the ones nudging
+		// along a slot.
+		dx, dy := x - card.r.x, y - card.r.y
+		if abs(dx) > 1 || abs(dy) > 1 {
+			append(&moving, Placed{card, cr, dx * dx + dy * dy})
+			continue
+		}
 		draw_card(app, card, cr)
 	}
+	slice.sort_by(moving[:], proc(a, b: Placed) -> bool { return a.left < b.left })
+	for m in moving do draw_card(app, m.card, m.r)
 	draw_ghosts(app, view)
 	ui_end_scroll(ui, view, &c.scroll)
 
@@ -366,10 +418,17 @@ draw_card :: proc(app: ^App, card: Card, base: Rect) {
 	sw := ui_spring(ui, ui_id(td.id, CARD_SW), up, 330, 9)
 	sh := ui_spring(ui, ui_id(td.id, CARD_SH), up, 190, 8)
 	press := ui_spring(ui, ui_id(td.id, CARD_PRESS), held, 500, 18)
-	r.w = base.w * (1 + CARD_SWELL_W * sw - 0.04 * press)
-	r.h = base.h * (1 + CARD_SWELL_H * sh - 0.06 * press)
+	// A card just made grows to size as it rises out of the box (see
+	// canvas_born), with a touch of overshoot so it lands rather than fades
+	// in. Any card the spring has not met before rests at 1, so this is a
+	// no-op for everything already on the grid.
+	born := ui_spring(ui, ui_id(td.id, CARD_BORN), 1, 240, 17)
+	grow := 0.7 + 0.3 * born
+	r.w = base.w * (1 + CARD_SWELL_W * sw - 0.04 * press) * grow
+	r.h = base.h * (1 + CARD_SWELL_H * sh - 0.06 * press) * grow
 	r.x = base.x + (base.w - r.w) / 2
 	r.y = base.y + (base.h - r.h) / 2 - CARD_LIFT * lift
+	if born < 0.99 do ui_rect(ui, {r.x + 1, r.y + 6, r.w, r.h}, color_alpha(Color(0xff000000), 0.35 * (1 - born)), 12)
 	btn = {r.x + r.w - pad - 28, r.y + pad - 4, 28, 28}
 
 	if lift > 0.01 do ui_rect(ui, {r.x + 1, r.y + 4 + 4 * lift, r.w, r.h}, color_alpha(Color(0xff000000), 0.3 * lift), 12)
