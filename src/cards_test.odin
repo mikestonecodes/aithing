@@ -342,12 +342,61 @@ every_card_is_its_own_row :: proc(t: ^testing.T) {
 
 	app_filter(app)
 	testing.expect_value(t, len(app.todo_view), 4)
-	// Newest first inside a project.
-	testing.expect_value(t, app.todos.list[app.todo_view[0]].text, "rebake the atlas")
+	// Oldest first inside a project, so the newest is last.
+	testing.expect_value(t, app.todos.list[app.todo_view[3]].text, "rebake the atlas")
 
 	editor_set_text(&app.search, "caret")
 	app_filter(app)
 	testing.expect_value(t, len(app.todo_view), 3)
+}
+
+// Making a card moves nothing that is already on the grid. This is what the
+// order is for: the newest card used to be first in its section, so one thing
+// typed slid every card in that section one slot along, and the card at the
+// end of each row went the long way — back across the whole grid to the start
+// of the row below. A project new to the grid was worse still, because
+// sections were alphabetical and a new one dropped into the middle of them.
+// Now a card lands in the free slot at the end of its own section and a new
+// project's section lands at the bottom, so nothing already placed has
+// anywhere to go.
+@(test)
+a_new_card_moves_nothing_already_on_the_grid :: proc(t: ^testing.T) {
+	scratch_dir(t)
+	app := scratch_app()
+	defer scratch_free(app)
+	app.canvas.view = Rect{0, 0, 1180, 800} // three columns wide
+
+	for i in 0 ..< 7 do todos_add(&app.todos, "a card", "", "/tmp/apple")
+	todos_add(&app.todos, "elsewhere", "", "/tmp/zebra")
+
+	// Where every card sits now, by id, so the check survives the list being
+	// reordered underneath it.
+	canvas_layout(app)
+	was := make(map[string]Rect, context.temp_allocator)
+	for card in app.canvas.cards do if !card.head {
+		was[app.todos.list[card.todo].id] = card.r
+	}
+	bottom := app.canvas.content
+
+	// One into a project that already has a section, one into a project the
+	// grid has never seen.
+	todos_add(&app.todos, "one more", "", "/tmp/apple")
+	todos_add(&app.todos, "a third project", "", "/tmp/quince")
+
+	canvas_layout(app)
+	moved := 0
+	for card in app.canvas.cards do if !card.head {
+		id := app.todos.list[card.todo].id
+		if r, seen := was[id]; seen && r != card.r do moved += 1
+	}
+	testing.expect_value(t, moved, 0)
+	// And both new cards are below everything that was there.
+	testing.expect(t, app.canvas.content > bottom)
+	for card in app.canvas.cards do if !card.head {
+		td := app.todos.list[card.todo]
+		if td.text == "one more" do testing.expect(t, td.cwd == "/tmp/apple")
+		if td.text == "a third project" do testing.expect(t, card.r.y >= bottom - GRID_PAD - CARD_H)
+	}
 }
 
 // Where a card is put is where it stays. Nothing in the grid's order is a
@@ -375,10 +424,13 @@ the_grid_does_not_move_on_its_own :: proc(t: ^testing.T) {
 	defer delete(before)
 	for at, i in app.todo_view do before[i] = at
 	// Projects come in a fixed order, not in the order they were last
-	// touched, and inside one the newest card is first.
-	testing.expect_value(t, app.todos.list[before[0]].cwd, "/tmp/apple")
-	testing.expect_value(t, app.todos.list[before[0]].text, "three")
-	testing.expect_value(t, app.todos.list[before[2]].cwd, "/tmp/zebra")
+	// touched: each sits where its oldest card puts it, so zebra's card being
+	// the first one made is what keeps zebra at the top. Inside a project the
+	// oldest card is first.
+	testing.expect_value(t, app.todos.list[before[0]].cwd, "/tmp/zebra")
+	testing.expect_value(t, app.todos.list[before[1]].cwd, "/tmp/apple")
+	testing.expect_value(t, app.todos.list[before[1]].text, "two")
+	testing.expect_value(t, app.todos.list[before[2]].text, "three")
 
 	// Every thread is touched, the way a turn in another window touches one,
 	// and the list is handed over the other way round for good measure.

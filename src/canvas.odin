@@ -116,9 +116,11 @@ CARD_BORN :: 8 // 0 the frame a card is made, 1 once it has arrived
 // new card was simply there, at the head of its section, and the only thing
 // that moved was every other card in the section sliding along a slot to make
 // room — motion with no cause on screen, which is what "the shifting is
-// weird" was. Now the cause is in the picture: the card comes up out of the
-// box and the others get out of its way. The seeds only take on an id the
-// springs have never seen, so a card that already has a place keeps it.
+// weird" was. Getting out of its way turned out to be the wrong half to keep:
+// the card now lands in the free slot at the end of its section and nothing
+// else moves at all (app_build_cards), so the only thing on screen that
+// changes is the card coming up out of the box. The seeds only take on an id
+// the springs have never seen, so a card that already has a place keeps it.
 canvas_born :: proc(app: ^App, id: string) {
 	ui := &app.ui
 	c := &app.canvas
@@ -138,8 +140,10 @@ canvas_blast :: proc(app: ^App, r: Rect, text: string) {
 // --- layout ----------------------------------------------------------------
 
 // Fills c.cards for this frame and returns how tall the content is. Sections
-// come in the order the sessions do, which is newest first, so the project you
-// touched last is the one at the top.
+// come in the order the projects first got a card and the cards inside one in
+// the order they were made, so a card added or dismissed only ever disturbs
+// what comes after it — see app_build_cards for why that is the way round it
+// is.
 @(private = "file")
 grid_layout :: proc(app: ^App, r: Rect) -> f32 {
 	c := &app.canvas

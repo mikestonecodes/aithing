@@ -473,24 +473,45 @@ app_filter :: proc(app: ^App) {
 }
 
 // How the grid is ordered, and it is worth saying plainly: by project, and
-// within a project by the order the cards were made, newest first. Nothing in
+// within a project by the order the cards were made, oldest first. Nothing in
 // it is a clock or a file size, so a turn taken in another window cannot move
-// a card, and a card put down keeps its place until it is dismissed or
-// something is made above it.
+// a card, and a card put down keeps its place until it is dismissed.
 //
 // It used to be ordered by session mtime, so every turn anywhere reshuffled
 // the whole grid, projects and all.
+//
+// Both halves of the order are the way round they are so that making a card
+// moves nothing that is already on the grid. Inside a project the newest card
+// was first, so every card in the section shifted one slot along to let it in
+// — and one card per row shifts the long way, from the start of its row back
+// to the end of the row above, which is several things flying across the grid
+// for one thing typed. Oldest first puts the new card in the free slot at the
+// end of its own section, which is where the box it was typed into already
+// is, and nothing else moves at all. Projects were in alphabetical order for
+// the same reason and with the same cost: the first card of a project called
+// `apple` dropped a whole section into the middle of the grid and shoved
+// everything under it down the page. A project sits where its oldest card
+// puts it, so a project new to the grid arrives at the bottom of it.
+//
+// Dismissing still closes the gap — the cards after the hole come back one
+// slot each — because the alternative is a grid with holes in it, or a
+// remembered slot per card, which is the second copy this file exists to
+// avoid. What the order buys is that the card most likely to be dismissed,
+// the one just finished, is the last of its section and has nothing after it
+// to move.
 @(private = "file")
 Card_Sort :: struct {
-	cwd:  string,
+	born: int, // the seq of the project's oldest card: where its section sits
 	seq:  int,
 	todo: int,
 }
 
+// No tie to break between projects: `born` is one card's seq and a card is in
+// one project, so two sections cannot claim the same number.
 @(private = "file")
 card_before :: proc(a, b: Card_Sort) -> bool {
-	if a.cwd != b.cwd do return a.cwd < b.cwd
-	return a.seq > b.seq
+	if a.born != b.born do return a.born < b.born
+	return a.seq < b.seq
 }
 
 // The grid, in the order it is drawn.
@@ -510,14 +531,23 @@ app_build_cards :: proc(app: ^App) {
 	query := strings.trim_space(editor_text(&app.search))
 
 	rows := make([dynamic]Card_Sort, 0, len(app.todos.list), context.temp_allocator)
+	// Where each project's section goes, worked out in the same pass that
+	// collects the cards: the oldest card the project has here. Taken over
+	// the cards that survived the filter and not over every card there is,
+	// so a search that hides a project's first card does not leave its
+	// section pinned to a number nothing on screen accounts for.
+	born := make(map[string]int, context.temp_allocator)
 	for td, i in app.todos.list {
 		if query != "" {
 			if !todo_matches(td, query) do continue
 		} else if app.canvas.project != "" && td.cwd != app.canvas.project {
 			continue
 		}
-		append(&rows, Card_Sort{cwd = td.cwd, seq = todo_seq(td), todo = i})
+		seq := todo_seq(td)
+		if was, seen := born[td.cwd]; !seen || seq < was do born[td.cwd] = seq
+		append(&rows, Card_Sort{seq = seq, todo = i})
 	}
+	for &row in rows do row.born = born[app.todos.list[row.todo].cwd]
 	slice.sort_by(rows[:], card_before)
 
 	for row in rows do append(&app.todo_view, row.todo)
