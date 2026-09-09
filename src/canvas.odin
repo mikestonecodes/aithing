@@ -598,21 +598,11 @@ draw_doing :: proc(app: ^App, t: ^Turn, at: [2]f32, card: u64) {
 
 	disc := color_mix(PANEL, col, 0.2 + 0.16 * breath + 0.2 * pop)
 	ui_circle(ui, at, rad, disc)
-	// The light going round. ui_dial only ever fills clockwise from twelve, so
-	// the bead is a disc placed on the circle rather than an arc rotated round
-	// it — the same thing to look at, and it can trail.
-	ui_dial(ui, at, rad, 2, 1, color_alpha(col, 0.34))
-	// Spaced far enough apart to read as four: at 0.26 radians they were 3px
-	// apart on a 13px ring and overlapped into one bright blob at the top.
-	for i in 0 ..= 3 {
-		a := ui.time * 3.2 - f32(i) * 0.45
-		ui_circle(
-			ui,
-			{at.x + math.sin(a) * rad, at.y - math.cos(a) * rad},
-			3 - f32(i) * 0.62 + 0.9 * pop,
-			color_alpha(col, 1 - f32(i) * 0.27),
-		)
-	}
+	// There used to be a ring here with four beads chasing each other round
+	// it — a trailing comet on the disc's edge. It was asked for and then
+	// asked away again: the disc already breathes and the mark already knocks
+	// when the tool changes, and the beads were a second thing saying the
+	// same word louder. The disc, the glow and the mark are the whole of it.
 
 	// The mark, in the box draw_icon takes its scale from: bigger than the
 	// disc, because that box is a transcript stone and the mark inside it is
