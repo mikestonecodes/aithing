@@ -477,7 +477,7 @@ canvas_filter_project :: proc(app: ^App, cwd: string) {
 	next := strings.clone(cwd) // may be the string being replaced
 	if next != app.canvas.project {
 		editor_clear(&app.capture)
-		app.history_at = 0
+		app_history_done(app)
 	}
 	delete(app.canvas.project)
 	app.canvas.project = next

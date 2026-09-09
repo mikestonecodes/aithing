@@ -556,7 +556,7 @@ app_input :: proc(app: ^App) {
 			// Typing over something the history put there makes it yours: the
 			// next Up starts from the newest card again rather than carrying
 			// on from wherever the walk had got to.
-			if target == &app.capture do app.history_at = 0
+			if target == &app.capture do app_history_done(app)
 			if app_focus(app) == .Search do search_changed = true
 		}
 	}

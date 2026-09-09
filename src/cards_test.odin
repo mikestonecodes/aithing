@@ -73,6 +73,7 @@ scratch_free :: proc(app: ^App) {
 	delete(app.open)
 	delete(app.pending_open)
 	delete(app.status)
+	delete(app.history_draft)
 	turns_destroy(app)
 	load_destroy(&app.load)
 	chat_destroy(&app.chat)
@@ -1625,4 +1626,44 @@ effort_is_medium_until_it_is_picked :: proc(t: ^testing.T) {
 	e, ok := effort_parse("thorough")
 	testing.expect(t, !ok)
 	testing.expect_value(t, e, EFFORT_DEFAULT)
+}
+
+// Up goes looking through what has already been typed, and the half-written
+// line it was pressed over is still there to come back down to. It used to be
+// thrown away — one press of Up over a line you were still writing and there
+// was no key anywhere that brought it back.
+@(test)
+history_gives_the_draft_back :: proc(t: ^testing.T) {
+	scratch_dir(t)
+	app := scratch_app()
+	defer scratch_free(app)
+
+	canvas_filter_project(app, "/tmp/p") // the box only exists narrowed
+	editor_set_text(&app.capture, "one")
+	app_capture(app)
+	editor_set_text(&app.capture, "two")
+	app_capture(app)
+
+	editor_set_text(&app.capture, "half a line")
+	testing.expect(t, app_history(app, 1))
+	testing.expect_value(t, editor_text(&app.capture), "two")
+	testing.expect(t, app_history(app, 1))
+	testing.expect_value(t, editor_text(&app.capture), "one")
+
+	// And back down the way it came, ending on what was being written.
+	testing.expect(t, app_history(app, -1))
+	testing.expect_value(t, editor_text(&app.capture), "two")
+	testing.expect(t, app_history(app, -1))
+	testing.expect_value(t, editor_text(&app.capture), "half a line")
+
+	// Typing over what the walk put there makes the box yours again: the next
+	// Up starts from the newest card, and there is no older draft left behind
+	// to be handed back over the top of it.
+	testing.expect(t, app_history(app, 1))
+	editor_set_text(&app.capture, "mine now")
+	app_history_done(app)
+	testing.expect(t, app_history(app, 1))
+	testing.expect_value(t, editor_text(&app.capture), "two")
+	testing.expect(t, app_history(app, -1))
+	testing.expect_value(t, editor_text(&app.capture), "mine now")
 }
