@@ -292,17 +292,7 @@ app_apply_clicks :: proc(app: ^App) -> bool {
 	acted := app.pending_open != "" || app.pending_card != "" || len(app.pending_dismiss) > 0 || len(app.pending_resolve) > 0
 	if id := app.pending_card; id != "" {
 		app.pending_card = ""
-		// The pointer's first stop is the cursor, not the thread. A click that
-		// opened straight away took the keyboard out of the box under the grid
-		// — the thread's composer is the box on that page — so a half-typed
-		// list stopped taking letters the moment you clicked a card to see
-		// what it said. Landing the cursor on it writes nothing about where
-		// the keyboard is, so the box keeps the caret and the text, and the
-		// click on the card the cursor is already on is the one that opens it.
-		// Same rule as Enter, which acts on the cursor's card: the click only
-		// says which card that is.
-		if id != app.canvas.sel do canvas_set_sel(app, id)
-		else do app_open_todo(app, id)
+		app_open_todo(app, id)
 		delete(id)
 	}
 	for id in app.pending_resolve {
@@ -569,8 +559,7 @@ app_sync_todos :: proc(app: ^App) {
 // started, now. One path either way, whether or not anything else is in
 // flight: Enter always does the same thing and never has to be pressed twice.
 // The pointer's way in, which waits for the frame it was pressed in to
-// finish: see App.pending_card, and app_apply_clicks for why the pointer's
-// first click only moves the cursor. The keyboard's Enter goes straight to
+// finish: see App.pending_card. The keyboard's Enter goes straight to
 // app_open_todo, because it is handled before the frame is drawn.
 app_click_todo :: proc(app: ^App, id: string) {
 	delete(app.pending_card)

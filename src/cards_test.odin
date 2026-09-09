@@ -1824,8 +1824,6 @@ clicking_a_card_leaves_the_box_alone_for_the_rest_of_the_frame :: proc(t: ^testi
 	app_filter(app)
 	testing.expect(t, app_capture_open(app))
 
-	// The cursor is on it already, so this click is the one that opens it.
-	canvas_set_sel(app, id)
 	app_click_todo(app, id)
 	testing.expect_value(t, app.page, Page.Grid)
 	testing.expect(t, app_capture_open(app))
@@ -1835,38 +1833,4 @@ clicking_a_card_leaves_the_box_alone_for_the_rest_of_the_frame :: proc(t: ^testi
 	testing.expect_value(t, app.page, Page.Thread)
 	testing.expect_value(t, app.pending_open, "")
 	testing.expect_value(t, app.chat.session_id, "sess-click")
-}
-
-// Clicking a card you are not on lands the cursor on it and leaves the
-// keyboard where it was. Opening a thread puts the caret in the composer —
-// the thread's box stands where the grid's box stood — so a click that opened
-// straight away stopped a half-typed list from taking letters. The second
-// click on the same card, which is the one that says you meant it, opens it.
-@(test)
-the_first_click_on_a_card_only_moves_the_cursor :: proc(t: ^testing.T) {
-	scratch_dir(t)
-	app := scratch_app()
-	defer scratch_free(app)
-	sessions := make([]Session, 1)
-	sessions[0] = fake_session("sess-two", "a thread")
-	app.sessions = sessions
-
-	canvas_filter_project(app, "/tmp/proj")
-	id := todos_add(&app.todos, "read the atlas", "sess-two", "/tmp/proj")
-	app_filter(app)
-	editor_set_text(&app.capture, "half typed")
-
-	app_click_todo(app, id)
-	_ = app_apply_clicks(app)
-	testing.expect_value(t, app.page, Page.Grid)
-	testing.expect_value(t, app.canvas.sel, id)
-	testing.expect_value(t, app_focus(app), Focus.Capture)
-	testing.expect_value(t, editor_text(&app.capture), "half typed")
-
-	app_click_todo(app, id)
-	_ = app_apply_clicks(app)
-	testing.expect_value(t, app.page, Page.Thread)
-	testing.expect_value(t, app.chat.session_id, "sess-two")
-	// What was typed is still there for when the thread is shut.
-	testing.expect_value(t, editor_text(&app.capture), "half typed")
 }
