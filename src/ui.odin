@@ -66,6 +66,10 @@ UI :: struct {
 	cmds:       [dynamic]DrawCmd,
 	clip:       Rect,
 	clip_stack: [dynamic]Rect,
+	// What is drawn is drawn at the size it will end up at, and this is where
+	// it actually lands: see ui_push_zoom.
+	zoom:       f32,
+	zoom_at:    [2]f32,
 	punching:   bool,
 
 	regular:    Font,
@@ -222,6 +226,7 @@ ui_begin :: proc(ui: ^UI, width, height: int, input: ^Input, dt: f32 = 1.0 / 60)
 
 	ui.size = {f32(width), f32(height)}
 	ui.clip = {0, 0, ui.size.x, ui.size.y}
+	ui.zoom, ui.zoom_at = 1, {0, 0}
 
 	ui.mouse_moved = ui.has_mouse && input.has_mouse && input.mouse != ui.last_mouse
 	ui.last_mouse = input.mouse
@@ -258,6 +263,34 @@ ui_pop_clip :: proc(ui: ^UI) {
 	ui.clip = pop(&ui.clip_stack)
 }
 
+// Draws the next thing at a fraction of its size, somewhere else: everything
+// emitted until ui_pop_zoom lands at `p * scale + at`, text and rounded
+// corners and all.
+//
+// It is here so that a thread opening out of its card can be laid out once,
+// at the size it ends up, and put through the hole the panel is opening. The
+// panel used to be an empty box with the thread's name in the corner while
+// the real thing waited for it to stop, and drawing the thread at the panel's
+// own changing width instead would re-measure every message in it every frame
+// of the movement — the measurement is keyed on the width (see
+// draw_transcript), and that width is the one thing a zoom does not change.
+//
+// One level deep: there is one zoom in the program and nesting two would only
+// be a way to lose track of which is which.
+ui_push_zoom :: proc(ui: ^UI, scale: f32, at: [2]f32) {
+	ui.zoom, ui.zoom_at = scale, at
+}
+
+ui_pop_zoom :: proc(ui: ^UI) {
+	ui.zoom, ui.zoom_at = 1, {0, 0}
+}
+
+@(private = "file")
+zoom_rect :: proc(ui: ^UI, r: Rect) -> Rect {
+	if ui.zoom == 1 do return r
+	return {r.x * ui.zoom + ui.zoom_at.x, r.y * ui.zoom + ui.zoom_at.y, r.w * ui.zoom, r.h * ui.zoom}
+}
+
 @(private = "file")
 current_cmd :: proc(ui: ^UI) -> ^DrawCmd {
 	if len(ui.cmds) > 0 {
@@ -284,6 +317,15 @@ ui_quad :: proc(
 	param: f32 = 0,
 ) {
 	if r.w <= 0 || r.h <= 0 do return
+	// Placed and sized where it actually lands, before anything is decided
+	// about it: the clip is in window pixels and so is the corner radius, and
+	// a quad tested against the clip where it was laid out rather than where
+	// it is drawn is a quad that disappears while a zoom is on.
+	r := zoom_rect(ui, r)
+	radius := radius >= 0 ? radius * ui.zoom : radius
+	// The distance ramp is in screen pixels and scales with the type: see
+	// font_px_range.
+	param := effect == .Text ? param * ui.zoom : param
 	if rect_intersect(r, ui.clip).w <= 0 do return
 
 	cmd := current_cmd(ui)
@@ -314,7 +356,8 @@ ui_quad_corners :: proc(
 	shape := [4]f32{0, 0, 0, 0}
 
 	for i in 0 ..< 4 {
-		append(&ui.verts, Vertex{p[i], uv[i], col[i], tex, shape, NO_ROUND, effect, 0})
+		at := ui.zoom == 1 ? p[i] : p[i] * ui.zoom + ui.zoom_at
+		append(&ui.verts, Vertex{at, uv[i], col[i], tex, shape, NO_ROUND, effect, 0})
 	}
 	append(&ui.indices, base, base + 1, base + 2, base, base + 2, base + 3)
 	cmd.index_count += 6
