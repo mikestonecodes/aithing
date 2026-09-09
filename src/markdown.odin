@@ -73,13 +73,12 @@ span_step :: proc(
 	return font_glyph(f, r).advance * font_scale(f, size), i + step
 }
 
-// What a laid-out line comes to on screen, spans and all. A line starts in the
-// plain face however the one above it ended: md_draw_line resets at every
-// line, so a span broken across a wrap is drawn plain on the second line, and
-// this measures it the same way.
-md_line_width :: proc(ui: ^UI, text: string, base: ^Font, px: f32) -> f32 {
+// What a laid-out line comes to on screen, spans and all. `pen` is the face
+// the line opens in — `Line.pen`, which the wrap wrote — because a span that
+// was still open where the line above was cut carries on into this one.
+md_line_width :: proc(ui: ^UI, text: string, base: ^Font, px: f32, pen := Span_Pen{}) -> f32 {
 	w: f32
-	p: Span_Pen
+	p := pen
 	i := 0
 	for i < len(text) {
 		adv, next := span_step(ui, text, i, &p, base, px)
@@ -184,8 +183,14 @@ wrap_into :: proc(
 	// continuation line is as likely to be the middle of an em dash as the
 	// "- " it is looking for.
 	st := style
-	emit :: proc(out: ^[dynamic]Line, st: ^Line_Style, text: string, indent: f32) {
-		append(out, Line{text = text, style = st^, indent = indent})
+	emit :: proc(
+		out: ^[dynamic]Line,
+		st: ^Line_Style,
+		text: string,
+		indent: f32,
+		pen: Span_Pen,
+	) {
+		append(out, Line{text = text, style = st^, indent = indent, pen = pen})
 		if st^ == .Bullet do st^ = .Body
 	}
 
@@ -197,30 +202,51 @@ wrap_into :: proc(
 	last_break := -1
 	w: f32
 	i := 0
-	p: Span_Pen
+	p: Span_Pen // the face at `i`
+	line_pen: Span_Pen // the face the line beginning at `start` opened in
+	break_pen: Span_Pen // the face at `last_break`
 	for i < len(text) {
 		ch := text[i]
+		// The face before this character is what a cut here would carry over,
+		// and span_step is about to move past it: a backtick at `i` toggles
+		// the pen, and the line that starts at `i` starts before the toggle.
+		here := p
 		cw, next := span_step(ui, text, i, &p, font, px)
 
 		if w + cw > width && i > start {
 			cut := last_break > start ? last_break : i
-			emit(out, &st, text[start:cut], indent)
+			cut_pen := last_break > start ? break_pen : here
+			emit(out, &st, text[start:cut], indent, line_pen)
 			start = cut
 			for start < len(text) && text[start] == ' ' do start += 1
 			last_break = -1
-			w = 0
+			// The wrap used to reset to the plain face here and md_draw_line
+			// used to start every line plain to match, so a code span cut
+			// across a wrap did not merely lose its box on the second line:
+			// its closing backtick turned code *on*, and every span after it
+			// in the paragraph came out inverted — the words between the
+			// spans boxed and the spans themselves bare. The pen carries over
+			// instead, and the line remembers the one it opened in.
+			line_pen = cut_pen
+			p = cut_pen
+			// The box a span is drawn in hangs CODE_EDGE off each end and the
+			// wrap counts it a backtick at a time. A span carried over the cut
+			// left its opening backtick on the line above, so the left edge is
+			// charged here or the box overhangs the width the line was fitted
+			// to.
+			w = line_pen.code ? CODE_EDGE : 0
 			i = start
-			// A line is drawn from its own beginning in the plain face, so
-			// the next one is measured from there too.
-			p = {}
 			continue
 		}
-		if ch == ' ' do last_break = i + 1
+		if ch == ' ' {
+			last_break = i + 1
+			break_pen = p
+		}
 		w += cw
 		i = next
 	}
 	if start < len(text) {
-		emit(out, &st, text[start:], indent)
+		emit(out, &st, text[start:], indent, line_pen)
 	}
 }
 
@@ -262,8 +288,10 @@ md_draw_line :: proc(ui: ^UI, l: Line, x, y, width: f32, col: Color, dim: Color)
 	// Inline spans: ** toggles bold, ` toggles mono. The markers themselves are
 	// not drawn, which is why wrapping measured them — it only ever leaves the
 	// line shorter than it planned for.
-	bold := false
-	code := false
+	// Not `false, false`: a line opens in whatever face the wrap left open at
+	// the cut above it, which is the whole of what Line.pen is for.
+	bold := l.pen.bold
+	code := l.pen.code
 	seg_start := 0
 	i := 0
 	flush :: proc(ui: ^UI, s: string, pen: ^f32, y: f32, bold, code: bool, col, dim: Color, base: ^Font, px: f32) {

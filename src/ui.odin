@@ -235,8 +235,12 @@ RIPPLE_LIFE :: f32(0.75)
 
 // The ring the pointer leaves on arriving: a pale one, thin enough to be
 // felt rather than seen. It was the accent for a day, and a red ring on
-// every card the pointer crossed read as a warning on each of them.
-TOUCH :: Color(0x30e9f0f2)
+// every card the pointer crossed read as a warning on each of them, and
+// then it was pale but still a ring — a hard bright arc that announced
+// itself on every card the pointer passed over. What is wanted is the card
+// catching the light for a moment, so the colour is down to a breath and
+// the ring below is drawn thin inside a wide fade.
+TOUCH :: Color(0x16e9f0f2)
 
 ui_ripple :: proc(ui: ^UI, key: u64, at: [2]f32, col: Color, size: f32) {
 	append(&ui.ripples, Ripple{key, at, ui.time, col, size})
@@ -253,10 +257,15 @@ ui_draw_ripples :: proc(ui: ^UI, key: u64) {
 		grow := ease_out(t)
 		radius := rp.size * (0.08 + 0.92 * grow)
 		// Bright and tight at birth, wide and faint by the end: the same
-		// curve as a real ring on water, which thins as it spreads.
-		fade := (1 - t) * (1 - t)
-		thick := radius * (0.55 - 0.4 * grow)
-		ui_dial(ui, rp.at, radius, max(thick, 2), 1, color_alpha(rp.col, fade), 0.6)
+		// curve as a real ring on water, which thins as it spreads. Cubed
+		// rather than squared, so most of the life is spent nearly gone
+		// instead of holding a visible arc for two thirds of it.
+		fade := (1 - t) * (1 - t) * (1 - t)
+		// A thin ring inside a fade almost as wide as the circle: the dial
+		// shader squares its coverage when soft is set, so what lands is a
+		// bloom with no edge to trace rather than a line with a blur on it.
+		thick := radius * (0.30 - 0.24 * grow)
+		ui_dial(ui, rp.at, radius, max(thick, 1.5), 1, color_alpha(rp.col, fade), 0.95)
 		ui.animating = true
 	}
 }

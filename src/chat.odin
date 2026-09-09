@@ -50,6 +50,11 @@ Line :: struct {
 	text:   string, // a slice of the block's text; never freed on its own
 	style:  Line_Style,
 	indent: f32,
+	// The face this line opens in, which is only ever anything other than the
+	// plain one when a span was still open where the line above was cut. It is
+	// written by the wrap that made the line and read by md_draw_line, so
+	// there is one answer to what face a line starts in and not two.
+	pen:    Span_Pen,
 }
 
 Line_Style :: enum {
