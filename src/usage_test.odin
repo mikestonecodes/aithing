@@ -190,3 +190,38 @@ the_corner_never_stands_on_the_chips :: proc(t: ^testing.T) {
 		testing.expect(t, corner.x + corner.w <= full.w)
 	}
 }
+
+// How far along the green-to-warning run a colour has got, 0 at GREEN and 1 at
+// ACCENT. Read off the one channel the two differ in most, which is enough to
+// say whether a figure looks green or looks gold.
+@(private = "file")
+toward_warning :: proc(c: Color) -> f32 {
+	chan :: proc(c: Color, shift: u32) -> f32 {return f32((u32(c) >> shift) & 0xff)}
+	g, a, x := chan(GREEN, 0), chan(ACCENT, 0), chan(c, 0)
+	return (x - g) / (a - g)
+}
+
+// A window with four fifths of it left is not a warning. The ramp used to run
+// straight from nothing to half, so 18% of the week gone came out a third of
+// the way to the warning colour — visibly gold beside the green figures either
+// side of it, for a window nobody needed to think about.
+@(test)
+a_barely_used_window_reads_green :: proc(t: ^testing.T) {
+	testing.expectf(
+		t,
+		toward_warning(usage_meter_color(0.18)) < 0.15,
+		"18%% used is %v of the way to the warning colour",
+		toward_warning(usage_meter_color(0.18)),
+	)
+	testing.expect_value(t, usage_meter_color(0), GREEN)
+	testing.expect_value(t, usage_meter_color(1), RED)
+
+	// And it only ever goes one way: every step up the ramp is a step further
+	// from green, which is the whole of what the colour is for.
+	last := f32(-1)
+	for i in 0 ..= 100 {
+		here := toward_warning(usage_meter_color(f32(i) / 100))
+		testing.expectf(t, here >= last, "%d%% used stepped back toward green", i)
+		last = here
+	}
+}

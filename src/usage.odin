@@ -186,9 +186,19 @@ probe_pump :: proc(app: ^App) -> bool {
 // How much of an allowance is gone, in the colour that says so: the ramp runs
 // from spent-nothing to spent-it-all, and a figure that is only ever one
 // colour is a figure nobody reads twice.
+//
+// The knee is at three fifths and the green half is squared, because the ramp
+// used to be straight from nothing to half and a week 18% spent came out
+// visibly gold — a third of the way to the warning colour for a window with
+// four fifths of it left. A figure only earns a colour once there is something
+// to say, so the low end stays green and the last two fifths carry the change.
+USAGE_KNEE :: f32(0.6)
 usage_meter_color :: proc(used: f32) -> Color {
-	if used < 0.5 do return color_mix(GREEN, ACCENT, used * 2)
-	return color_mix(ACCENT, RED, min((used - 0.5) * 2, 1))
+	if used < USAGE_KNEE {
+		t := used / USAGE_KNEE
+		return color_mix(GREEN, ACCENT, t * t)
+	}
+	return color_mix(ACCENT, RED, min((used - USAGE_KNEE) / (1 - USAGE_KNEE), 1))
 }
 
 // The same words `/usage` uses, so a figure here and a figure there can be put
@@ -209,17 +219,32 @@ usage_until :: proc(resets: i64) -> string {
 	return fmt.tprintf("%dd %dh", days, hours)
 }
 
-USAGE_W :: f32(214)
+USAGE_W :: f32(222)
 USAGE_H :: f32(150)
 // Narrow enough to keep three rows readable, and no narrower: the panel gives
 // up width to the box along the bottom rather than jumping above it — it used
 // to move up there, which put the one thing that never changes in a place that
 // changed every time the box grew a line.
-USAGE_MIN :: f32(150)
+USAGE_MIN :: f32(158)
+// Sixteen was too near: the figures are set in a face whose percent sign
+// leans, so its ink runs a couple of pixels past the advance the row is
+// right-aligned on, and a right margin of sixteen read as fourteen and looked
+// like the number had been pushed off the edge. The panel gained the same
+// eight pixels in width so the names kept the room they had.
 @(private = "file")
-USAGE_PAD :: f32(16)
+USAGE_PAD :: f32(20)
 @(private = "file")
 ROW_H :: f32(42)
+// Where the first row's line box starts. Not centred by arithmetic on ROW_H
+// because the ink is not the line box: three rows hung off fourteen left the
+// figures nearer the top of the panel than the bottom by about a third of a
+// line.
+@(private = "file")
+ROW_TOP :: f32(16)
+@(private = "file")
+PCT_PX :: f32(30)
+@(private = "file")
+NAME_PX :: f32(12.5)
 
 // Where the corner stands, and the one place that answers it: the bottom
 // right, in whatever room the box along the bottom leaves beside it. The box
@@ -286,7 +311,7 @@ until_say :: proc(resets: i64) -> string {
 @(private = "file")
 row :: proc(app: ^App, box: Rect, at: int, name, short: string, w: Allowance, a: f32) {
 	ui := &app.ui
-	top := box.y + 14 + f32(at) * ROW_H
+	top := box.y + ROW_TOP + f32(at) * ROW_H
 
 	// A window nobody has read yet is not a window with nothing used in it.
 	// `resets` is the one variable that answers it: the harness sends a reset
@@ -301,15 +326,28 @@ row :: proc(app: ^App, box: Rect, at: int, name, short: string, w: Allowance, a:
 	shown := known ? ui_anim(ui, ui_id("usage-row", at), used, 9) : 0
 	pct := known ? usage_pct(shown) : "—"
 	col := known ? usage_meter_color(used) : FAINT
-	pw := font_width(&ui.bold, pct, 30)
-	ui_text(ui, &ui.bold, pct, {box.x + box.w - USAGE_PAD - pw, top}, 30, color_alpha(col, a))
+	pw := font_width(&ui.bold, pct, PCT_PX)
+	ui_text(ui, &ui.bold, pct, {box.x + box.w - USAGE_PAD - pw, top}, PCT_PX, color_alpha(col, a))
 
 	// The short name when the long one will not fit whole: a panel squeezed in
 	// beside the capture box has room for "fable" and not for "fable week",
 	// and "fable w..." is not the name of anything.
 	room := box.w - USAGE_PAD * 2 - pw - 10
 	buf, alt: [32]u8
-	label := font_ellipsize(&ui.regular, name, 12.5, room, buf[:])
-	if label != name do label = font_ellipsize(&ui.regular, short, 12.5, room, alt[:])
-	ui_text(ui, &ui.regular, label, {box.x + USAGE_PAD, top + 11}, 12.5, color_alpha(FAINT, a))
+	label := font_ellipsize(&ui.regular, name, NAME_PX, room, buf[:])
+	if label != name do label = font_ellipsize(&ui.regular, short, NAME_PX, room, alt[:])
+
+	// Both fonts on one baseline, worked out rather than nudged: the name used
+	// to be dropped a flat eleven pixels, which is nearly right at these two
+	// sizes and wrong the moment either of them moves — it sat two pixels above
+	// the figure it belongs to, which at this size is enough to see.
+	base := top + ui.bold.baseline * PCT_PX
+	ui_text(
+		ui,
+		&ui.regular,
+		label,
+		{box.x + USAGE_PAD, base - ui.regular.baseline * NAME_PX},
+		NAME_PX,
+		color_alpha(FAINT, a),
+	)
 }
