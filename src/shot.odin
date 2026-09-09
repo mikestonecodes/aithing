@@ -1,6 +1,7 @@
 package aithing
 
 import "core:fmt"
+import "core:math"
 import "core:os"
 import "core:strings"
 import "core:time"
@@ -25,6 +26,7 @@ import stbi "vendor:stb/image"
 Scene :: enum {
 	Grid, // every project's cards, in the states a card can be in
 	Project, // narrowed to one, so the box under the grid is there
+	Paste, // a picture pasted into that box, with the pointer on its thumbnail
 	Thread, // a card opened: transcript and composer over the grid
 	Opening, // that same card halfway there: the panel still growing out of it
 	Peek, // the same thread with the pointer resting on a tile of its path
@@ -38,6 +40,7 @@ Scene :: enum {
 scene_names := [Scene]string {
 	.Grid     = "grid",
 	.Project  = "project",
+	.Paste    = "paste",
 	.Thread   = "thread",
 	.Opening  = "opening",
 	.Peek     = "peek",
@@ -117,6 +120,15 @@ shot_run :: proc(path: string, scene: Scene, width, height: int) -> bool {
 	// on the first row — the one with an argument and something back to show.
 	if scene == .Peek {
 		app.win.input.mouse = {349, 39}
+		app.win.input.has_mouse = true
+	}
+
+	// The picture under the pointer is the whole of what this scene is of:
+	// the thumbnail is 72 pixels of a screenshot and the point of the hover
+	// is everything those 72 pixels lost.
+	if scene == .Paste {
+		thumb := capture_thumb(app, {0, 0, f32(width), f32(height)}, 0)
+		app.win.input.mouse = {thumb.x + thumb.w / 2, thumb.y + thumb.h / 2}
 		app.win.input.has_mouse = true
 	}
 
@@ -289,6 +301,13 @@ shot_build :: proc(app: ^App, scene: Scene) {
 	case .Project:
 		app.canvas.project = PROJ
 		editor_set_text(&app.capture, "split the grid measurement out of the frame\n*\ncheck it at 1200 sessions")
+	case .Paste:
+		// A paste puts a path in the box and nothing else; the thumbnail over
+		// it is that path read back. So the scene writes a picture to disk and
+		// types its path, which is exactly what pasting does.
+		app.canvas.project = PROJ
+		png := shot_png()
+		editor_set_text(&app.capture, fmt.tprintf("the ring is too pale here %s", png))
 	case .Thread, .Opening, .Peek, .Picker:
 		app.canvas.project = PROJ
 		app.page = .Thread
@@ -300,6 +319,33 @@ shot_build :: proc(app: ^App, scene: Scene) {
 		app.overlay = .Launcher
 		editor_set_text(&app.search, "grid")
 	}
+}
+
+// A picture to have pasted: a corner of a window with a ring in it, drawn
+// rather than shipped so the shot needs nothing beside the binary. Wide and
+// short, the shape a screenshot is, which is the shape the square thumbnail
+// has to crop and the hover has to give back.
+@(private = "file")
+shot_png :: proc() -> string {
+	w, h :: 640, 360
+	pixels := make([]u8, w * h * 4, context.temp_allocator)
+	for y in 0 ..< h {
+		for x in 0 ..< w {
+			i := (y * w + x) * 4
+			dx := f32(x) - f32(w) / 2
+			dy := f32(y) - f32(h) / 2
+			d := math.sqrt(dx * dx + dy * dy)
+			ring := abs(d - 120) < 14 ? f32(1) : 0
+			pixels[i + 0] = u8(40 + 180 * ring)
+			pixels[i + 1] = u8(44 + 120 * ring + f32(x) / f32(w) * 40)
+			pixels[i + 2] = u8(48 + 60 * ring + f32(y) / f32(h) * 60)
+			pixels[i + 3] = 255
+		}
+	}
+	path := "/tmp/aithing-shot/paste-1.png"
+	cpath := strings.clone_to_cstring(path, context.temp_allocator)
+	stbi.write_png(cpath, w, h, 4, raw_data(pixels), w * 4)
+	return path
 }
 
 @(private = "file")

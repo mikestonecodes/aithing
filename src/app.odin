@@ -134,6 +134,8 @@ App :: struct {
 	overlay:   Overlay,
 
 	attach:    [dynamic;8]Attachment,
+	// Pictures decoded off disk, by the path that named them: see app_preview.
+	previews:  map[string]Attachment,
 	transcript: Scroll,
 	sidebar:   Scroll,
 	stick:     bool, // keep the transcript pinned to the bottom
@@ -231,6 +233,7 @@ app_destroy :: proc(app: ^App) {
 	sessions_free(app.sessions)
 	delete(app.visible)
 	for &a in app.attach do attachment_destroy(&a)
+	app_previews_destroy(app)
 	delete(app.open)
 	delete(app.snake)
 	delete(app.status)

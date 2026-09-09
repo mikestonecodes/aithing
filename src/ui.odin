@@ -537,6 +537,28 @@ ui_image :: proc(ui: ^UI, r: Rect, tex: u32, radius: f32 = NO_ROUND, tint: Color
 	ui_quad(ui, r, {0, 0}, {1, 1}, tint, tex, radius)
 }
 
+// A picture filling `r` at its own proportions, cropped evenly at both ends of
+// whichever side is too long, rather than squashed to fit. A screenshot is
+// three times as wide as the square a thumbnail gets, and squeezed into that
+// square there is nothing left in it anybody could recognise.
+ui_image_cover :: proc(ui: ^UI, r: Rect, tex: u32, width, height: int, radius: f32 = NO_ROUND) {
+	if width <= 0 || height <= 0 || r.w <= 0 || r.h <= 0 {
+		ui_image(ui, r, tex, radius)
+		return
+	}
+	want := r.w / r.h
+	have := f32(width) / f32(height)
+	// Half the span kept, per axis: the whole of the short side, and as much
+	// of the long one as the box is shaped for.
+	u, v := f32(0.5), f32(0.5)
+	if have > want {
+		u = want / have * 0.5
+	} else {
+		v = have / want * 0.5
+	}
+	ui_quad(ui, r, {0.5 - u, 0.5 - v}, {0.5 + u, 0.5 + v}, 0xffffffff, tex, radius)
+}
+
 ui_text :: proc(
 	ui: ^UI,
 	font: ^Font,

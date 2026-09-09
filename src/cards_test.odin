@@ -67,6 +67,7 @@ turn_start_stub :: proc(app: ^App, todo: string) -> bool {
 scratch_free :: proc(app: ^App) {
 	editor_destroy(&app.capture)
 	editor_destroy(&app.search)
+	app_previews_destroy(app)
 	for id in app.pending_dismiss do delete(id)
 	delete(app.todo_view)
 	delete(app.visible)
