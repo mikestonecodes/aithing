@@ -229,12 +229,12 @@ RING_GAP :: f32(2)
 // How wide the dial is when it has the room, how small it will go before it
 // stops fitting beside the box along the bottom, and how far it stands off
 // that box and off the corner of the window.
-// Sixty across: it was eighty-four, which is a dial you look at rather
-// than a dial you glance at, and it is the least important thing in the
-// window until it is nearly full.
-DIAL_D :: f32(60)
+// Fifty-two across: it was eighty-four, then sixty, and each step down was
+// the same reason — it is a dial you glance at rather than read, and the
+// least important thing in the window until it is nearly full.
+DIAL_D :: f32(52)
 @(private = "file")
-DIAL_MIN :: f32(44)
+DIAL_MIN :: f32(40)
 @(private = "file")
 DIAL_GAP :: f32(12)
 
