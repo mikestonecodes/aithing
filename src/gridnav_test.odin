@@ -198,3 +198,54 @@ the_launcher_lands_the_caret_in_the_box :: proc(t: ^testing.T) {
 	testing.expect(t, !app.on_cards)
 	testing.expect_value(t, app_focus(app), Focus.Capture)
 }
+
+// A press held is one press. Holding `i` on the grid of every project used to
+// be two: the first narrowed to the selected card's project, and the repeat
+// that came half a second later found the box that first press had just made
+// and dropped the caret into it — "it selects the project but then also
+// focuses the text box". The window says which letters came from a key still
+// down, and `i` does not answer those.
+@(test)
+holding_i_does_not_walk_on_into_the_box :: proc(t: ^testing.T) {
+	app := seven_cards()
+	defer drop_app(app)
+	defer delete(app.win.input.keys)
+	defer delete(app.win.input.text)
+
+	canvas_set_sel(app, grid_id(app, 3))
+
+	// The press: the letter arrives before the repeat mark, so it is a key
+	// going down and the grid narrows to the card's project.
+	append(&app.win.input.keys, Key{KEY_I, {}})
+	append(&app.win.input.text, 'i')
+	app.win.input.repeat_at = 1
+	app_input(app)
+	testing.expect_value(t, app.canvas.project, "/tmp/proj")
+	testing.expect(t, app.on_cards)
+	testing.expect_value(t, app_focus(app), Focus.None)
+
+	// The repeats, a few frames later, with the key never released: the whole
+	// batch is at or past the mark, so nothing is added to the box and the
+	// keyboard is still on the cards.
+	for _ in 0 ..< 3 {
+		clear(&app.win.input.keys)
+		clear(&app.win.input.text)
+		append(&app.win.input.keys, Key{KEY_I, {}})
+		append(&app.win.input.text, 'i')
+		app.win.input.repeat_at = 0
+		app_input(app)
+	}
+	testing.expect(t, app.on_cards, "the keyboard stays on the cards")
+	testing.expect_value(t, app_focus(app), Focus.None)
+	testing.expect_value(t, editor_text(&app.capture), "")
+
+	// Pressed again, on purpose, it still means the box.
+	clear(&app.win.input.keys)
+	clear(&app.win.input.text)
+	append(&app.win.input.keys, Key{KEY_I, {}})
+	append(&app.win.input.text, 'i')
+	app.win.input.repeat_at = 1
+	app_input(app)
+	testing.expect_value(t, app_focus(app), Focus.Capture)
+	testing.expect_value(t, editor_text(&app.capture), "")
+}

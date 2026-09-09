@@ -48,6 +48,11 @@ Input :: struct {
 	// they produced. Both are cleared at the top of every poll.
 	keys:         [dynamic]Key,
 	text:         [dynamic]u8,
+	// Where in `text` this frame's synthesised repeats start: everything from
+	// here on is a key still being held rather than a key pressed again. A
+	// held key is one press, and the grid has to be able to tell the two
+	// apart — see grid_command.
+	repeat_at:    int,
 	mods:         Mods,
 }
 
@@ -584,6 +589,10 @@ window_poll :: proc(w: ^Window, timeout_ms: i32 = 0) {
 		}
 	}
 	wl.display_dispatch_pending(w.display)
+
+	// Everything typed up to here came from a key going down. What the
+	// repeat loop adds below did not.
+	w.input.repeat_at = len(w.input.text)
 
 	// Held keys repeat on our own clock, so a held backspace empties the
 	// composer at the rate the compositor asked for. The catch-up is capped:

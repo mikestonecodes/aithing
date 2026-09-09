@@ -563,7 +563,15 @@ app_input :: proc(app: ^App) {
 		// walk them are taken here first — and taken one at a time, because
 		// `i` is one of them and everything typed after it in the same frame
 		// is text.
-		for typed != "" && grid_command(app, rune(typed[0])) do typed = typed[1:]
+		//
+		// Each letter is told whether it came from a key going down or from
+		// one still being held, which the window says by where the repeats
+		// start.
+		at := 0
+		for typed != "" && grid_command(app, rune(typed[0]), at >= win.input.repeat_at) {
+			typed = typed[1:]
+			at += 1
+		}
 		if typed != "" && focused_editor(app) != nil {
 			target = focused_editor(app)
 			editor_insert(target, typed)
@@ -589,7 +597,15 @@ app_input :: proc(app: ^App) {
 // was empty, which is a rule with no way out of it: a list that had to start
 // with an h could not be typed, and a list already half written could not be
 // left alone while you went to look at a card.
-grid_command :: proc(app: ^App, c: rune) -> bool {
+//
+// `repeat` is a key still held rather than a key pressed again. It only
+// matters to `i`: holding it half a second used to be two presses, and the
+// second one landed on a grid the first one had just narrowed, so a single
+// press that was meant to walk into a project dropped the caret into the box
+// that press had made — "it selects the project but then also focuses the text
+// box". hjkl and x still repeat, because walking and clearing are what holding
+// a key is for; going in happens once however long the key is held.
+grid_command :: proc(app: ^App, c: rune, repeat := false) -> bool {
 	if app.page != .Grid || app.overlay != .None do return false
 	// `/` opened the launcher over an empty box before there were modes at
 	// all, and it still does, so that habit is not taken away by a caret that
@@ -611,6 +627,7 @@ grid_command :: proc(app: ^App, c: rune) -> bool {
 	case 'x':
 		canvas_dismiss_sel(app)
 	case 'i':
+		if repeat do return true
 		// Two ways in, and which one is meant is answered by whether there is
 		// a box to go into. On a grid narrowed to one project there is, and
 		// `i` puts the caret back in it. On the grid of every project there
