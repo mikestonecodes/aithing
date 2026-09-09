@@ -594,11 +594,21 @@ draw_icon :: proc(ui: ^UI, icon: Icon, r: Rect, col, bg: Color) {
 		ring(ui, cx, cy, 11 * s, 2 * s, col, bg)
 		ui_circle(ui, {cx - 3 * s, cy - 3 * s}, 2 * s, col)
 	case .Read:
-		// A page with lines on it.
-		ui_rect(ui, {cx - 8 * s, cy - 10 * s, 16 * s, 20 * s}, color_alpha(col, 0.35), 2 * s)
-		for i in 0 ..< 3 {
-			bar(ui, cx, cy - 5 * s + f32(i) * 5 * s, 10 * s, 2 * s, col)
-		}
+		// A page with something going into it. What a read does is put a file
+		// in front of the model, and the mark for it was a page and nothing
+		// else — the same shape as writing one, told apart from the pencil by
+		// its colour. A stone that came out the wrong family was then not
+		// merely wrong but unreadable: a command that listed half a dozen
+		// files and changed none of them wore a pencil, and nothing about the
+		// mark said which of the two it was meant to be.
+		// Outlined rather than washed in: at the size of a stone a filled
+		// rectangle is a blob, and the page has to keep its edges to be a page
+		// at all.
+		ui_rect(ui, {cx - 0.5 * s, cy - 9.5 * s, 11 * s, 19 * s}, col, 2.5 * s)
+		ui_rect(ui, {cx + 1.5 * s, cy - 7.5 * s, 7 * s, 15 * s}, bg, 1.5 * s)
+		bar(ui, cx - 6.5 * s, cy, 9 * s, 2.4 * s, col)
+		ui_line(ui, {cx - 5 * s, cy - 4.5 * s}, {cx - 1 * s, cy}, 2.4 * s, col)
+		ui_line(ui, {cx - 5 * s, cy + 4.5 * s}, {cx - 1 * s, cy}, 2.4 * s, col)
 	case .Edit:
 		// A pencil: the shaft on the diagonal and a tip at the end of it.
 		ui_line(ui, {cx - 7 * s, cy + 7 * s}, {cx + 6 * s, cy - 6 * s}, 3.5 * s, col)
