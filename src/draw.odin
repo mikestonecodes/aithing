@@ -16,6 +16,12 @@ PAD :: f32(16)
 // that the desktop behind the window still shows through it.
 COMPOSER_BG :: Color(0x66202224)
 BLINK :: f32(0.55) // caret on/off, in seconds
+// How wide the block caret is where there is no character under it to take
+// its width from, as a fraction of the type size. A box with nothing in it
+// prints what it is for, and that line has to start clear of this: it used to
+// start at the same x, so "what needs doing" read as a block and then "hat
+// needs doing".
+CARET_EMPTY :: f32(0.55)
 RESULT_BYTES :: 4000 // how much of a tool result is ever shown
 RESULT_LINES :: 40
 
@@ -105,19 +111,26 @@ draw_app :: proc(app: ^App) {
 		}
 		composer_h := composer_height(app, full.w)
 		// Nothing inside is touchable until it has arrived: a click that lands
-		// on a composer still on its way is a click nobody aimed, and while
+		// on a transcript still on its way is a click nobody aimed, and while
 		// the zoom is on it is not where it was laid out anyway.
 		panel_mouse := ui.mouse
 		if !arrived do ui.mouse = {-1e6, -1e6}
 		draw_transcript(app, {full.x, full.y, full.w, full.h - composer_h})
-		draw_composer(app, {full.x, full.y + full.h - composer_h, full.w, composer_h})
 		ui.mouse = panel_mouse
-		cw := composer_width(full.w)
-		strip = {full.x + (full.w - cw) / 2, full.y + full.h - composer_h, cw, composer_h}
+		// The box, outside the panel: it is drawn at the size and place it
+		// ends up at from the first frame of the movement to the last, and it
+		// takes clicks the whole way. It used to be drawn inside the zoom
+		// along with the transcript, so opening a card sent the thing you had
+		// been typing into flying up into the card and back down at full size
+		// — the one part of the window that had nothing to do with which
+		// thread you were opening, moving further than anything else.
 		if !arrived {
 			ui_pop_zoom(ui)
 			ui_pop_clip(ui)
 		}
+		draw_composer(app, {full.x, full.y + full.h - composer_h, full.w, composer_h})
+		cw := composer_width(full.w)
+		strip = {full.x + (full.w - cw) / 2, full.y + full.h - composer_h, cw, composer_h}
 	} else {
 		draw_project_head(app, full)
 		if app_capture_open(app) {
@@ -126,11 +139,13 @@ draw_app :: proc(app: ^App) {
 			cw := composer_width(full.w)
 			strip = {full.x + (full.w - cw) / 2, full.y + full.h - ch, cw, ch}
 		}
-		// Bottom left, clear of the capture box in the middle and of the
-		// usage corner on the right.
-		bottom := strip.h > 0 ? strip.y - 24 : full.y + full.h - PAD - 18
-		draw_status(app, {full.x + PAD, bottom, full.w / 2 - PAD, 16})
 	}
+	// What the window has to say for itself, in the same corner on either
+	// page. It used to be printed inside the composer's chip band on a thread
+	// and above the box on the grid, which is two places for one line — and
+	// the line jumped from one to the other the moment a card was opened.
+	bottom := strip.h > 0 ? strip.y - 24 : full.y + full.h - PAD - 18
+	draw_status(app, {full.x + PAD, bottom, full.w / 2 - PAD, 16})
 	draw_usage(app, full, strip)
 	// Last, over everything: the corner that says what the harness has cost
 	// is opaque and is drawn after the box the chips sit on, so a picker
@@ -181,27 +196,19 @@ draw_project_head :: proc(app: ^App, full: Rect) {
 // point, a sentence — rather than being a rule the writer has to keep to, and
 // the count under the box says what was made of it before Enter is pressed.
 
-CAPTURE_PX :: f32(15)
-CAPTURE_PAD :: f32(12)
-CAPTURE_LINES :: 6 // how tall the box grows before it starts scrolling
-
-// How wide the text in the box is, which is the one number the height and the
-// draw have to agree on: they used to work it out separately — the height off
-// the whole box, the draw off the box less ninety pixels it kept for a note —
-// so a line that fitted for one wrapped for the other and the box came out a
-// line short of what it was drawing.
-@(private = "file")
-capture_text_width :: proc(width: f32) -> f32 {
-	return composer_width(width) - COMPOSER_SIDE * 2
-}
+// The box under the grid is the same box the thread has — the same width, the
+// same type, the same paddings, the same band of chips — because it is the
+// same box as far as anyone looking at it is concerned. It used to be its own
+// size, 15px type in a 6-line box against the composer's 19px in 8, and the
+// difference was six pixels of height and a change of typeface at the exact
+// moment a card was clicked: the thing you had just been typing into jumped
+// as the thread came up over it. Nothing about opening a card is about the
+// box, so nothing about the box moves when one is opened. See strip_height.
 
 // How much of the window the box takes, which the grid above it keeps clear.
 capture_height :: proc(app: ^App, width: f32) -> f32 {
-	ui := &app.ui
 	if !app_capture_open(app) do return 0
-	editor_layout_lines(ui, &app.capture, capture_text_width(width), &ui.regular, CAPTURE_PX)
-	_, lines := editor_window(&app.capture, CAPTURE_LINES)
-	return CAPTURE_PAD * 2 + f32(lines) * (CAPTURE_PX * 1.5) + COMPOSER_CHIPS
+	return strip_height(strip_box_height(app, &app.capture, width))
 }
 
 @(private = "file")
@@ -221,15 +228,15 @@ draw_capture :: proc(app: ^App, full: Rect) {
 	ui_rect(ui, box, focused ? color_alpha(ACCENT, 0.35) : color_alpha(BORDER, 0.9), 14)
 	if ui_hovered(ui, box) do ui.cursor_text = true
 
-	text_w := capture_text_width(full.w)
-	editor_layout_lines(ui, &app.capture, text_w, &ui.regular, CAPTURE_PX)
-	_, lines := editor_window(&app.capture, CAPTURE_LINES)
-	text_h := f32(lines) * (CAPTURE_PX * 1.5)
-	text_r := Rect{box.x + COMPOSER_SIDE, box.y + CAPTURE_PAD, text_w, text_h}
+	text_w := box.w - COMPOSER_SIDE * 2
+	editor_layout_lines(ui, &app.capture, text_w, &ui.regular, COMPOSER_PX)
+	_, lines := editor_window(&app.capture, COMPOSER_LINES)
+	text_h := f32(lines) * (COMPOSER_PX * 1.5)
+	text_r := Rect{box.x + COMPOSER_SIDE, box.y + COMPOSER_PAD, text_w, text_h}
 	if editor_text(&app.capture) == "" {
-		ui_text(ui, &ui.regular, "what needs doing", {text_r.x, text_r.y + 1}, CAPTURE_PX, FAINT)
+		ui_text(ui, &ui.regular, "what needs doing", {placeholder_x(text_r.x), text_r.y + 2}, COMPOSER_PX, FAINT)
 	}
-	draw_editor(app, &app.capture, text_r, &ui.regular, CAPTURE_PX, focused, CAPTURE_LINES)
+	draw_editor(app, &app.capture, text_r, &ui.regular, COMPOSER_PX, focused, COMPOSER_LINES)
 
 	// The same band along the bottom the composer has, and the same two chips
 	// in the corner of it: what is typed here is what a card runs on, so the
@@ -416,15 +423,34 @@ COMPOSER_THUMB :: f32(72)
 
 // The box is exactly as tall as what goes in it, and this is the one place
 // that says how tall that is: draw_composer lays out against the same numbers,
-// so the text never lands under the chip row.
-composer_box_height :: proc(app: ^App, width: f32) -> f32 {
+// so the text never lands under the chip row. Both boxes ask it — the grid's
+// about what is written there, the thread's about the reply — so an empty box
+// is the same height on either page and the swap at the moment a card opens
+// is no swap at all.
+strip_box_height :: proc(app: ^App, e: ^Editor, width: f32) -> f32 {
 	ui := &app.ui
 	inner := composer_width(width) - COMPOSER_SIDE * 2
-	editor_layout_lines(ui, &app.editor, inner, &ui.regular, COMPOSER_PX)
-	_, lines := editor_window(&app.editor, COMPOSER_LINES)
-	h := COMPOSER_PAD * 2 + f32(lines) * (COMPOSER_PX * 1.5)
+	editor_layout_lines(ui, e, inner, &ui.regular, COMPOSER_PX)
+	_, lines := editor_window(e, COMPOSER_LINES)
+	return COMPOSER_PAD * 2 + f32(lines) * (COMPOSER_PX * 1.5) + COMPOSER_CHIPS
+}
+
+// Where the line an empty box prints starts: past the caret sitting at the
+// head of it, with a hair of air after.
+placeholder_x :: proc(x: f32) -> f32 {
+	return x + COMPOSER_PX * CARET_EMPTY + 4
+}
+
+// The room the whole strip takes: the box plus the 6px of air above it and the
+// 12px below it that the draw insets by, and never less than the floor.
+strip_height :: proc(box_h: f32) -> f32 {
+	return max(box_h + 18, COMPOSER_MIN)
+}
+
+composer_box_height :: proc(app: ^App, width: f32) -> f32 {
+	h := strip_box_height(app, &app.editor, width)
 	if len(app.attach) > 0 do h += COMPOSER_THUMB + 14
-	return h + COMPOSER_CHIPS
+	return h
 }
 
 @(private = "file")
@@ -438,7 +464,7 @@ composer_width :: proc(width: f32) -> f32 {
 // knows about, which a plain clamp here was not: the box stopped growing at
 // 300px and the text kept going out through the bottom of it.
 composer_height :: proc(app: ^App, width: f32) -> f32 {
-	return max(composer_box_height(app, width) + 18, COMPOSER_MIN)
+	return strip_height(composer_box_height(app, width))
 }
 
 draw_composer :: proc(app: ^App, r: Rect) {
@@ -491,8 +517,11 @@ draw_composer :: proc(app: ^App, r: Rect) {
 	_, lines := editor_window(&app.editor, COMPOSER_LINES)
 	text_h := f32(lines) * (COMPOSER_PX * 1.5)
 	text_r := Rect{box.x + COMPOSER_SIDE, inner_y, text_w, text_h}
-	if editor_text(&app.editor) == "" && !focused {
-		ui_text(ui, &ui.regular, "Reply to Claude...", {text_r.x, text_r.y + 2}, COMPOSER_PX, FAINT)
+	// What the box is for, whenever there is nothing in it. It used to be
+	// hidden as soon as the box had the caret, which on a thread is always —
+	// so the line existed and was never once seen.
+	if editor_text(&app.editor) == "" {
+		ui_text(ui, &ui.regular, "Reply to Claude...", {placeholder_x(text_r.x), text_r.y + 2}, COMPOSER_PX, FAINT)
 	}
 	draw_editor(app, &app.editor, text_r, &ui.regular, COMPOSER_PX, focused, COMPOSER_LINES)
 
@@ -510,15 +539,14 @@ draw_composer :: proc(app: ^App, r: Rect) {
 		ui_text(ui, &ui.regular, "stop", {stop.x + 22, stop.y + 3}, 13, hovered ? TEXT : MUTED)
 		if clicked do app_interrupt(app)
 	}
-	// The strip that used to carry the status is gone, so it says its piece
-	// down here instead, out of the way of the text.
-	left := f32(14) + (app_chat_busy(app) ? 66 : 0)
-	draw_status(app, {box.x + left, chip_y + 3, box.w - 220 - left, 16})
 }
 
-// What the window has to say for itself, wherever it is standing. This used
-// to be drawn inside the composer and nowhere else, so it existed only on the
-// thread page — and the grid is where you sit while cards run, which meant
+// What the window has to say for itself, in the same corner on every page:
+// bottom left, above the box. It used to be drawn inside the composer's chip
+// band on a thread and above the box on the grid, which is two places for one
+// line, and before that inside the composer and nowhere else, so it existed
+// only on the thread page — and the grid is where you sit while cards run,
+// which meant
 // "built — restart to pick it up" was said to an empty room. Every landing
 // note, every push that was refused and every finished build announced itself
 // somewhere nobody was looking, which is most of what "nothing ever seems to
@@ -933,7 +961,7 @@ draw_editor :: proc(app: ^App, e: ^Editor, r: Rect, font: ^Font, px: f32, focuse
 		// cell the glyph is drawn into — same origin and same height as the
 		// text above, so the block lands on the character and not beside it.
 		under: string
-		w := px * 0.55
+		w := px * CARET_EMPTY
 		if e.cursor < span.end {
 			under = text[e.cursor:next_rune(text, e.cursor)]
 			w = max(font_width(font, under, px), px * 0.35)
