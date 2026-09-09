@@ -132,8 +132,10 @@ first_word :: proc(cmd: string) -> string {
 // hundred times, is the whole frame gone on deciding what colour the squares
 // are. The second byte is checked before anything longer is compared, because
 // a script is full of full stops and esses and every one of them was calling
-// out to compare three whole words. See shell_cost_test.odin: that alone was
-// eighteen milliseconds a frame.
+// out to compare three whole words. Four hundred stones each holding a
+// four-kilobyte heredoc — the worst thread this can be handed — cost 18 ms a
+// rebuild that way and cost 3.3 ms this way, both in a test build; see
+// shell_cost_test.odin, which measures a likelier mix of stones.
 @(private = "file")
 shell_writes :: proc(cmd: string) -> bool {
 	i := 0
