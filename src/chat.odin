@@ -14,9 +14,11 @@ Role :: enum {
 	System,
 }
 
+// Reasoning is not one of these. It used to be, folded shut, and then a stone
+// on the path with a mark of its own — a stone nobody opened, in front of every
+// move that mattered. What the turn was thinking is what the turn did.
 Block_Kind :: enum {
 	Text, // prose from either side
-	Thinking, // extended thinking, folded away by default
 	Tool, // a tool call, with its result folded into the same block
 	Image, // an attachment the user pasted
 	Error,

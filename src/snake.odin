@@ -3,64 +3,81 @@ package aithing
 import "core:math"
 import "core:strings"
 
-// A thread is a snake, not a column.
+// A thread is a snake of stones, not a column of prose.
 //
-// The transcript used to be a scroll of prose with tool calls folded into it,
-// which meant a turn that read nine files and wrote two was nine screens of
-// paging to find out what it had done. What a turn is is a sequence of moves,
-// and a sequence of moves is a path: every block becomes one tile, tiles run
-// left to right, the row turns back on itself at the edge, and the whole turn
-// is one shape you can take in at a glance. The prose that ends it — the
-// answer, the thing you actually asked for — is not a tile. It is printed in
-// full underneath, because it is the one part nobody wants summarized.
+// Every block of the chat is one tile, every tile is the same square, and the
+// squares run left to right until the row ends, turn, and run back. What a
+// turn did is one shape you take in at a glance: a row of blue is a turn that
+// read, a run of orange is a turn that changed things.
 //
-// A tile says what kind of move it was and one line of what it was about.
-// Everything else is under the pointer: rest on a tile and it opens, with the
-// paragraph, the image at its own size, the tool's output. Nothing is folded
-// open and nothing has to be folded shut again, so reading a turn never
-// changes its shape — which is what made the old transcript jump under you
-// every time a disclosure triangle was pressed.
+// A tile carries a mark, not a sentence. The first go at this put the tool's
+// name and a line of its argument in every box, which meant every box was a
+// different width, the row never lined up, and the path read as a paragraph
+// with borders — the thing it was meant to replace. Words are what the pointer
+// is for: rest on a tile and it opens with the whole of what it is holding,
+// the paragraph, the picture at its own size, the command and what came back.
 //
-// The tiles are derived, never stored: `snake_gather` and `snake_place` rebuild the list every
-// frame from the chat. There is nothing to invalidate when a block arrives
-// mid-stream, and an index into a list that grew cannot go stale because no
-// index outlives the frame that made it. What each block costs to place is a
-// font measurement of one short line — the wrapping that would be expensive
-// only happens for the summary and for whatever one tile is open, and both of
-// those cache on the block itself.
+// The answer is the last stone on the path and it is gold, so the end of a
+// turn is a place on the shape rather than a section underneath it. Its panel
+// hangs off it, open, because the answer is the one thing nobody should have
+// to go looking for.
+//
+// The tiles are derived, never stored: `snake_gather` and `snake_place`
+// rebuild the list every frame from the chat. There is nothing to invalidate
+// when a block arrives mid-stream, and an index into a list that grew cannot
+// go stale because no index outlives the frame that made it.
 
-TILE_H :: f32(56) // a tile, and therefore a row
-TILE_GAP :: f32(11) // between tiles along a row
-TILE_ROW :: f32(34) // between rows: the wire's turn lives in here
-TILE_MIN :: f32(66)
-TILE_MAX :: f32(236)
-TILE_TOP_PX :: f32(11.5) // the kind, in mono
-TILE_LABEL_PX :: f32(13) // the one line about it
-WIRE :: f32(2)
+TILE :: f32(46) // every tile, every time
+TILE_GAP :: f32(14)
+TILE_ROW :: f32(30) // between rows: the pipe's turn lives in here
+TILE_ROUND :: f32(4)
+WIRE :: f32(8) // the pipe between tiles
 SNAKE_PAD :: f32(26)
-PEEK_W :: f32(460)
-PEEK_MAX :: f32(340) // how tall an opened tile is allowed to get
-PEEK_LINES :: 16 // of a tool result
+PEEK_W :: f32(520)
+PEEK_MAX :: f32(360) // how tall an opened tile is allowed to get
+PEEK_LINES :: 18 // of a tool result
+PEEK_HEAD :: f32(30)
+ANSWER_GAP :: f32(26) // between the gold stone and the answer hanging off it
 
 // The tile colours, in the shader's own 0xAABBGGRR. Each family of tools has
-// one, so a turn reads as a stripe pattern before a single word of it is read:
-// blue looked at something, orange changed something, green ran something.
+// one, so a turn reads as a pattern before a single word of it is read.
 TILE_READ :: Color(0xffe8c49a)
 TILE_EDIT :: Color(0xff6ac0ea)
 TILE_RUN :: Color(0xff79c08a)
 TILE_FIND :: Color(0xffe092a8)
 TILE_WEB :: Color(0xffc8bc78)
 TILE_ANY :: Color(0xffa8a29c) // whatever the harness grew since this was written
+TILE_SAID :: Color(0xff9aa8ac)
+GOLD :: Color(0xff5ac8f0)
+
+// The mark on the stone. Drawn from rectangles and circles rather than from a
+// glyph: the font is a distance field of one alphabet, and a tool icon set is
+// not something to grow a second atlas for.
+Icon :: enum {
+	You, // what you said: a bubble with its tail on your side
+	Said, // what came back: the same bubble, the other way about
+	Answer,
+	Error,
+	Image,
+	Read,
+	Edit,
+	Run,
+	Find,
+	Web,
+	Agent,
+	Plan,
+	Tool, // anything the harness grew since
+}
 
 Tile :: struct {
 	ref:    Ref,
 	r:      Rect, // content space: add the scroll offset and the view's top
 	col:    Color,
-	top:    string, // what kind of move it was
-	label:  string, // one line of what it was about
-	radius: f32,
+	icon:   Icon,
 	kind:   Block_Kind,
+	name:   string, // the tool, or who said it: the head of the open panel
 	user:   bool,
+	answer: bool, // the gold one: the last thing said, with nothing after it
 	live:   bool, // a tool still running: the tile breathes
 	depth:  int, // inside a subagent
 }
@@ -69,169 +86,112 @@ Tile :: struct {
 
 // Every block in the chat, in order, as one flat run of tiles — a subagent's
 // own blocks included, sitting in the path right after the call that started
-// them. The final answer is left out: `snake_summary` has it, printed in full
-// at the end of the path.
+// them.
 @(private = "file")
 snake_gather :: proc(app: ^App) {
-	ui := &app.ui
 	clear(&app.snake)
 	summary := snake_summary(app)
 	for &m, mi in app.chat.msgs {
 		for &b, bi in m.blocks {
 			ref := Ref{mi, bi, -1}
-			if ref == summary do continue
-			append(&app.snake, tile_of(ui, &b, ref, m.role, 0))
+			t := tile_of(&b, ref, m.role, 0)
+			t.answer = ref == summary
+			if t.answer {
+				t.col = GOLD
+				t.icon = .Answer
+				t.name = "answer"
+			}
+			append(&app.snake, t)
 			for &s, si in b.sub {
-				append(&app.snake, tile_of(ui, &s, Ref{mi, bi, si}, .Assistant, 1))
+				append(&app.snake, tile_of(&s, Ref{mi, bi, si}, .Assistant, 1))
 			}
 		}
 	}
 }
 
-// What one block looks like on the path. Width is the text it carries, so a
-// one-word tool call is a chip and a paragraph is a slab — the shape of the
-// row is already telling you how much happened.
 @(private = "file")
-tile_of :: proc(ui: ^UI, b: ^Block, ref: Ref, role: Role, depth: int) -> Tile {
+tile_of :: proc(b: ^Block, ref: Ref, role: Role, depth: int) -> Tile {
 	t := Tile {
-		ref    = ref,
-		kind   = b.kind,
-		depth  = depth,
-		radius = 10,
-		col    = MUTED,
+		ref   = ref,
+		kind  = b.kind,
+		depth = depth,
+		col   = MUTED,
 	}
-	body := strings.trim_space(block_text(b))
-
 	switch b.kind {
 	case .Text:
 		t.user = role == .User
-		t.top = t.user ? "you" : "claude"
-		t.col = t.user ? ACCENT : Color(0xff9aa8ac)
-		t.label = one_line(body, 120)
-		// The one you wrote is a bubble, the way it has always been; the
-		// answer is a slab. Two kinds of thing, two silhouettes, no label
-		// needed to tell them apart at a distance.
-		t.radius = t.user ? TILE_H / 2 : 10
-
-	case .Thinking:
-		t.top = "thinking"
-		t.col = FAINT
-		t.label = one_line(body, 120)
-		if t.label == "" do t.label = "..."
-		t.radius = TILE_H / 2
-
+		t.col = t.user ? ACCENT : TILE_SAID
+		t.icon = t.user ? .You : .Said
+		t.name = t.user ? "you" : "claude"
 	case .Error:
-		t.top = "error"
 		t.col = RED
-		t.label = one_line(body, 120)
-		t.radius = 4
-
+		t.icon = .Error
+		t.name = "error"
 	case .Image:
-		t.top = "image"
 		t.col = TILE_WEB
-		t.radius = 8
-
+		t.icon = .Image
+		t.name = "image"
 	case .Tool:
-		t.col, t.top = tool_style(b.name)
-		t.label = tool_label(b)
+		t.col, t.icon = tool_style(b.name)
+		t.name = b.name
 		t.live = b.running
-		// A tool call is a square-shouldered thing, and a subagent's own work
-		// is the same shape one step in.
-		t.radius = 6
 	}
-
-	w := f32(0)
-	switch b.kind {
-	case .Image:
-		// The thumbnail is the tile. It keeps the picture's own proportions,
-		// because a landscape screenshot squeezed into a square is a picture
-		// of nothing.
-		aspect := b.image.width > 0 && b.image.height > 0 ? f32(b.image.width) / f32(b.image.height) : 1.4
-		w = clamp(TILE_H * aspect, 48, 160)
-	case .Text, .Thinking, .Error, .Tool:
-		top_w := font_width(&ui.mono, t.top, TILE_TOP_PX)
-		lab_w := font_width(&ui.regular, t.label, TILE_LABEL_PX)
-		w = clamp(max(top_w, lab_w) + 26, TILE_MIN, TILE_MAX)
-	}
-	t.r = {0, 0, w, TILE_H - f32(depth) * 8}
 	return t
 }
 
 // Which family a tool belongs to. Anything the harness grew since this was
-// written still gets a tile — in the house grey, named after itself — rather
-// than being dropped off the path, which is how a transcript that only knew
-// six tool names used to lose whole turns.
-tool_style :: proc(name: string) -> (Color, string) {
+// written still gets a stone — in the house grey, under the generic mark —
+// rather than being dropped off the path, which is how a transcript that only
+// knew six tool names used to lose whole turns.
+tool_style :: proc(name: string) -> (Color, Icon) {
 	switch name {
 	case "Read", "NotebookRead", "Glob", "LS":
-		return TILE_READ, "read"
+		return TILE_READ, .Read
 	case "Edit", "MultiEdit", "Write", "NotebookEdit":
-		return TILE_EDIT, "edit"
+		return TILE_EDIT, .Edit
 	case "Bash", "BashOutput", "KillShell":
-		return TILE_RUN, "run"
+		return TILE_RUN, .Run
 	case "Grep", "Search":
-		return TILE_FIND, "find"
+		return TILE_FIND, .Find
 	case "Task", "Agent":
-		return ACCENT, "agent"
+		return ACCENT, .Agent
 	case "WebFetch", "WebSearch":
-		return TILE_WEB, "web"
+		return TILE_WEB, .Web
 	case "TodoWrite", "ExitPlanMode", "ReportFindings":
-		return TILE_ANY, "plan"
+		return TILE_ANY, .Plan
 	}
-	return TILE_ANY, "tool"
+	return TILE_ANY, .Tool
 }
 
-// The line under the kind: the end of a path, the head of a command, the
-// tool's own name when it gave nothing to say about itself.
-@(private = "file")
-tool_label :: proc(b: ^Block) -> string {
-	arg := one_line(b.arg, 140)
-	if arg == "" do return b.name
-	switch b.name {
-	case "Read", "NotebookRead", "Edit", "MultiEdit", "Write", "NotebookEdit":
-		return base_name(arg)
-	}
-	return arg
-}
-
-// Places the gathered tiles: left to right, turn at the edge, left to right
-// again one row down. Returns how tall the path is.
-//
-// Odd rows are laid out forwards and then mirrored, which is the whole of the
-// snake: the tile that ends one row is directly above the tile that starts the
-// next, so the wire between them is a straight drop and the eye never has to
-// jump back across the window.
+// Places the tiles on a fixed grid and snakes it: odd rows are read backwards,
+// so the last stone of one row sits directly above the first of the next and
+// the pipe between them is a straight drop. Every tile being the same size is
+// what makes that true — the first version measured each tile's text and no
+// two rows ever lined up.
 @(private = "file")
 snake_place :: proc(app: ^App, left, width: f32) -> f32 {
-	row_start := 0
-	x := f32(0)
-	row := 0
-	mirror :: proc(app: ^App, from, to: int, left, width: f32) {
-		for i in from ..< to {
-			t := &app.snake[i]
-			t.r.x = left + width - (t.r.x - left) - t.r.w
-		}
-	}
+	cols := max(1, int((width + TILE_GAP) / (TILE + TILE_GAP)))
 	for i in 0 ..< len(app.snake) {
 		t := &app.snake[i]
-		if x > 0 && x + t.r.w > width {
-			if row % 2 == 1 do mirror(app, row_start, i, left, width)
-			row += 1
-			row_start = i
-			x = 0
+		row := i / cols
+		col := i % cols
+		if row % 2 == 1 do col = cols - 1 - col
+		t.r = {
+			left + f32(col) * (TILE + TILE_GAP),
+			f32(row) * (TILE + TILE_ROW),
+			TILE,
+			TILE,
 		}
-		t.r.x = left + x
-		t.r.y = f32(row) * (TILE_H + TILE_ROW) + (TILE_H - t.r.h) / 2
-		x += t.r.w + TILE_GAP
 	}
-	if row % 2 == 1 do mirror(app, row_start, len(app.snake), left, width)
 	if len(app.snake) == 0 do return 0
-	return f32(row + 1) * (TILE_H + TILE_ROW)
+	rows := (len(app.snake) + cols - 1) / cols
+	return f32(rows) * (TILE + TILE_ROW) - TILE_ROW
 }
 
 // The end of the path: the last thing said, when nothing has happened since.
-// A turn that answered and then went back to work has no summary yet — the
-// text it left mid-way is a tile like any other, because it was not the end.
+// A turn that answered and then went back to work has no answer stone yet —
+// the text it left mid-way is a tile like any other, because it was not the
+// end.
 snake_summary :: proc(app: ^App) -> Ref {
 	if len(app.chat.msgs) == 0 do return NO_REF
 	mi := len(app.chat.msgs) - 1
@@ -249,24 +209,23 @@ snake_summary :: proc(app: ^App) -> Ref {
 draw_transcript :: proc(app: ^App, r: Rect) {
 	ui := &app.ui
 
-	path_w := max(r.w - SNAKE_PAD * 2, 200)
+	path_w := max(r.w - SNAKE_PAD * 2, TILE)
 	snake_gather(app)
 	path_h := snake_place(app, r.x + SNAKE_PAD, path_w)
 
-	// The answer, in full, under the path. It is the only thing here that is
-	// wrapped, and it wraps at reading width rather than window width because
-	// a paragraph eighteen hundred pixels wide is not one anybody reads.
-	sum_w := min(path_w, CONTENT_MAX)
-	sum_x := r.x + (r.w - sum_w) / 2
+	// The answer hangs off the gold stone, inside the scroll, so it is part of
+	// the path rather than a panel floating over it. Its height is content the
+	// scroll has to make room for.
+	ans_w := min(path_w, CONTENT_MAX)
+	ans_x := r.x + (r.w - ans_w) / 2
 	sum := snake_summary(app)
-	sum_h := f32(0)
+	ans_h := f32(0)
 	if b := chat_block(&app.chat, sum); b != nil {
-		md_layout(ui, b, sum_w)
-		sum_h = b.height + 46
+		md_layout(ui, b, ans_w - 28)
+		ans_h = b.height + ANSWER_GAP + 26
 	}
 
-	total := PAD + path_h + sum_h + 40
-	if app_chat_busy(app) do total += 30
+	total := PAD + path_h + ans_h + 40
 
 	if app.stick {
 		app.transcript.target = max(total - r.h, 0)
@@ -279,37 +238,32 @@ draw_transcript :: proc(app: ^App, r: Rect) {
 	}
 
 	top := r.y + PAD - app.transcript.offset
-	draw_wires(app, top, r)
+	draw_pipes(app, top, r)
 
+	// What is open: whatever the pointer is on, else whatever was pressed to
+	// stay open, else nothing — the answer is not in this, because it is not a
+	// panel that opens, it is a piece of the path that is always there.
 	open := NO_REF
 	for tile in app.snake {
 		sr := Rect{tile.r.x, tile.r.y + top, tile.r.w, tile.r.h}
 		if sr.y > r.y + r.h || sr.y + sr.h < r.y do continue
-		if draw_tile(app, tile, sr) do open = tile.ref
+		if draw_tile(app, tile, sr) && !tile.answer do open = tile.ref
 	}
 
-	y := top + path_h
+	// A turn in flight says so on the path itself — the stone it is working
+	// on breathes, and the last one grows as the answer arrives. There used to
+	// be a line of "working..." under all of it as well, which is a caption on
+	// a thing that is already moving.
 	if b := chat_block(&app.chat, sum); b != nil {
-		// A rule and the word, so the answer is plainly the end of the path
-		// and not one more thing on it.
-		ui_rect(ui, {sum_x, y + 12, sum_w, 1}, color_alpha(BORDER, 0.9))
-		ui_text(ui, &ui.mono, "answer", {sum_x, y + 20}, TILE_TOP_PX, FAINT)
-		y += 46
-		ui_hover_text(ui, {sum_x, y, sum_w, b.height}, block_text(b))
-		for l in b.lines {
-			y += md_draw_line(ui, l, sum_x, y, sum_w, TEXT, MUTED)
+		box := Rect{ans_x, top + path_h + ANSWER_GAP, ans_w, b.height + 26}
+		for t in app.snake do if t.answer {
+			draw_answer_pipe(app, {t.r.x, t.r.y + top, t.r.w, t.r.h}, box)
 		}
-	}
-
-	if app_chat_busy(app) {
-		ellipsis := "working..."
-		dots := int(ui.time * 3) % 4
-		ui_text(ui, &ui.regular, ellipsis[:7 + dots], {sum_x, y + 8}, 17, MUTED)
-		ui.time_effects = true
+		draw_answer(app, b, box)
 	}
 	ui_end_scroll(ui, r, &app.transcript)
 
-	if len(app.snake) == 0 && sum_h == 0 && !app_chat_busy(app) {
+	if len(app.snake) == 0 {
 		ui_text_centred(ui, &ui.regular, "nothing said yet", r, 17, FAINT)
 	}
 
@@ -318,61 +272,83 @@ draw_transcript :: proc(app: ^App, r: Rect) {
 	if ref_valid(open) do draw_peek(app, open, r, top)
 }
 
-// The thread the tiles hang off: a segment between neighbours along a row, and
-// a drop at the turn. It is drawn under everything, in one pass, because a
-// wire is between two tiles and neither of them owns it.
+// The answer, in full, hanging off the gold stone at the end of the path: a
+// stub of pipe down into it and a gold edge, so it reads as the last thing on
+// the snake and not as a second view of the same thread.
+// The last length of pipe: straight out of the bottom of the gold stone and
+// into the top of the panel hanging off it. It used to elbow across to the
+// panel's left edge, which drew a bright gold rule the width of the window —
+// a bigger mark than either of the things it was joining.
 @(private = "file")
-draw_wires :: proc(app: ^App, top: f32, view: Rect) {
+draw_answer_pipe :: proc(app: ^App, stone, box: Rect) {
+	ui := &app.ui
+	x := clamp(stone.x + stone.w / 2, box.x + 16, box.x + box.w - 16)
+	r := Rect{x - WIRE / 2, stone.y + stone.h - 2, WIRE, box.y - stone.y - stone.h + 4}
+	if r.h <= 0 do return
+	ui_quad(ui, r, {0, 0}, {1, 1}, color_alpha(GOLD, 0.5), WHITE_TEX, 2, .Wire, 0)
+}
+
+@(private = "file")
+draw_answer :: proc(app: ^App, b: ^Block, box: Rect) {
+	ui := &app.ui
+	ui_rect(ui, {box.x, box.y, box.w, box.h}, color_alpha(GOLD, 0.06), 8)
+	ui_rect(ui, {box.x, box.y + 6, 3, box.h - 12}, color_alpha(GOLD, 0.8), 2)
+	ui_hover_text(ui, box, block_text(b))
+	y := box.y + 13
+	for l in b.lines {
+		y += md_draw_line(ui, l, box.x + 20, y, box.w - 28, TEXT, MUTED)
+	}
+}
+
+// The pipe the stones are strung on: a fat run between neighbours along a row,
+// and a straight drop at the turn. It is drawn under everything, in one pass,
+// because a pipe is between two tiles and neither of them owns it.
+@(private = "file")
+draw_pipes :: proc(app: ^App, top: f32, view: Rect) {
 	ui := &app.ui
 	for i in 0 ..< len(app.snake) - 1 {
 		a := app.snake[i]
 		b := app.snake[i + 1]
 		ay := a.r.y + top + a.r.h / 2
 		by := b.r.y + top + b.r.h / 2
-		if max(ay, by) < view.y - TILE_H || min(ay, by) > view.y + view.h + TILE_H do continue
-		col := color_alpha(color_mix(a.col, b.col, 0.5), 0.5)
-		// Same row: a straight run between the two edges, travelling whichever
-		// way the row reads.
+		if max(ay, by) < view.y - TILE || min(ay, by) > view.y + view.h + TILE do continue
+		col := color_alpha(color_mix(a.col, b.col, 0.5), 0.45)
 		if abs(ay - by) < 1 {
 			back := b.r.x < a.r.x
 			x0 := back ? b.r.x + b.r.w : a.r.x + a.r.w
 			x1 := back ? a.r.x : b.r.x
 			ui_quad(
 				ui,
-				{x0, ay - WIRE / 2, max(x1 - x0, 0), WIRE},
+				{x0 - 1, ay - WIRE / 2, max(x1 - x0, 0) + 2, WIRE},
 				{0, 0},
 				{1, 1},
 				col,
 				WHITE_TEX,
-				1,
+				2,
 				.Wire,
 				f32(i) + (back ? 10 : 0),
 			)
 			continue
 		}
-		// The turn: down out of the tile that ended the row, across the gap
-		// between the rows, and down into the one that starts the next. The
-		// two are usually all but stacked — that is what mirroring the odd
-		// rows is for — but a row that ended early leaves a real gap, and a
-		// single drop at the old tile's centre then hung in the air pointing
-		// at nothing, which is the one place a path is allowed to look broken.
-		ax := a.r.x + a.r.w / 2
-		bx := b.r.x + b.r.w / 2
-		y0 := ay + a.r.h / 2
-		y1 := by - b.r.h / 2
-		mid := (y0 + y1) / 2
-		wire :: proc(ui: ^UI, r: Rect, col: Color, phase: f32) {
-			if r.w <= 0 || r.h <= 0 do return
-			ui_quad(ui, r, {0, 0}, {1, 1}, col, WHITE_TEX, 1, .Wire, phase)
-		}
-		wire(ui, {ax - WIRE / 2, y0, WIRE, mid - y0}, col, f32(i))
-		wire(ui, {min(ax, bx) - WIRE / 2, mid - WIRE / 2, abs(bx - ax) + WIRE, WIRE}, col, f32(i))
-		wire(ui, {bx - WIRE / 2, mid, WIRE, y1 - mid}, col, f32(i))
+		// The turn. Both are on the same column — that is what the fixed grid
+		// buys — so it is one straight drop through the gap between the rows.
+		x := a.r.x + a.r.w / 2
+		ui_quad(
+			ui,
+			{x - WIRE / 2, ay + a.r.h / 2 - 1, WIRE, by - a.r.h / 2 - ay + 2},
+			{0, 0},
+			{1, 1},
+			col,
+			WHITE_TEX,
+			2,
+			.Wire,
+			f32(i),
+		)
 	}
 }
 
-// One tile. Returns whether it is the one that is open — under the pointer, or
-// pressed to keep it open once the pointer has gone.
+// One stone. Returns whether it is the one that is open — under the pointer,
+// or pressed to keep it open once the pointer has gone.
 @(private = "file")
 draw_tile :: proc(app: ^App, t: Tile, r: Rect) -> bool {
 	ui := &app.ui
@@ -381,18 +357,17 @@ draw_tile :: proc(app: ^App, t: Tile, r: Rect) -> bool {
 	id := ui_id_ptr(b)
 
 	clicked, hovered := ui_invisible_button(ui, id, r)
-	if clicked {
-		b.expanded = !b.expanded
-	}
+	if clicked do b.expanded = !b.expanded
 	open := hovered || b.expanded
 
 	// Two movements, and they are both the tile's own: it arrives by growing
-	// into place, and it lifts under the pointer. Both are eased off one
-	// stored number each, so a tile that arrives while another is up does not
-	// disturb it.
+	// into place, and it lifts under the pointer. Both ease off one stored
+	// number each, so a tile that arrives while another is up leaves it alone.
 	born := ui_anim(ui, id + 1, 1, 9)
 	pop := ui_anim(ui, id + 2, open ? 1 : 0, 20)
-	scale := 0.86 + 0.14 * born + 0.05 * pop
+	// A subagent's own work is the same stone one step in, so a nested run
+	// reads as nested without a second layout to place it.
+	scale := (0.86 + 0.14 * born + 0.09 * pop) * (t.depth > 0 ? 0.76 : 1)
 	cx, cy := r.x + r.w / 2, r.y + r.h / 2
 	rr := Rect{cx - r.w * scale / 2, cy - r.h * scale / 2, r.w * scale, r.h * scale}
 
@@ -401,15 +376,16 @@ draw_tile :: proc(app: ^App, t: Tile, r: Rect) -> bool {
 
 	// A halo, only while it is up: the glow is static in the shader, so
 	// leaving one behind costs nothing to hold on screen but says the wrong
-	// thing about a tile nobody is looking at.
-	if pop > 0.01 {
-		g := f32(26) * pop
+	// thing about a stone nobody is looking at.
+	if pop > 0.01 || live > 0 {
+		lit := max(pop, live * 0.7)
+		g := f32(24) * lit
 		ui_quad(
 			ui,
 			{rr.x - g, rr.y - g, rr.w + g * 2, rr.h + g * 2},
 			{0, 0},
 			{1, 1},
-			color_alpha(t.col, 0.26 * pop),
+			color_alpha(t.col, 0.3 * lit),
 			WHITE_TEX,
 			NO_ROUND,
 			.Glow,
@@ -417,58 +393,132 @@ draw_tile :: proc(app: ^App, t: Tile, r: Rect) -> bool {
 	}
 
 	if t.kind == .Image {
-		// The picture is the tile, with its own colour as the rim.
-		ui_image(ui, rr, b.image.tex, t.radius)
-		ui_quad(ui, rr, {0, 0}, {1, 1}, color_alpha(t.col, 0.12 + 0.5 * pop), WHITE_TEX, t.radius, .Pop, pop)
+		// The picture is the stone. Hovering it gives the picture, which is
+		// the whole reason a screenshot in a thread is worth keeping.
+		ui_image(ui, rr, b.image.tex, TILE_ROUND)
+		ui_quad(ui, rr, {0, 0}, {1, 1}, color_alpha(t.col, 0.1 + 0.45 * pop), WHITE_TEX, TILE_ROUND, .Pop, pop)
+		ui_hover_text(ui, rr, t.name)
 		return open
 	}
 
-	// The body of the tile is the kind's own colour, kept dark enough to read
-	// white on: the colour says what happened, the words say what it was.
-	base := color_mix(PANEL, t.col, 0.13 + 0.14 * pop + 0.1 * live)
-	if t.user do base = color_mix(USER_BG, ACCENT, 0.1 + 0.2 * pop)
-	ui_quad(ui, rr, {0, 0}, {1, 1}, color_alpha(base, born), WHITE_TEX, t.radius, .Pop, pop)
-	// The kind's colour as a stripe down the leading edge, which is the one
-	// mark that survives being read at arm's length.
-	ui_rect(ui, {rr.x, rr.y + 8, 3, rr.h - 16}, color_alpha(t.col, (0.75 + 0.25 * live) * born), 2)
-
-	tx := rr.x + 13
-	tw := rr.w - 24
-	buf: [256]u8
-	top_text := font_ellipsize(&ui.mono, t.top, TILE_TOP_PX, tw, buf[:])
-	ui_text(ui, &ui.mono, top_text, {tx, rr.y + 9}, TILE_TOP_PX, color_alpha(t.col, born))
-	if t.label != "" {
-		lbuf: [256]u8
-		label := font_ellipsize(&ui.regular, t.label, TILE_LABEL_PX, tw, lbuf[:])
-		ui_text(
-			ui,
-			&ui.regular,
-			label,
-			{tx, rr.y + rr.h - 22},
-			TILE_LABEL_PX,
-			color_alpha(open ? TEXT : MUTED, born),
-		)
-	}
+	base := color_mix(PANEL, t.col, 0.16 + 0.2 * pop + 0.12 * live)
+	if t.answer do base = color_mix(PANEL, GOLD, 0.3 + 0.25 * pop)
+	if t.user do base = color_mix(USER_BG, ACCENT, 0.14 + 0.24 * pop)
+	ui_quad(ui, rr, {0, 0}, {1, 1}, color_alpha(base, born), WHITE_TEX, TILE_ROUND, .Pop, pop)
+	draw_icon(ui, t.icon, rr, color_alpha(t.col, (0.85 + 0.15 * pop) * born), base)
 	// Pressed open stays open: a dot in the corner says which ones you left
 	// that way, because otherwise a panel with no pointer near it looks stuck.
-	if b.expanded do ui_circle(ui, {rr.x + rr.w - 8, rr.y + 8}, 3, t.col)
-	// What a copy with nothing selected takes: the block itself, not the one
-	// line of it the tile had room for.
+	if b.expanded do ui_circle(ui, {rr.x + rr.w - 6, rr.y + 6}, 3, t.col)
+	// What a copy with nothing selected takes: the block itself, not the mark
+	// that stands for it.
 	ui_hover_text(ui, rr, t.kind == .Tool ? tool_hover(b) : block_text(b))
 	return open
 }
 
-// A tool call in words, for a copy taken off the tile: what was asked and what
-// came back, which is the pair anybody pasting it into a message wants.
+// --- the marks ----------------------------------------------------------------
+
+// Every icon is drawn inside a 20x20 box in the middle of the stone, out of
+// bars, dots and rings. `bg` is the stone under it, which is how a ring is
+// made: a disc of the mark's colour with a disc of the stone punched back into
+// the middle of it.
+@(private = "file")
+draw_icon :: proc(ui: ^UI, icon: Icon, r: Rect, col, bg: Color) {
+	s := r.w / TILE // the stone's own scale, so a nested one shrinks its mark
+	cx := r.x + r.w / 2
+	cy := r.y + r.h / 2
+	bar :: proc(ui: ^UI, cx, cy, w, h: f32, col: Color) {
+		ui_rect(ui, {cx - w / 2, cy - h / 2, w, h}, col, min(w, h) / 2)
+	}
+	ring :: proc(ui: ^UI, cx, cy, rad, thick: f32, col, bg: Color) {
+		ui_circle(ui, {cx, cy}, rad, col)
+		ui_circle(ui, {cx, cy}, rad - thick, bg)
+	}
+
+	switch icon {
+	case .You, .Said:
+		// A speech bubble: a slab with a tail under one corner. Which corner
+		// is the whole difference between what you said and what came back —
+		// the two used to be the same mark in two colours, which is a
+		// difference nobody reads at this size.
+		ui_rect(ui, {cx - 9 * s, cy - 8 * s, 18 * s, 12 * s}, col, 3 * s)
+		tail := icon == .You ? cx + 2 * s : cx - 8 * s
+		ui_rect(ui, {tail, cy + 3 * s, 6 * s, 5 * s}, col, 1.5 * s)
+	case .Answer:
+		// A four-pointed spark, which is what the end of a turn deserves.
+		bar(ui, cx, cy, 3 * s, 22 * s, col)
+		bar(ui, cx, cy, 22 * s, 3 * s, col)
+		bar(ui, cx, cy, 13 * s, 13 * s, color_alpha(col, 0.5))
+	case .Error:
+		bar(ui, cx, cy - 3 * s, 3.5 * s, 12 * s, col)
+		ui_circle(ui, {cx, cy + 7 * s}, 2.2 * s, col)
+	case .Image:
+		// Only drawn when the picture itself failed to load: a frame with a
+		// hill and a sun in it, which is the shape everything uses for this.
+		ring(ui, cx, cy, 11 * s, 2 * s, col, bg)
+		ui_circle(ui, {cx - 3 * s, cy - 3 * s}, 2 * s, col)
+	case .Read:
+		// A page with lines on it.
+		ui_rect(ui, {cx - 8 * s, cy - 10 * s, 16 * s, 20 * s}, color_alpha(col, 0.35), 2 * s)
+		for i in 0 ..< 3 {
+			bar(ui, cx, cy - 5 * s + f32(i) * 5 * s, 10 * s, 2 * s, col)
+		}
+	case .Edit:
+		// A pencil: the shaft on the diagonal and a tip at the end of it.
+		ui_line(ui, {cx - 7 * s, cy + 7 * s}, {cx + 6 * s, cy - 6 * s}, 3.5 * s, col)
+		ui_circle(ui, {cx + 7 * s, cy - 7 * s}, 2.4 * s, col)
+		bar(ui, cx, cy + 9 * s, 18 * s, 2.5 * s, color_alpha(col, 0.55))
+	case .Run:
+		// A prompt: a chevron and the line it is waiting on.
+		ui_line(ui, {cx - 8 * s, cy - 6 * s}, {cx - 1 * s, cy}, 3 * s, col)
+		ui_line(ui, {cx - 1 * s, cy}, {cx - 8 * s, cy + 6 * s}, 3 * s, col)
+		bar(ui, cx + 5 * s, cy + 6 * s, 8 * s, 3 * s, col)
+	case .Find:
+		// A lens with a handle.
+		ring(ui, cx - 2 * s, cy - 2 * s, 8 * s, 2.6 * s, col, bg)
+		ui_line(ui, {cx + 3 * s, cy + 3 * s}, {cx + 9 * s, cy + 9 * s}, 3 * s, col)
+	case .Web:
+		// A globe: the ring, the equator, and one meridian. The meridian was a
+		// nine-pixel bar to begin with, which with the equator over it filled
+		// the ring in and made the web stone a plain disc.
+		ring(ui, cx, cy, 10 * s, 2.2 * s, col, bg)
+		bar(ui, cx, cy, 20 * s, 2 * s, col)
+		bar(ui, cx, cy, 2 * s, 20 * s, color_alpha(col, 0.55))
+	case .Agent:
+		// Three of them, which is what a subagent is: work happening beside
+		// the work.
+		ui_circle(ui, {cx, cy - 7 * s}, 3.4 * s, col)
+		ui_circle(ui, {cx - 7 * s, cy + 5 * s}, 3.4 * s, col)
+		ui_circle(ui, {cx + 7 * s, cy + 5 * s}, 3.4 * s, col)
+		ui_line(ui, {cx, cy - 7 * s}, {cx - 7 * s, cy + 5 * s}, 1.6 * s, color_alpha(col, 0.6))
+		ui_line(ui, {cx, cy - 7 * s}, {cx + 7 * s, cy + 5 * s}, 1.6 * s, color_alpha(col, 0.6))
+	case .Plan:
+		// A list, ticked.
+		for i in 0 ..< 3 {
+			y := cy - 7 * s + f32(i) * 7 * s
+			ui_circle(ui, {cx - 7 * s, y}, 2.2 * s, col)
+			bar(ui, cx + 3 * s, y, 12 * s, 2.2 * s, color_alpha(col, 0.8))
+		}
+	case .Tool:
+		// The generic mark, for a tool this build has never heard of: a nut,
+		// which is as much as anything can say about a name alone.
+		ring(ui, cx, cy, 10 * s, 3.2 * s, col, bg)
+		ui_circle(ui, {cx, cy}, 3 * s, col)
+	}
+}
+
+// A tool call in words, for a copy taken off the stone: what came back, or
+// failing that what was asked.
 @(private = "file")
 tool_hover :: proc(b: ^Block) -> string {
 	if result := strings.trim_space(strings.to_string(b.result)); result != "" do return result
 	return b.arg != "" ? b.arg : b.name
 }
 
-// What a tile is holding, at reading size: the paragraph, the picture, the
-// tool's arguments and what it gave back. It opens next to the tile and it is
-// drawn last, over everything, so it is never the thing that is cut off.
+// --- what the pointer opens ---------------------------------------------------
+
+// What a stone is holding, at reading size: the paragraph, the picture, the
+// tool's arguments and what it gave back. It opens beside the tile and is
+// drawn last, over everything, so it is never the thing that gets cut off.
 @(private = "file")
 draw_peek :: proc(app: ^App, ref: Ref, view: Rect, top: f32) {
 	ui := &app.ui
@@ -489,15 +539,14 @@ draw_peek :: proc(app: ^App, ref: Ref, view: Rect, top: f32) {
 
 	// How tall it wants to be, which is the one number the frame and its
 	// contents have to agree on.
-	head_h := f32(30)
-	h := head_h + 14
+	h := PEEK_HEAD + 14
 	img_h := f32(0)
 	switch b.kind {
 	case .Image:
 		aspect := b.image.width > 0 && b.image.height > 0 ? f32(b.image.height) / f32(b.image.width) : 0.62
 		img_h = min(inner * aspect, PEEK_MAX)
 		h += img_h
-	case .Text, .Thinking, .Error:
+	case .Text, .Error:
 		md_layout(ui, b, inner)
 		h += min(b.height, PEEK_MAX)
 	case .Tool:
@@ -508,14 +557,14 @@ draw_peek :: proc(app: ^App, ref: Ref, view: Rect, top: f32) {
 			lines += 1
 			if lines >= PEEK_LINES do break
 		}
-		if lines == 0 do h += b.running ? 22 : 0
+		if lines == 0 do h += 22
 		h += f32(lines) * CODE_LH + (lines > 0 ? 10 : 0)
 	}
-	h = min(h, PEEK_MAX + head_h + 24)
+	h = min(h, PEEK_MAX + PEEK_HEAD + 24)
 
 	tr := Rect{tile.r.x, tile.r.y + top, tile.r.w, tile.r.h}
 	x := clamp(tr.x + tr.w / 2 - w / 2, view.x + PAD, view.x + view.w - PAD - w)
-	// Below the tile if there is room for it there, above it if there is not.
+	// Below the stone if there is room for it there, above it if there is not.
 	y := tr.y + tr.h + 12
 	if y + h > view.y + view.h - 8 do y = tr.y - h - 12
 	y = clamp(y, view.y + 6, max(view.y + view.h - h - 6, view.y + 6))
@@ -523,23 +572,23 @@ draw_peek :: proc(app: ^App, ref: Ref, view: Rect, top: f32) {
 
 	// The same ground the composer stands on: cut out of the window, so what
 	// is behind it is the desktop rather than the path it is covering.
-	ui_punch(ui, box, COMPOSER_BG, 12)
-	ui_rect(ui, box, color_alpha(tile.col, 0.55), 12)
-	ui_text(ui, &ui.mono, tile.top, {box.x + 14, box.y + 9}, TILE_TOP_PX, tile.col)
-	if b.kind == .Tool && b.name != "" {
-		nw := font_width(&ui.mono, b.name, TILE_TOP_PX)
-		ui_text(ui, &ui.mono, b.name, {box.x + box.w - 14 - nw, box.y + 9}, TILE_TOP_PX, FAINT)
-	}
+	ui_punch(ui, box, COMPOSER_BG, 10)
+	// A wash of the stone's own colour over it, not a coat of it: at half
+	// alpha the panel came out the colour of the tool and the text on it had
+	// to fight the tint it was printed on.
+	ui_rect(ui, box, color_alpha(tile.col, 0.14), 10)
+	// The stone's mark again, small, and the name beside it: the panel says
+	// what it belongs to without the path having to carry the words.
+	draw_icon(ui, tile.icon, {box.x + 8, box.y + 5, 20, 20}, tile.col, COMPOSER_BG)
+	ui_text(ui, &ui.mono, tile.name, {box.x + 34, box.y + 8}, 12.5, tile.col)
 
 	ui_push_clip(ui, box)
-	iy := box.y + head_h
+	iy := box.y + PEEK_HEAD
 	ix := box.x + 14
 	switch b.kind {
 	case .Image:
-		// The actual picture, not the chip of it on the path — which is the
-		// whole reason a screenshot in a thread is worth keeping.
-		ui_image(ui, {ix, iy, inner, img_h}, b.image.tex, 8)
-	case .Text, .Thinking, .Error:
+		ui_image(ui, {ix, iy, inner, img_h}, b.image.tex, 6)
+	case .Text, .Error:
 		ui_hover_text(ui, box, body)
 		col := b.kind == .Error ? RED : TEXT
 		for l in b.lines {

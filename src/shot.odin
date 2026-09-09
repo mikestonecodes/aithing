@@ -102,13 +102,12 @@ shot_run :: proc(path: string, scene: Scene, width, height: int) -> bool {
 	// what the scene asked for.
 	app.win.input.mouse = {-1e6, -1e6}
 
-	// Except where the picture is of what the pointer does: a tile of the
-	// snake only says one line until something is resting on it, and the panel
-	// that opens under it is most of what the transcript is now. The spot is
-	// in the second row of the path, which is where a turn that did a dozen
-	// things has its interesting half.
+	// Except where the picture is of what the pointer does: a stone on the
+	// path carries a mark and nothing else, and the panel that opens under it
+	// is where every word of the transcript now lives. The spot is a tool stone
+	// on the first row — the one with an argument and something back to show.
 	if scene == .Peek {
-		app.win.input.mouse = {330, 148}
+		app.win.input.mouse = {349, 39}
 		app.win.input.has_mouse = true
 	}
 
@@ -320,7 +319,6 @@ shot_thread :: proc(app: ^App) {
 	// style is in the picture — including a tool nothing here has heard of,
 	// which gets the generic tile rather than being dropped off the path.
 	shot_tool(app, "Read", "src/canvas.odin", "126: canvas_layout :: proc(app: ^App) -> f32 {\n127:\tc := &app.canvas\n128:\tapp_filter(app)")
-	shot_think(app, "The layout is one pass over the view, so the cost should be the cards and not the sessions behind them. Worth timing before touching anything.")
 	shot_tool(app, "Grep", "canvas_layout", "src/canvas.odin:126\nsrc/draw.odin:41\nsrc/app.odin:812")
 	shot_tool(app, "Bash", "odin test src -define:ODIN_TEST_FANCY=false", "grid, nothing typed: 0.380 ms\nmenu, searching: 0.678 ms\nAll tests were successful.")
 	shot_tool(app, "Edit", "src/grid_cost_test.odin", "applied")
@@ -328,6 +326,12 @@ shot_thread :: proc(app: ^App) {
 	shot_tool(app, "Agent", "measure the sweep at 1200 sessions", "the worktree cache was asked for once per session")
 	shot_tool(app, "ReportFindings", "one finding", "mkdir per session per call")
 	shot_tool(app, "Write", "src/grid_cost_test.odin", "wrote 118 lines")
+	shot_tool(app, "Read", "src/app.odin", "148: heights: [dynamic]f32,")
+	shot_tool(app, "Bash", "./build.sh", "built ./aithing")
+	shot_tool(app, "Glob", "src/*.odin", "36 files")
+	shot_tool(app, "Sparkle", "a tool this build has never heard of", "and it still gets a stone")
+	shot_tool(app, "Edit", "src/canvas.odin", "applied")
+	shot_tool(app, "Bash", "odin test src", "All tests were successful.")
 	shot_err(app, "turn stopped: the harness closed the stream mid-answer")
 	shot_text(
 		app,
@@ -346,11 +350,6 @@ shot_text :: proc(app: ^App, role: Role, kind: Block_Kind, text: string) {
 	}
 	strings.write_string(&b.text, text)
 	msg_append_block(&app.chat, m, b)
-}
-
-@(private = "file")
-shot_think :: proc(app: ^App, text: string) {
-	shot_text(app, .Assistant, .Thinking, text)
 }
 
 @(private = "file")
