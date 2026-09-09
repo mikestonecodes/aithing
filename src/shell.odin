@@ -29,10 +29,13 @@ SHELL_FILES :: 6 // paths named in the panel, before it stops listing them
 SHELL_SWAPS :: 6 // changes shown, before the rest is left to the file
 
 // One string put in place of another: half of a `sed` script, or the two
-// arguments of a python `replace`.
+// arguments of a python `replace`. `file` is the path it was done to — for a
+// script that walks three files in a row, the one named last before the call,
+// which is where the path was set for it.
 Swap :: struct {
-	old: string,
-	new: string,
+	old:  string,
+	new:  string,
+	file: string,
 }
 
 Shell :: struct {
@@ -58,7 +61,7 @@ shell_read :: proc(cmd: string, allocator := context.temp_allocator) -> (sh: She
 	// script is where the strings being swapped live.
 	body, head, has_body := heredoc(cmd)
 	if has_body && redirects(head) {
-		append(&swaps, Swap{"", body})
+		append(&swaps, Swap{"", body, ""})
 	}
 	script := has_body && !redirects(head) ? body : cmd
 	shell_sed_swaps(cmd, &swaps)
@@ -69,6 +72,10 @@ shell_read :: proc(cmd: string, allocator := context.temp_allocator) -> (sh: She
 	// python one does.
 	shell_paths(has_body ? head : cmd, &files)
 	if has_body && !redirects(head) do shell_paths(script, &files)
+
+	// A swap the script did not name a file for belongs to the file the
+	// command line named, which is where a `sed -i` puts it.
+	for &swap in swaps do if swap.file == "" && len(files) > 0 do swap.file = files[0]
 
 	sh.files = files[:]
 	sh.swaps = swaps[:]
@@ -186,15 +193,38 @@ word_at :: proc(s: string, i: int, word: string) -> bool {
 	return end >= len(s) || s[end] == ' ' || s[end] == '\n'
 }
 
-// A redirect that lands on a file: `> out.txt`, `>> log`, but not the
-// `>/dev/null` and the `2>&1` that half the commands in a transcript end with.
+// A redirect that lands on a file: `> out.txt`, `2>> log`. Not the `2>&1` and
+// the `>/dev/null` that half the commands in a transcript end with, and — the
+// one that actually went wrong — not the `->` inside a python `print(p, '->',
+// m)`, which is an arrow in a string and was read as a redirect. That one
+// command listed a dozen files and changed none of them, and the stone for it
+// wore a pencil.
+//
+// So both sides are checked. What is in front of a redirect is a space or a
+// file descriptor; what follows it is where the output goes, which starts
+// like a path and not like the rest of a quoted string.
 @(private = "file")
 redirect_at :: proc(cmd: string, at_: int) -> bool {
+	if at_ > 0 {
+		b := cmd[at_ - 1]
+		switch {
+		case b == ' ' || b == '\t' || b == '"' || b == '\'':
+		case b >= '0' && b <= '9':
+			// A descriptor, and only when it stands alone: `2>` redirects and
+			// the `2` in `x2>` is the end of a name.
+			if at_ > 1 && !is_break(cmd[at_ - 2]) do return false
+		case:
+			return false
+		}
+	}
 	j := at_ + 1
 	if j < len(cmd) && cmd[j] == '>' do j += 1
 	for j < len(cmd) && cmd[j] == ' ' do j += 1
-	if j >= len(cmd) || cmd[j] == '&' do return false
-	return !strings.has_prefix(cmd[j:], "/dev/null")
+	if j >= len(cmd) do return false
+	c := cmd[j]
+	if c == '&' do return false
+	if strings.has_prefix(cmd[j:], "/dev/null") do return false
+	return c == '/' || c == '.' || c == '~' || c == '$' || c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
 }
 
 @(private = "file")
@@ -255,7 +285,7 @@ shell_sed_swaps :: proc(cmd: string, out: ^[dynamic]Swap) {
 			continue
 		}
 		if len(out) < SHELL_SWAPS {
-			append(out, Swap{sed_text(old, delim), sed_text(new, delim)})
+			append(out, Swap{sed_text(old, delim), sed_text(new, delim), ""})
 		}
 		i = end
 	}
@@ -327,7 +357,11 @@ python_swaps :: proc(script: string, out: ^[dynamic]Swap) {
 			i = j
 			continue
 		}
-		if len(out) < SHELL_SWAPS do append(out, Swap{old, new})
+		// Which file this one is being done to: the last path the script
+		// named before it. A script that walks three files in a row sets the
+		// path, reads, replaces and writes, three times over, and every one
+		// of those changes belongs under the name it was set to.
+		if len(out) < SHELL_SWAPS do append(out, Swap{old, new, last_path(script[:j])})
 		i = end
 	}
 }
@@ -526,6 +560,24 @@ shell_paths :: proc(text: string, out: ^[dynamic]string) {
 		for p in out do if p == word do seen = true
 		if !seen && len(out) < SHELL_FILES do append(out, word)
 	}
+}
+
+// The last file named in a piece of script, which is the one anything after
+// it is being done to.
+@(private = "file")
+last_path :: proc(text: string) -> string {
+	found := ""
+	i := 0
+	for i < len(text) {
+		if is_break(text[i]) {
+			i += 1
+			continue
+		}
+		start := i
+		for i < len(text) && !is_break(text[i]) do i += 1
+		if path_like(text[start:i]) do found = text[start:i]
+	}
+	return found
 }
 
 @(private = "file")

@@ -79,6 +79,56 @@ reading_a_file_is_a_read :: proc(t: ^testing.T) {
 	testing.expect_value(t, found.family, Icon.Find)
 }
 
+// The command off the screenshot that started this: it lists what is in a few
+// config files and changes nothing, and it came out as an edit because of the
+// arrow in `print(p, '->', m)`. A greater-than sign is only a redirect when
+// what is in front of it is a space or a file descriptor and what follows it
+// is a path.
+@(test)
+an_arrow_in_a_string_is_not_a_redirect :: proc(t: ^testing.T) {
+	cmd := `echo "=== ~/.claude.json mcpServers ==="; python3 -c "
+import json;d=json.load(open('/home/mike/.claude.json'))
+print('global mcpServers:', list(d.get('mcpServers',{}).keys()))
+for p,v in d.get('projects',{}).items():
+    m=list(v.get('mcpServers',{}).keys())
+    if m: print(p,'->',m)
+" 2>&1 | head -40
+echo "=== .mcp.json ==="; cat /home/mike/Source/aithing/.mcp.json 2>/dev/null
+wc -c /home/mike/Source/aithing/CLAUDE.md 2>/dev/null`
+	sh := shell_read(cmd)
+	testing.expectf(t, sh.family != .Edit, "a command that only reads came out as %v", sh.family)
+	testing.expect_value(t, len(sh.swaps), 0)
+
+	// And the shapes that are redirects still are.
+	for writes in ([?]string{"echo hi > /tmp/note.txt", "cat a.txt >> /tmp/log", "./build.sh 2> /tmp/err.log"}) {
+		out := shell_read(writes)
+		testing.expectf(t, out.family == .Edit, "%s came out as %v", writes, out.family)
+	}
+}
+
+// A morning's worth of commands out of this program's own transcripts, none
+// of which put anything on disk. The pencil is the loudest mark on the path,
+// so a false one is worse than a missing one: it says a turn changed a file
+// when it read one.
+@(test)
+the_ordinary_commands_are_not_edits :: proc(t: ^testing.T) {
+	for cmd in ([?]string {
+		"git log --oneline -3",
+		"git status --short | head -3",
+		"git diff --stat",
+		`grep -rn "tool_style" src/*.odin`,
+		"ls -la /tmp/shot.png",
+		"wc -c /home/mike/Source/aithing/CLAUDE.md",
+		`python3 -c "print('a -> b')"`,
+		`echo "=== plugins ==="; ls /home/mike/.claude/plugins`,
+		"odin test src -define:ODIN_TEST_FANCY=false 2>&1 | grep -E \"ERROR|Finished\"",
+		"sed -n '120,160p' src/peek.odin",
+	}) {
+		sh := shell_read(cmd)
+		testing.expectf(t, sh.family != .Edit, "%s came out as an edit", cmd)
+	}
+}
+
 // And the ones that must not be taken for edits. Every second command in a
 // transcript ends in `2>&1` or throws its output at /dev/null, and a stone
 // that went blue for either would say the turn had changed a file when it had

@@ -218,14 +218,26 @@ rows_diff :: proc(app: ^App, old, new: string, width: f32) {
 rows_shell :: proc(app: ^App, input: json.Value, cmd: string, inner: f32) -> int {
 	sh := shell_read(cmd)
 	if d := jstr(input, "description"); d != "" do row_wrap(app, d, inner, 3)
+	// The files it named, minus the ones that head a diff of their own below:
+	// a script that changes one file would otherwise list it and then repeat
+	// it as the heading of the only hunk on the panel.
+	listed := 0
+	for f in sh.files {
+		changed := false
+		for swap in sh.swaps do if swap.file == f do changed = true
+		if changed do continue
+		if listed == 0 do row_head(app, sh.family == .Edit ? "files" : "read")
+		append(&app.rows, Row{kind = .Path, text = f})
+		listed += 1
+	}
+	// Each change under the name of the file it was made to, rather than all
+	// of them under one `changed`: a script that walks three files in a row is
+	// three diffs, and which file a hunk belongs to is the first thing to know
+	// about it.
 	for swap, i in sh.swaps {
 		if i >= SHELL_SWAPS do break
-		row_head(app, swap.old == "" ? "written" : "changed")
+		row_head(app, swap.file != "" ? swap.file : swap.old == "" ? "written" : "changed")
 		rows_diff(app, swap.old, swap.new, inner - PEEK_SIGN - 14)
-	}
-	if len(sh.files) > 0 {
-		row_head(app, sh.family == .Edit ? "files" : "read")
-		for f in sh.files do append(&app.rows, Row{kind = .Path, text = f})
 	}
 	row_head(app, "command")
 	rows_cmd(app, cmd, inner)
