@@ -301,9 +301,8 @@ draw_transcript :: proc(app: ^App, r: Rect) {
 	if peek.ok do draw_peek(app, peek_layout(app, open, r, top))
 }
 
-// Which stone is open this frame: the one under the pointer, else the one
-// pressed to stay open. One answer, so one panel — there is no list of open
-// stones to get two entries in.
+// Which stone is open this frame: the one under the pointer. One answer, so
+// one panel — there is no list of open stones to get two entries in.
 @(private = "file")
 snake_open :: proc(app: ^App, view: Rect, top: f32) -> Ref {
 	ui := &app.ui
@@ -314,7 +313,6 @@ snake_open :: proc(app: ^App, view: Rect, top: f32) -> Ref {
 		if b == nil do continue
 		if ui_hovered(ui, sr) || ui.active == ui_id_ptr(b) do return t.ref
 	}
-	if chat_block(&app.chat, app.pinned) != nil do return app.pinned
 	return NO_REF
 }
 
@@ -431,11 +429,13 @@ draw_tile :: proc(app: ^App, t: Tile, r: Rect, open: bool) {
 	if b == nil do return
 	id := ui_id_ptr(b)
 
-	clicked, hovered := ui_invisible_button(ui, id, r)
-	// A press pins it, a second press lets it go, and pinning one lets go of
-	// whichever was pinned before: one stone stays open, never two.
-	if clicked do app.pinned = app.pinned == t.ref ? NO_REF : t.ref
-	pinned := app.pinned == t.ref
+	// A press on a stone does nothing yet. The button is still asked for,
+	// because it is what puts the stone under `ui.active`, and that is what
+	// the squash below is read off — the give is the whole of the answer for
+	// now. A press used to pin the panel open with a dot in the corner to say
+	// which one you had left that way, and that dot was a second thing on
+	// screen saying what the pointer already says.
+	_, hovered := ui_invisible_button(ui, id, r)
 
 	// It arrives by growing into place, and it comes up under the pointer the
 	// way a card on the grid does: its width and height swell on two springs
@@ -508,9 +508,6 @@ draw_tile :: proc(app: ^App, t: Tile, r: Rect, open: bool) {
 	// wobbling taller than it is wide does not stretch the mark with it.
 	mark := Rect{cx - rr.w / 2, cy - rr.w / 2, rr.w, rr.w}
 	draw_icon(ui, t.icon, mark, color_alpha(t.col, (0.85 + 0.15 * pop) * born), base)
-	// Pressed open stays open: a dot in the corner says which one you left
-	// that way, because otherwise a panel with no pointer near it looks stuck.
-	if pinned do ui_circle(ui, {rr.x + rr.w - 6, rr.y + 6}, 3, t.col)
 	// What a copy with nothing selected takes: the block itself, not the mark
 	// that stands for it.
 	ui_hover_text(ui, rr, t.kind == .Tool ? tool_hover(b) : block_text(b))

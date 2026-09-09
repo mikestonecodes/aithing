@@ -158,11 +158,10 @@ App :: struct {
 	transcript: Scroll,
 	sidebar:   Scroll,
 	stick:     bool, // keep the transcript pinned to the bottom
-	// The one stone pressed to stay open, and how far its panel is scrolled.
-	// Each block used to carry an `expanded` flag of its own, so a click here
-	// and a click there left two panels up at once with the second drawn over
-	// the first; one stone is open, so one variable says which.
-	pinned:    Ref,
+	// How far the open stone's panel is scrolled. Which stone is open is not
+	// stored — it is the one under the pointer, and nothing else — so there is
+	// nothing here to leave behind when the chat it pointed into is thrown
+	// away.
 	peek:      Scroll,
 
 	status:    string,
@@ -219,7 +218,6 @@ App :: struct {
 
 app_init :: proc(app: ^App) {
 	app.stick = true
-	app.pinned = NO_REF // a zeroed Ref is the first block, not nothing
 	cwd, _ := os.get_working_directory(context.allocator)
 	app.cwd = cwd
 	app.status = strings.clone("ready")
@@ -370,7 +368,6 @@ app_poll_jobs :: proc(app: ^App) -> bool {
 		clear(&app.open)
 		app.chat = chat
 		app.cur_msg = -1
-		app.pinned = NO_REF // an index into the chat just thrown away
 		app.stick = true
 		app.transcript.offset = 1e9 // clamped to the bottom on the next layout
 		app.transcript.target = 1e9
@@ -937,7 +934,6 @@ app_select :: proc(app: ^App, id: string) {
 	app.chat.session_id = strings.clone(id)
 	app.chat.cwd = strings.clone(app_session_cwd(app, id))
 	app.cur_msg = -1
-	app.pinned = NO_REF
 	app.stick = true
 	app.transcript.offset = 0
 	app.transcript.target = 0
@@ -960,7 +956,6 @@ chat_new :: proc(app: ^App) {
 	app.chat.cwd = strings.clone(app.cwd)
 	app.chat.title = strings.clone("New chat")
 	app.cur_msg = -1
-	app.pinned = NO_REF
 	app.stick = true
 	app.transcript.target = 0
 	app.transcript.offset = 0
@@ -994,7 +989,6 @@ app_open :: proc(app: ^App, index: int) {
 		app.cwd = strings.clone(project)
 	}
 	app.cur_msg = -1
-	app.pinned = NO_REF
 	app.stick = true
 	app.transcript.offset = 0
 	app.transcript.target = 0
@@ -1314,8 +1308,7 @@ app_apply :: proc(app: ^App, at: int, e: ^Event) {
 		}
 		clear(&app.open)
 		app.cur_msg = -1
-		app.pinned = NO_REF
-		app_turn_ended(app, t, .Done)
+			app_turn_ended(app, t, .Done)
 		app_reread_chat(app, t)
 	}
 }
