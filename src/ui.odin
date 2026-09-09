@@ -385,7 +385,16 @@ ui_text :: proc(
 ) -> f32 {
 	scale := font_scale(font, size)
 	pen := pos
-	pen.y += font.ascent * scale // pos is the top-left of the line box
+	// `pos` is the top-left of the line box, and the baseline hangs off
+	// `font.baseline` rather than off `font.ascent`: the metric ascender is a
+	// third of an em above anything Latin text actually draws, so hanging the
+	// line off it left all the slack above the ink and none below and every
+	// string sat low in whatever box it had been given — about two pixels at
+	// reading sizes, which is exactly enough to see. font_baseline works out
+	// where the ink is and has done since it was written; this line was still
+	// reading the metric, so the dot centred beside a word in a card's badge
+	// sat two pixels above the word it belonged to.
+	pen.y += font.baseline * scale
 
 	// One number the shader needs and cannot work out for itself: how many
 	// screen pixels the distance ramp covers at this size.
