@@ -399,6 +399,98 @@ canvas_step_sel :: proc(app: ^App, delta: int) {
 	}
 }
 
+// One row up or down, for j and k. h and l already reach every card, so this
+// is a shortcut and not the only way through: when the row it lands on is
+// short it takes the card nearest across, which is the last one. That is the
+// promise the old nearest-in-direction search could not make and why it went
+// — here it is only ever a shortcut, so a row that cannot be entered squarely
+// is still entered.
+canvas_step_row :: proc(app: ^App, delta: int) {
+	c := &app.canvas
+	canvas_layout(app)
+	at := -1
+	for card, i in c.cards {
+		if card.head do continue
+		if app.todos.list[card.todo].id == c.sel do at = i
+	}
+	// Nothing chosen yet: j and k start at the first card, the way the
+	// arrows do.
+	if at < 0 {
+		for card in c.cards do if !card.head {
+			canvas_set_sel(app, app.todos.list[card.todo].id)
+			return
+		}
+		return
+	}
+	cur := c.cards[at].r
+	// Cards are appended in reading order, so the next row down is the first
+	// card past this one sitting lower, and the row up is the last one before
+	// it sitting higher. Section headers are laid out in the same order and
+	// are skipped, so j and k cross a heading without stopping on it.
+	row := f32(0)
+	found := false
+	if delta > 0 {
+		for card in c.cards[at + 1:] {
+			if card.head do continue
+			if card.r.y > cur.y {
+				row = card.r.y
+				found = true
+				break
+			}
+		}
+	} else {
+		#reverse for card in c.cards[:at] {
+			if card.head do continue
+			if card.r.y < cur.y {
+				row = card.r.y
+				found = true
+				break
+			}
+		}
+	}
+	if !found do return
+	best := -1
+	best_d := max(f32)
+	for card, i in c.cards {
+		if card.head || card.r.y != row do continue
+		d := abs((card.r.x + card.r.w / 2) - (cur.x + cur.w / 2))
+		if d < best_d {
+			best_d = d
+			best = i
+		}
+	}
+	if best >= 0 do canvas_set_sel(app, app.todos.list[c.cards[best].todo].id)
+}
+
+// x on the grid: the card under the cursor goes, and the cursor lands on the
+// one that takes its place. Leaving the cursor on the id that was just
+// dismissed sent the next h or l back to the first card of the grid, which
+// after three x presses is nowhere near where you were working.
+canvas_dismiss_sel :: proc(app: ^App) {
+	c := &app.canvas
+	canvas_layout(app)
+	if c.sel == "" do return
+	at := -1
+	for card, i in c.cards {
+		if card.head do continue
+		if app.todos.list[card.todo].id == c.sel do at = i
+	}
+	if at < 0 do return
+	next := ""
+	for card in c.cards[at + 1:] do if !card.head {
+		next = app.todos.list[card.todo].id
+		break
+	}
+	if next == "" {
+		#reverse for card in c.cards[:at] do if !card.head {
+			next = app.todos.list[card.todo].id
+			break
+		}
+	}
+	app_dismiss_todo(app, c.sel)
+	canvas_set_sel(app, next)
+}
+
 // `id` is often app.canvas.sel itself — Enter on the grid passes the cursor
 // straight back in — so the new one is made before the old one goes. Freeing
 // first left the clone reading memory it had just handed back.
@@ -477,7 +569,7 @@ canvas_filter_project :: proc(app: ^App, cwd: string) {
 	next := strings.clone(cwd) // may be the string being replaced
 	if next != app.canvas.project {
 		editor_clear(&app.capture)
-		app.history_at = 0
+		app_history_done(app)
 	}
 	delete(app.canvas.project)
 	app.canvas.project = next

@@ -176,6 +176,11 @@ App :: struct {
 	// they were made are the history — so nothing can drift out of step with
 	// what is actually on the grid.
 	history_at: int,
+	// What was half-written when the walk stepped off 0, so coming back down
+	// to 0 gives it back. Up used to throw it away — you typed a line, went
+	// looking for an older one to copy a word out of, and the line you were
+	// writing was gone with no key that brought it back.
+	history_draft: string,
 	// An item names a message in its own thread, so opening one opens that
 	// thread alone rather than every thread of its task end to end.
 	open_single:  bool,
@@ -692,7 +697,7 @@ app_capture :: proc(app: ^App) {
 		app_start_todo(app, id)
 	}
 	editor_clear(&app.capture)
-	app.history_at = 0
+	app_history_done(app)
 	todos_save(&app.todos)
 	canvas_set_sel(app, first)
 }
@@ -717,14 +722,33 @@ app_history :: proc(app: ^App, back: int) -> bool {
 	if n == 0 do return false
 	at := clamp(app.history_at + back, 0, n)
 	if at == app.history_at do return false
+	// Stepping off what is being written now puts it aside; 0 is where it
+	// lives, so walking back down to 0 hands it back rather than clearing the
+	// box. Anything typed once the walk is under way is a new draft and takes
+	// its place: see app_history_done.
+	if app.history_at == 0 {
+		delete(app.history_draft)
+		app.history_draft = strings.clone(editor_text(&app.capture))
+	}
 	app.history_at = at
 	if at == 0 {
-		editor_clear(&app.capture)
+		editor_set_text(&app.capture, app.history_draft)
 		return true
 	}
 	// The list is oldest first, so one step back is one off the end.
 	editor_set_text(&app.capture, app.todos.list[n - at].text)
 	return true
+}
+
+// The walk is over: the box is somebody's own writing again, so the next Up
+// starts from the newest card and there is no draft left to come back to.
+// Said in one place because the four callers that used to set `history_at` by
+// hand are exactly the kind of second copy that leaves a stale draft waiting
+// to overwrite a box.
+app_history_done :: proc(app: ^App) {
+	app.history_at = 0
+	delete(app.history_draft)
+	app.history_draft = ""
 }
 
 // Everything a thread can be found by: what it is called, what was asked of
@@ -776,7 +800,7 @@ app_cancel :: proc(app: ^App) -> bool {
 	// nobody can see is a press that looked like it did nothing.
 	case app_capture_open(app) && editor_text(&app.capture) != "":
 		editor_clear(&app.capture)
-		app.history_at = 0
+		app_history_done(app)
 
 	case app.canvas.project != "":
 		canvas_filter_project(app, "")
