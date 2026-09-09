@@ -441,27 +441,30 @@ draw_card :: proc(app: ^App, card: Card, base: Rect) {
 	ui_circle(ui, {cx + DOT / 2, pill.y + pill.h / 2}, DOT / 2, color_alpha(col, alpha))
 	ui_text_middle(ui, &ui.regular, label, cx + DOT + DOT_GAP, pill, 11.5, color_alpha(col, alpha))
 
-	// What the turn is doing right now, beside the pill. This is the whole of
-	// what a headless turn shows anyone: there is no transcript on screen for
-	// it, and a card that says nothing but `processing` for two minutes is a
-	// card you have to open a thread to believe.
+	// What the turn is doing right now, in the corner beside the pill. This
+	// was the tool and its arguments in words — `Bash  cp -r src build` —
+	// ellipsized into whatever room the pill had left over, which at 11.5px
+	// was a line that changed shape every second and said less at a glance
+	// than its own first word did. The mark is the one the transcript draws
+	// for that family of tool, so a sweep across the grid says which cards
+	// are reading and which are running something without reading a word;
+	// the words themselves are still there, under the pointer.
 	room := r.w - pad * 2 - pill.w - 14
-	note, note_col := "", FAINT
 	if turn := turn_for_todo(app, td.id); turn >= 0 {
-		note = turn_doing(app.turns[turn])
+		if room > DOING do draw_doing(app, app.turns[turn], {r.x + r.w - pad - DOING / 2, pill.y + pill.h / 2}, id)
 	} else if state == .Failed || state == .Asked {
 		// Why. A headless turn has no transcript to read it out of, and a
 		// card that says `failed` and nothing else is a card you cannot act
 		// on — which is exactly how it read. A card that stopped to ask
 		// something is the same: the question is the whole of what it wants.
-		note = app.notes[td.id]
-		note_col = state == .Failed ? RED : AMBER
-	}
-	if note != "" && room > 40 {
-		buf: [192]u8
-		note = font_ellipsize(&ui.regular, note, 11.5, room, buf[:])
-		nw := font_width(&ui.regular, note, 11.5)
-		ui_text_middle(ui, &ui.regular, note, r.x + r.w - pad - nw, pill, 11.5, note_col)
+		note := app.notes[td.id]
+		note_col := state == .Failed ? RED : AMBER
+		if note != "" && room > 40 {
+			buf: [192]u8
+			note = font_ellipsize(&ui.regular, note, 11.5, room, buf[:])
+			nw := font_width(&ui.regular, note, 11.5)
+			ui_text_middle(ui, &ui.regular, note, r.x + r.w - pad - nw, pill, 11.5, note_col)
+		}
 	}
 
 	// Dismissing it, which every card answers to the same way: the card goes
@@ -481,6 +484,80 @@ draw_card :: proc(app: ^App, card: Card, base: Rect) {
 	}
 
 	if clicked do app_open_todo(app, td.id)
+}
+
+DOING :: f32(26) // the disc in a card's corner that says what its turn is at
+
+// What a running turn is doing: the mark for it, with the work going round it.
+// Everything here moves — the disc breathes, a bead runs the ring, and the
+// whole thing takes a knock each time the tool changes — because a headless
+// card has no transcript anyone can watch, and a mark that sat still would be
+// a picture of a turn rather than a turn. The word `processing` under it says
+// the same thing and has said it for two minutes; this says it now.
+@(private = "file")
+draw_doing :: proc(app: ^App, t: ^Turn, at: [2]f32, card: u64) {
+	ui := &app.ui
+	ui.time_effects = true
+	col, icon := tool_style(t.tool)
+	// No tool named means the agent is writing, which is a thing it is doing
+	// and not a gap between the things it does. The transcript's own mark for
+	// something said stands in, in its own colour, so a card that is thinking
+	// does not wear the grey nut kept for tools this build has never heard of.
+	if t.tool == "" do col, icon = TILE_SAID, .Said
+
+	// The knock. Which tool it is is the one thing written down — no note is
+	// kept of the last one — so the change is caught by handing the name's
+	// hash to ui_changed, which remembers a number for exactly one frame.
+	id := card ~ 0xd01
+	pop := ui_spring(ui, id, 0, 340, 11)
+	if ui_changed(ui, id, f32(ui_id(t.tool) & 0xffff)) {
+		ui_spring_kick(ui, id, 9)
+		// Through the card's own ripple channel, so the ring is clipped to
+		// the card and the card reads as the thing that felt it.
+		ui_ripple(ui, card, at, col, DOING * 2.6)
+	}
+
+	breath := 0.5 + 0.5 * math.sin(ui.time * 4.5)
+	rad := DOING / 2 * (1 + 0.06 * breath + 0.16 * pop)
+
+	g := rad * (1.5 + 0.5 * breath)
+	ui_quad(
+		ui,
+		{at.x - g, at.y - g, g * 2, g * 2},
+		{0, 0},
+		{1, 1},
+		color_alpha(col, 0.2 + 0.16 * breath + 0.24 * pop),
+		WHITE_TEX,
+		NO_ROUND,
+		.Glow,
+	)
+
+	disc := color_mix(PANEL, col, 0.2 + 0.16 * breath + 0.2 * pop)
+	ui_circle(ui, at, rad, disc)
+	// The light going round. ui_dial only ever fills clockwise from twelve, so
+	// the bead is a disc placed on the circle rather than an arc rotated round
+	// it — the same thing to look at, and it can trail.
+	ui_dial(ui, at, rad, 2, 1, color_alpha(col, 0.34))
+	// Spaced far enough apart to read as four: at 0.26 radians they were 3px
+	// apart on a 13px ring and overlapped into one bright blob at the top.
+	for i in 0 ..= 3 {
+		a := ui.time * 3.2 - f32(i) * 0.45
+		ui_circle(
+			ui,
+			{at.x + math.sin(a) * rad, at.y - math.cos(a) * rad},
+			3 - f32(i) * 0.62 + 0.9 * pop,
+			color_alpha(col, 1 - f32(i) * 0.27),
+		)
+	}
+
+	// The mark, in the box draw_icon takes its scale from: bigger than the
+	// disc, because that box is a transcript stone and the mark inside it is
+	// half its width.
+	box := DOING * 1.28 * (1 + 0.16 * pop)
+	draw_icon(ui, icon, {at.x - box / 2, at.y - box / 2, box, box}, col, disc)
+	// The line it replaced, for whoever wants it: pointing at the mark is
+	// asking what it stands for.
+	ui_hover_text(ui, {at.x - rad, at.y - rad, rad * 2, rad * 2}, turn_doing(t))
 }
 
 // A few lines of body text, ellipsized on the last. Returns the height.

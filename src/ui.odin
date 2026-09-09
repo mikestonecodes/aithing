@@ -220,6 +220,21 @@ ui_entered :: proc(ui: ^UI, id: u64, hovered: bool) -> bool {
 	return hovered && !was && ui.has_mouse
 }
 
+// Whether a value is different from the one handed in here last frame, which
+// is the moment a change is worth a knock. Kept the way ui_entered keeps its
+// answer — beside the widget's own animation, under a salt — because a frame
+// is the only place a "before" can live: everything else on screen is worked
+// out afresh and forgotten, and the alternative is a copy of the value parked
+// somewhere else that has to be kept in step with the real one.
+CHANGE_SALT :: 0xc4a9
+
+ui_changed :: proc(ui: ^UI, id: u64, value: f32) -> bool {
+	key := id ~ CHANGE_SALT
+	was, known := ui.anim[key]
+	ui.anim[key] = {value, 0}
+	return known && was.pos != value
+}
+
 // A ring that spreads from `at` and fades as it goes. `size` is how far it
 // gets; `key` is who draws it, so a card's ripple is clipped to the card and
 // the window's click ripple is drawn over everything last.
