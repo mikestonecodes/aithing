@@ -542,11 +542,9 @@ draw_composer :: proc(app: ^App, r: Rect) {
 // band on a thread and above the box on the grid, which is two places for one
 // line, and before that inside the composer and nowhere else, so it existed
 // only on the thread page — and the grid is where you sit while cards run,
-// which meant
-// "built — restart to pick it up" was said to an empty room. Every landing
-// note, every push that was refused and every finished build announced itself
-// somewhere nobody was looking, which is most of what "nothing ever seems to
-// happen" was.
+// which meant a failed build was said to an empty room. Every landing note and
+// every push that was refused announced itself somewhere nobody was looking,
+// which is most of what "nothing ever seems to happen" was.
 draw_status :: proc(app: ^App, at: Rect) {
 	if app.status == "" || app.status == "ready" do return
 	if at.w < 40 do return

@@ -350,7 +350,7 @@ runner_line :: proc(r: ^Runner, line: string) {
 		// grid sat there reading "requesting" over a wall of cards that
 		// already say what they are doing. It also overwrote the lines the
 		// window writes for itself, the ones nobody is around to see twice:
-		// "built — restart to pick it up", a push that was refused.
+		// a failed build, a push that was refused.
 		switch jstr(v, "subtype") {
 		case "init":
 			runner_emit(r, Event{kind = .Session, id = strings.clone(jstr(v, "session_id"))})
