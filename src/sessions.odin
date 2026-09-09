@@ -368,8 +368,19 @@ session_load :: proc(s: ^Session) -> (chat: Chat, ok: bool) {
 	if ferr != nil do return {}, false
 	defer os.close(f)
 
-	offset := max(s.size - LOAD_TAIL_BYTES, 0)
-	data := make([]byte, int(s.size - offset))
+	// How long the file is, asked of the file. `s.size` is the scan's opinion
+	// of that, and the scan ran at most every ten seconds and not at all
+	// while the thread on screen was streaming — so a thread being written
+	// right now was read up to wherever it had got to when the sidebar last
+	// looked, and everything after that was simply not there. Opening a card
+	// that had been running for a while gave its opening prompt, a hole where
+	// the work went, and then whatever the live stream had caught since:
+	// the answer at the bottom with none of the steps that reached it.
+	size, serr := os.file_size(f)
+	if serr != nil do size = s.size
+
+	offset := max(size - LOAD_TAIL_BYTES, 0)
+	data := make([]byte, int(size - offset))
 	defer delete(data)
 	n, rerr := os.read_at(f, data, offset)
 	if rerr != nil && n <= 0 do return {}, false
@@ -392,7 +403,7 @@ session_load :: proc(s: ^Session) -> (chat: Chat, ok: bool) {
 		fmt.sbprintf(
 			&chat_block(&chat, ref).text,
 			"This session is %.0f MB; showing the last %d MB.",
-			f64(s.size) / (1024 * 1024),
+			f64(size) / (1024 * 1024),
 			LOAD_TAIL_BYTES / (1024 * 1024),
 		)
 	}

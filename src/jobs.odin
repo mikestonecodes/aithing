@@ -106,6 +106,41 @@ load_start_group :: proc(j: ^Load_Job, s: Session, members: []Session) {
 	load_try(j)
 }
 
+// The same read, asked for again. Not a new request built from somewhere
+// else: the job still holds the session and the group it was last given, so
+// re-running it cannot open a different thread from the one on screen or
+// quietly turn a single thread into its whole task.
+//
+// This is what a thread reads back to once its turn has finished. A transcript
+// being written live is two things at once — the file up to the moment it was
+// read, and the stream since — and the join between them is where the message
+// that was in flight when the file was read goes missing: its blocks were
+// opened against the chat the snapshot then replaced, so the rest of it had
+// nowhere to be written. Reading the file again once the process has gone
+// makes the settled transcript one thing again, which is the file.
+//
+// `id` is the thread the caller wants back, and it has to be the one the job
+// last read: a thread this window made itself has never been read off disk at
+// all, and re-running the last request for it would drop whatever was opened
+// before it over the top.
+load_again :: proc(j: ^Load_Job, id: string) -> bool {
+	sync.mutex_lock(&j.mu)
+	defer sync.mutex_unlock(&j.mu)
+	if id == "" || j.session.path == "" || j.session.id != id do return false
+	j.want += 1
+	session_free(&j.next)
+	j.next = session_clone(j.session)
+	group_free(j.next_group)
+	j.next_group = nil
+	if len(j.group) > 1 {
+		clones := make([]Session, len(j.group))
+		for m, i in j.group do clones[i] = session_clone(m)
+		j.next_group = clones
+	}
+	j.has_next = true
+	return true
+}
+
 @(private = "file")
 group_free :: proc(members: []Session) {
 	if members == nil do return

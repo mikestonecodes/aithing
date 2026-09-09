@@ -1172,7 +1172,29 @@ app_apply :: proc(app: ^App, at: int, e: ^Event) {
 		clear(&app.open)
 		app.cur_msg = -1
 		app_turn_ended(app, t, .Done)
+		app_reread_chat(app, t)
 	}
+}
+
+// The thread on screen, read off disk again now its process has gone. A
+// transcript watched live is the file as it was when it was read plus the
+// stream since, and joining a turn that is already running lands in the
+// middle of a message: the blocks it had opened belong to the chat the file
+// then replaced, so the rest of that message had nowhere to go. Opening a
+// card as it finished gave the answer at the bottom and a hole where the
+// steps that reached it should have been.
+//
+// Only once nothing is still writing the thread. A follow-up typed into a
+// busy thread runs beside the turn that is ending, and reading the file over
+// the top of a stream still arriving would put the hole back.
+@(private = "file")
+app_reread_chat :: proc(app: ^App, t: ^Turn) {
+	if t.session == "" || t.session != app.chat.session_id do return
+	for other in app.turns {
+		if other == t || !other.live do continue
+		if other.session == t.session && runner_busy(&other.runner) do return
+	}
+	if load_again(&app.load, app.chat.session_id) do app_status(app, "loading...")
 }
 
 // A turn came back a failure. One path, whether or not its thread is the one

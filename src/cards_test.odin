@@ -1144,6 +1144,72 @@ a_card_thread_reads_as_the_card :: proc(t: ^testing.T) {
 	testing.expect_value(t, block_text(chat_block(&chat, Ref{1, 0, -1})), "baked it")
 }
 
+// A thread that grew since the sidebar last listed it is read to its end, not
+// to wherever it had got to then. The scan runs every ten seconds and not at
+// all while the thread on screen is streaming, so the length it recorded is
+// minutes old on a card that has been working — and opening that card gave
+// its opening prompt, a hole where the work went, and then whatever the live
+// stream had caught since: the answer at the bottom with none of the steps
+// that reached it.
+@(test)
+a_thread_is_read_past_where_the_scan_left_it :: proc(t: ^testing.T) {
+	path := "/tmp/aithing-test-grown.jsonl"
+	head := strings.concatenate(
+		{
+			`{"type":"user","cwd":"/tmp/proj","message":{"role":"user","content":"bake it"}}`,
+			"\n",
+		},
+		context.temp_allocator,
+	)
+	body := strings.concatenate(
+		{
+			head,
+			`{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tu1","name":"Bash","input":{"command":"./build.sh"}}]}}`,
+			"\n",
+			`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"baked it"}]}}`,
+			"\n",
+		},
+		context.temp_allocator,
+	)
+	_ = os.write_entire_file(path, transmute([]byte)body)
+	defer os.remove(path)
+
+	// The length the scan wrote down, from before the work happened.
+	s := Session {
+		id   = "sess-g",
+		path = path,
+		size = i64(len(head)),
+	}
+	chat, ok := session_load(&s)
+	defer chat_destroy(&chat)
+	testing.expect(t, ok)
+	testing.expect_value(t, len(chat.msgs), 2)
+	// The prompt, then the step and the answer it reached — the assistant's
+	// records fold into one message.
+	testing.expect_value(t, len(chat.msgs[1].blocks), 2)
+	testing.expect_value(t, chat.msgs[1].blocks[0].name, "Bash")
+	testing.expect_value(t, block_text(&chat.msgs[1].blocks[1]), "baked it")
+}
+
+// Reading a thread again is re-running the read it was opened with, so it
+// cannot open something else. A thread this window made itself has never been
+// read off disk, and asking for it back must do nothing rather than drop
+// whatever was open before it over the top.
+@(test)
+a_reread_is_the_same_thread_or_nothing :: proc(t: ^testing.T) {
+	j: Load_Job
+	defer load_destroy(&j)
+
+	testing.expect(t, !load_again(&j, "sess-a")) // nothing has been read yet
+
+	j.session = session_clone(fake_session("sess-a", "bake it"))
+	j.session.path = strings.clone("/tmp/aithing-test-reread.jsonl")
+	testing.expect(t, !load_again(&j, "sess-b"))
+	testing.expect(t, !load_again(&j, ""))
+	testing.expect(t, load_again(&j, "sess-a"))
+	testing.expect_value(t, j.next.id, "sess-a")
+}
+
 // JSON string literal, for the fixture above: the preamble is several lines
 // with quotes in it, and a session file holds it as one.
 @(private = "file")
