@@ -520,13 +520,6 @@ load_assistant_message :: proc(
 			if t == "" do continue
 			block = Block{kind = .Text}
 			strings.write_string(&block.text, t)
-		case "thinking":
-			// Thinking is not always kept in the session file; an empty one
-			// would just be a row that says "Thinking" and opens onto nothing.
-			t := jstr(item, "thinking")
-			if strings.trim_space(t) == "" do continue
-			block = Block{kind = .Thinking}
-			strings.write_string(&block.text, t)
 		case "tool_use":
 			input, _ := jobj(item, "input")
 			block = Block {

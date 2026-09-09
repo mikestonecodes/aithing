@@ -370,8 +370,6 @@ runner_line :: proc(r: ^Runner, line: string) {
 			switch jstr(cb, "type") {
 			case "text":
 				out.block_kind = .Text
-			case "thinking":
-				out.block_kind = .Thinking
 			case "tool_use":
 				out.block_kind = .Tool
 				out.name = strings.clone(jstr(cb, "name"))
@@ -387,8 +385,6 @@ runner_line :: proc(r: ^Runner, line: string) {
 			switch jstr(d, "type") {
 			case "text_delta":
 				runner_emit(r, Event{kind = .Delta, index = index, text = strings.clone(jstr(d, "text")), parent = strings.clone(parent)})
-			case "thinking_delta":
-				runner_emit(r, Event{kind = .Delta, index = index, text = strings.clone(jstr(d, "thinking")), parent = strings.clone(parent)})
 			case "input_json_delta":
 				runner_emit(r, Event{kind = .Arg_Delta, index = index, text = strings.clone(jstr(d, "partial_json")), parent = strings.clone(parent)})
 			}
