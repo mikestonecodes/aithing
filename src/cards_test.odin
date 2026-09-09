@@ -1804,3 +1804,33 @@ the_wheel_reaches_the_bottom_of_the_grid :: proc(t: ^testing.T) {
 	canvas_set_sel(app, top)
 	testing.expect_value(t, app.canvas.scroll.target, 0)
 }
+
+// A click on a card does not open it where the click is found. The grid is
+// mid-draw there, and the box along the bottom is only drawn on a grid: page
+// written from inside the frame took the box off screen for the rest of it,
+// so the box being typed into blinked out and came back as the composer on
+// the next frame. The press is recorded and the open happens between frames.
+@(test)
+clicking_a_card_leaves_the_box_alone_for_the_rest_of_the_frame :: proc(t: ^testing.T) {
+	scratch_dir(t)
+	app := scratch_app()
+	defer scratch_free(app)
+	sessions := make([]Session, 1)
+	sessions[0] = fake_session("sess-click", "a thread")
+	app.sessions = sessions
+
+	canvas_filter_project(app, "/tmp/proj")
+	id := todos_add(&app.todos, "read the atlas", "sess-click", "/tmp/proj")
+	app_filter(app)
+	testing.expect(t, app_capture_open(app))
+
+	app_click_todo(app, id)
+	testing.expect_value(t, app.page, Page.Grid)
+	testing.expect(t, app_capture_open(app))
+	testing.expect_value(t, app_focus(app), Focus.Capture)
+
+	_ = app_apply_clicks(app)
+	testing.expect_value(t, app.page, Page.Thread)
+	testing.expect_value(t, app.pending_open, "")
+	testing.expect_value(t, app.chat.session_id, "sess-click")
+}

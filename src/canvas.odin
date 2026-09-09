@@ -546,7 +546,7 @@ draw_card :: proc(app: ^App, card: Card, base: Rect) {
 		}
 	}
 
-	if clicked do app_open_todo(app, td.id)
+	if clicked do app_click_todo(app, td.id)
 }
 
 DOING :: f32(26) // the disc in a card's corner that says what its turn is at
