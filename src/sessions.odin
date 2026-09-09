@@ -7,6 +7,7 @@ import "core:os"
 import "core:path/filepath"
 import "core:slice"
 import "core:strings"
+import "core:thread"
 import "core:time"
 
 // Claude Code keeps one JSONL file per session under
@@ -49,8 +50,14 @@ claude_home :: proc(allocator := context.allocator) -> string {
 }
 
 // Every session on disk, newest first. Only the head and tail of each file are
-// read: enough for the title and the last prompt, and cheap enough that a few
-// hundred sessions still list instantly.
+// read: enough for the title and the last prompt.
+//
+// The files are read all at once, one job each across a pool the width of the
+// machine. Sequentially this was the window's whole startup — a second and a
+// half of nothing on screen at 1150 sessions, because the first frame cannot
+// be drawn until the list it draws exists. Nothing here shares anything: each
+// job reads one file and fills one slot of its own, and the only thing after
+// them is the sort.
 sessions_scan :: proc(allocator := context.allocator) -> []Session {
 	root := claude_home(context.temp_allocator)
 	out := make([dynamic]Session, allocator)
@@ -61,32 +68,77 @@ sessions_scan :: proc(allocator := context.allocator) -> []Session {
 	if derr != nil do return out[:]
 	defer os.file_info_slice_delete(dirs, context.allocator)
 
+	// Every directory's listing is held until the last job is done: a job
+	// points at the File_Info it came from rather than copying the strings
+	// out of it.
+	listings := make([dynamic][]os.File_Info, context.allocator)
+	defer {
+		for l in listings do os.file_info_slice_delete(l, context.allocator)
+		delete(listings)
+	}
+	jobs := make([dynamic]Read_Job, context.allocator)
+	defer delete(jobs)
+
 	for d in dirs {
 		if d.type != .Directory do continue
 		files, ferr := os.read_all_directory_by_path(d.fullpath, context.allocator)
 		if ferr != nil do continue
-		defer os.file_info_slice_delete(files, context.allocator)
-
+		append(&listings, files)
 		for f in files {
 			if !strings.has_suffix(f.name, ".jsonl") do continue
 			if f.size == 0 do continue
-			s := Session {
-				id      = strings.clone(strings.trim_suffix(f.name, ".jsonl"), allocator),
-				path    = strings.clone(f.fullpath, allocator),
-				project = strings.clone(d.name, allocator),
-				mtime   = f.modification_time,
-				size    = f.size,
-			}
-			session_read_summary(&s, allocator)
-			if s.title == "" do continue // nothing but metadata in it
-			append(&out, s)
+			append(&jobs, Read_Job{file = f, project = d.name, allocator = allocator})
 		}
+	}
+
+	if len(jobs) > 0 {
+		pool: thread.Pool
+		thread.pool_init(&pool, context.allocator, min(len(jobs), os.get_processor_core_count()))
+		defer thread.pool_destroy(&pool)
+		thread.pool_start(&pool)
+		// The jobs are added after the array has stopped growing, so the
+		// pointers handed to the pool stay put.
+		for &j in jobs do thread.pool_add_task(&pool, context.allocator, session_read_task, &j)
+		thread.pool_finish(&pool)
+	}
+
+	for &j in jobs {
+		if j.out.title == "" {
+			// Nothing but metadata in it: not a session anyone can open, and
+			// the strings read for it go back now rather than riding along.
+			session_free(&j.out, allocator)
+			continue
+		}
+		append(&out, j.out)
 	}
 
 	slice.sort_by(out[:], proc(a, b: Session) -> bool {
 		return time.time_to_unix_nano(a.mtime) > time.time_to_unix_nano(b.mtime)
 	})
 	return out[:]
+}
+
+// One file to read, and the session it turned into. `file` and `project` are
+// borrowed from the directory listing the job was made from.
+@(private = "file")
+Read_Job :: struct {
+	file:      os.File_Info,
+	project:   string,
+	allocator: runtime.Allocator,
+	out:       Session,
+}
+
+@(private = "file")
+session_read_task :: proc(t: thread.Task) {
+	j := cast(^Read_Job)t.data
+	j.out = Session {
+		id      = strings.clone(strings.trim_suffix(j.file.name, ".jsonl"), j.allocator),
+		path    = strings.clone(j.file.fullpath, j.allocator),
+		project = strings.clone(j.project, j.allocator),
+		mtime   = j.file.modification_time,
+		size    = j.file.size,
+	}
+	session_read_summary(&j.out, j.allocator)
 }
 
 // Commands that count as checking the work. Only the command itself is read,
@@ -123,7 +175,9 @@ TRANSIENT_PROMPTS :: 2
 // Titles are written as their own records (`custom-title` beats `ai-title`)
 // and land near the end of the file; the opening user prompt is the fallback,
 // and the working directory is on every message record.
-@(private = "file")
+// Not file-private, unlike the rest of the reading here: `sessions_test.odin`
+// drives it against a file it wrote, which is the only way to pin what a tail
+// full of tool calls is supposed to come out as.
 session_read_summary :: proc(s: ^Session, allocator: runtime.Allocator) {
 	f, err := os.open(s.path)
 	if err != nil do return
@@ -187,21 +241,38 @@ session_read_summary :: proc(s: ^Session, allocator: runtime.Allocator) {
 	checked, check_failed, pending := false, false, false
 	tail_lines := each_line(string(tail[:max(tn, 0)]))
 	for line in iter_next(&tail_lines) {
-		if strings.contains(line, "\"tool_use\"") {
-			worked = true
-			if is_check_cmd(line) {
-				pending = true
-			} else {
-				for t in EDIT_TOOLS do if strings.contains(line, t) {
-					checked = false // the work moved on since the last check
-					break
+		// The bookkeeping records Claude Code writes — mode, summary, queue
+		// operations, and the three that carry a title — say their type
+		// first, so a few bytes off the front of the line is enough to know
+		// whether the rest of it is worth searching. A message record does
+		// not lead with its type and falls through to the marker tests
+		// below; everything else is walked past for the price of a prefix.
+		switch line_type(line) {
+		case "":
+			if strings.contains(line, `"tool_use"`) {
+				worked = true
+				if is_check_cmd(line) {
+					pending = true
+				} else {
+					for t in EDIT_TOOLS do if strings.contains(line, t) {
+						checked = false // the work moved on since the last check
+						break
+					}
 				}
+			} else if pending && strings.contains(line, `"tool_result"`) {
+				checked = true
+				check_failed = strings.contains(line, `"is_error":true`)
+				pending = false
 			}
-		} else if pending && strings.contains(line, "\"tool_result\"") {
-			checked = true
-			check_failed = strings.contains(line, "\"is_error\":true")
-			pending = false
+			continue
+		case "custom-title", "ai-title", "last-prompt":
+		case:
+			continue
 		}
+		// Only a title record gets as far as a parse. This loop used to
+		// parse every line — a quarter of a megabyte of JSON per session,
+		// times every session on disk, which was most of the time the window
+		// spent before it could draw anything at all.
 		v, perr := json.parse(transmute([]byte)line, allocator = context.temp_allocator)
 		if perr == nil {
 			switch jstr(v, "type") {
@@ -242,6 +313,18 @@ session_read_summary :: proc(s: ^Session, allocator: runtime.Allocator) {
 		s.verify = .Passed
 	}
 	s.guess = tag_guess(s.preview != "" ? s.preview : s.title, allocator)
+}
+
+// The `type` of a record, without parsing it — or "" for a message record,
+// which puts its uuid first and so is not answered here.
+@(private = "file")
+line_type :: proc(line: string) -> string {
+	PREFIX :: `{"type":"`
+	if !strings.has_prefix(line, PREFIX) do return ""
+	rest := line[len(PREFIX):]
+	end := strings.index_byte(rest, '"')
+	if end < 0 do return ""
+	return rest[:end]
 }
 
 // Every thread of one task, read as one conversation. A task picked up three
