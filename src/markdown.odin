@@ -14,6 +14,81 @@ BODY_LH :: f32(29)
 CODE_LH :: f32(24)
 HEAD_LH :: f32(38)
 
+// The two pixels an inline code box hangs off either side of the span it is
+// drawn behind (see md_draw_line), counted by the wrap so the box lands inside
+// the width the line was fitted to and not over the edge of the bubble.
+CODE_EDGE :: f32(2)
+
+// What the pen is set in partway along a line: ** toggles the bold face and a
+// backtick toggles the mono one. Kept as a thing rather than two bools passed
+// about, because the wrap and the draw both walk a line this way and the two
+// of them disagreeing is what put text outside the bubble.
+Span_Pen :: struct {
+	bold: bool,
+	code: bool,
+}
+
+// The face the next characters are set in, and at what size. Inline code is a
+// point smaller because the mono face runs large beside the body one.
+span_font :: proc(ui: ^UI, p: Span_Pen, base: ^Font, px: f32) -> (^Font, f32) {
+	if p.code do return &ui.mono, px - 1
+	if p.bold do return &ui.bold, px
+	return base, px
+}
+
+// One step along a line, the way md_draw_line takes it: how far the pen moves
+// and where the next character starts. The markers themselves are drawn as
+// nothing and only change what follows them.
+//
+// The wrap and the draw both step with this. They used not to — the wrap
+// measured every character in the body face at the body size, and an inline
+// `code` span is drawn in the mono face — so a line carrying a span was fitted
+// to a width narrower than the one it was drawn at, and the tail of it ran off
+// the right of the bubble. The comment here used to say measuring the markers
+// "only ever leaves the line shorter than it planned for", which is true of
+// the markers and was never true of what they switch on.
+span_step :: proc(
+	ui: ^UI,
+	text: string,
+	i: int,
+	p: ^Span_Pen,
+	base: ^Font,
+	px: f32,
+) -> (
+	adv: f32,
+	next: int,
+) {
+	if text[i] == '`' {
+		p.code = !p.code
+		return CODE_EDGE, i + 1
+	}
+	if i + 1 < len(text) && text[i] == '*' && text[i + 1] == '*' {
+		p.bold = !p.bold
+		return 0, i + 2
+	}
+	step := 1
+	for i + step < len(text) && (text[i + step] & 0xc0) == 0x80 do step += 1
+	r, _ := decode_first(text[i:])
+	f, size := span_font(ui, p^, base, px)
+	return font_glyph(f, r).advance * font_scale(f, size), i + step
+}
+
+// What a laid-out line comes to on screen, spans and all. A line starts in the
+// plain face however the one above it ended: md_draw_line resets at every
+// line, so a span broken across a wrap is drawn plain on the second line, and
+// this measures it the same way.
+md_line_width :: proc(ui: ^UI, text: string, base: ^Font, px: f32) -> f32 {
+	w: f32
+	p: Span_Pen
+	i := 0
+	for i < len(text) {
+		adv, next := span_step(ui, text, i, &p, base, px)
+		w += adv
+		i = next
+	}
+	return w
+}
+
 line_style_font :: proc(ui: ^UI, style: Line_Style) -> (^Font, f32, f32) {
 	switch style {
 	case .Code:
@@ -101,10 +176,6 @@ wrap_into :: proc(
 		append(out, Line{text = text, style = style, indent = indent})
 		return
 	}
-	if font_width(font, text, px) <= width {
-		append(out, Line{text = text, style = style, indent = indent})
-		return
-	}
 
 	// Only the first line of a wrapped bullet carries the marker. The rest are
 	// ordinary body lines at the same indent, which is both how a list is
@@ -118,16 +189,18 @@ wrap_into :: proc(
 		if st^ == .Bullet do st^ = .Body
 	}
 
+	// The whole line if it fits, and the walk is the same one either way: the
+	// fast path here used to measure the line with a plain font_width, which
+	// is a second opinion about how wide a line is and was the wrong one for
+	// any line with a span in it.
 	start := 0
 	last_break := -1
 	w: f32
 	i := 0
+	p: Span_Pen
 	for i < len(text) {
 		ch := text[i]
-		step := 1
-		for i + step < len(text) && (text[i + step] & 0xc0) == 0x80 do step += 1
-		r, _ := decode_first(text[i:])
-		cw := font_glyph(font, r).advance * font_scale(font, px)
+		cw, next := span_step(ui, text, i, &p, font, px)
 
 		if w + cw > width && i > start {
 			cut := last_break > start ? last_break : i
@@ -137,11 +210,14 @@ wrap_into :: proc(
 			last_break = -1
 			w = 0
 			i = start
+			// A line is drawn from its own beginning in the plain face, so
+			// the next one is measured from there too.
+			p = {}
 			continue
 		}
 		if ch == ' ' do last_break = i + 1
 		w += cw
-		i += step
+		i = next
 	}
 	if start < len(text) {
 		emit(out, &st, text[start:], indent)
