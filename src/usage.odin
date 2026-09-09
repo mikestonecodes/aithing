@@ -219,82 +219,63 @@ usage_until :: proc(resets: i64) -> string {
 	return fmt.tprintf("%dd %dh", days, hours)
 }
 
-// The panel, in the parts it is made of, because the two widths it can be are
-// both sums of them and were both written out as numbers once. `usage_rect`
-// and `chips_right` work off these, so a ring getting thicker cannot leave the
-// panel a pixel too narrow for its own dial.
-// Fourteen was too near the edge. The names are set to whatever room is left
-// between the dial and this margin, so "fable week" ended a pixel or two off
-// the corner of the panel and read as a word about to fall out of it — and the
-// figures under them are the widest thing here. The panel took the four pixels
-// back in width (see USAGE_W) rather than out of the names.
-@(private = "file")
-USAGE_PAD :: f32(18)
-// One ring per window, thick enough to read at a glance and spaced enough that
-// three of them are three rings rather than a gradient.
+// The dial, in the parts it is made of. One ring per window, thick enough to
+// read at a glance and spaced enough that three of them are three rings rather
+// than a gradient.
 @(private = "file")
 RING_W :: f32(8)
 @(private = "file")
 RING_GAP :: f32(3.5)
-// Wide enough that three rings and the hole in the middle both survive: the
-// rings ate the hole at ten thick, and a hole too small for "83%" is a dial
-// with nowhere to put the one figure it has to show when the names are gone.
-@(private = "file")
+// How wide the dial is when it has the room, how small it will go before it
+// stops fitting beside the box along the bottom, and how far it stands off
+// that box and off the corner of the window.
 DIAL_D :: f32(104)
-// The room the three names need beside the dial, and the gap they stand off
-// it. Under this there is not enough for "fable" and a figure, and a column of
-// clipped words is worse than no column: the dial still says how much is gone,
-// and the hover line still says which ring is which.
 @(private = "file")
-NAMES_W :: f32(56)
+DIAL_MIN :: f32(64)
 @(private = "file")
-NAMES_GAP :: f32(14)
-// One name and its figure, stacked. Three of these are taller than the dial
-// is, which is why they are centred on it rather than laid out inside it.
-@(private = "file")
-NAME_H :: f32(36)
+DIAL_GAP :: f32(12)
 
-USAGE_W :: f32(222)
-USAGE_H :: f32(150)
-// The dial and its margins, and nothing else: what the panel shrinks to. The
-// panel gives up width to the box along the bottom rather than jumping above
-// it — it used to move up there, which put the one thing that never changes in
-// a place that changed every time the box grew a line. What it gives up first
-// is the names, because the dial is the part that can be read at a glance.
-USAGE_MIN :: USAGE_PAD * 2 + DIAL_D
-// The width it takes to keep them.
-@(private = "file")
-USAGE_NAMED :: USAGE_MIN + NAMES_GAP + NAMES_W
-
-// Where the corner stands, and the one place that answers it: the bottom
-// right, in whatever room the box along the bottom leaves beside it. The box
-// asks too — its chip row ends where this begins (see chips_right) — and the
-// two of them working it out separately is how the chips ended up underneath
-// an opaque readout of three numbers.
+// Where the dial stands, and the one place that answers it: the bottom left
+// corner, in whatever room the box along the bottom leaves beside it.
+//
+// It was a panel in the bottom right for a long time, with the figures printed
+// down the side of it and a slab of background behind the lot. The slab was
+// there to hold the words; take the words away and there is nothing for it to
+// hold, and the rings sit on the window the way the cards do. The corner
+// swapped sides at the same time — the two chips the composer carries are in
+// the bottom right, and a thing that has to be kept off them is a thing in the
+// wrong corner.
 usage_rect :: proc(full, strip: Rect) -> Rect {
-	w := USAGE_W
-	if strip.w > 0 {
-		room := full.x + full.w - PAD - (strip.x + strip.w + 12)
-		w = clamp(room, USAGE_MIN, USAGE_W)
+	left := full.x + PAD
+	bottom := full.y + full.h - PAD
+	if strip.w <= 0 do return {left, bottom - DIAL_D, DIAL_D, DIAL_D}
+	// Beside the box while there is room for it, shrinking into what is left.
+	room := strip.x - DIAL_GAP - left
+	if room >= DIAL_MIN {
+		d := min(room, DIAL_D)
+		return {left, bottom - d, d, d}
 	}
-	// Once there is not room for the names the panel is the dial and nothing
-	// else, square: a wide panel with a small dial floating in the middle of
-	// it is a panel mostly made of nothing, and the width it stops asking for
-	// is width the chips underneath it get back.
-	if w < USAGE_NAMED do w = USAGE_MIN
-	h := w < USAGE_NAMED ? USAGE_MIN : USAGE_H
-	return {full.x + full.w - PAD - w, full.y + full.h - PAD - h, w, h}
+	// A narrow window is all box: it is centred and takes everything but a
+	// margin, so there is no beside to be in. The dial goes above its top left
+	// corner rather than shrinking away to nothing or sitting on what is being
+	// typed.
+	return {left, strip.y - DIAL_GAP - DIAL_D, DIAL_D, DIAL_D}
 }
 
-// The corner. `strip` is the box along the bottom of the window — the composer
-// or the capture box — and the panel squeezes to sit beside it.
+// The dial. `strip` is the box along the bottom of the window — the composer
+// or the capture box — and the dial sits beside it.
 //
-// Three windows, three rings of one dial, outermost first. It was three rows
-// of "41%" for a while, which is the same three numbers and reads as a table:
-// you have to take all three in and compare them before you know whether you
-// are near anything. A ring says that in its shape — how much of the way round
-// it has gone — before a digit is read, and three concentric ones say which is
+// Three windows, three rings, outermost first. It was three rows of "41%" for
+// a while, which is the same three numbers and reads as a table: you have to
+// take all three in and compare them before you know whether you are near
+// anything. A ring says that in its shape — how much of the way round it has
+// gone — before a digit is read, and three concentric ones say which is
 // furthest along without any of them being read at all.
+//
+// So the digits are not on screen at all now. They are what the pointer is
+// for: the rings are the answer to "am I near the end of anything", and the
+// popover is the answer to "near the end of which, and how long until it comes
+// back", which is a question you only ask once the first answer is yes.
 draw_usage :: proc(app: ^App, full: Rect, strip: Rect) {
 	ui := &app.ui
 
@@ -304,24 +285,15 @@ draw_usage :: proc(app: ^App, full: Rect, strip: Rect) {
 
 	box := usage_rect(full, strip)
 	box.y += (1 - a) * 16
-
-	ui_rect(ui, {box.x + 1, box.y + 5, box.w, box.h}, color_alpha(Color(0xff000000), 0.30 * a), 14)
-	ui_rect(ui, box, color_alpha(PANEL, 0.97 * a), 14)
-
-	// The names sit beside the dial when there is room for them, and the dial
-	// takes the middle of the panel when there is not. One question — how wide
-	// is the panel — with one answer, so the dial cannot end up centred in a
-	// panel that is also drawing a column.
-	d := min(min(box.h, box.w) - USAGE_PAD * 2, DIAL_D)
-	named := box.w >= USAGE_NAMED
-	cx := named ? box.x + USAGE_PAD + d / 2 : box.x + box.w / 2
-	centre := [2]f32{cx, box.y + box.h / 2}
+	d := box.w
+	centre := [2]f32{box.x + d / 2, box.y + d / 2}
 
 	// The three of them, in the order the rings are drawn in and the order the
-	// names are listed in, because those two orders being the same is the only
-	// thing that says which ring is which. They were three fields read out
-	// separately in three places — the rings, the column and the line under
-	// the pointer — which is three chances to put them in a different order.
+	// popover lists them in, because those two orders being the same is the
+	// only thing that says which ring is which. They were three fields read
+	// out separately in three places — the rings, the column and the line
+	// under the pointer — which is three chances to put them in a different
+	// order.
 	windows := [3]struct {
 		long, short: string,
 		w:           Allowance,
@@ -330,8 +302,6 @@ draw_usage :: proc(app: ^App, full: Rect, strip: Rect) {
 		{"week", "week", app.usage.limits.week},
 		{"fable week", "fable", app.usage.limits.fable},
 	}
-	worst: f32
-	for n in windows do worst = max(worst, window_used(n.w))
 
 	// Tracks first, then every slice over them, so a ring's halo spills across
 	// its neighbours' grooves rather than being cut off at them.
@@ -357,35 +327,19 @@ draw_usage :: proc(app: ^App, full: Rect, strip: Rect) {
 		// the dial glows harder the closer it is to the end of one. It was a
 		// disc of light behind the whole thing first, which put the brightest
 		// part in the hole in the middle: nothing is there, and the word that
-		// is came out through a red haze.
+		// was came out through a red haze.
 		ui_dial(ui, centre, r + 5, RING_W + 11, sweep, color_alpha(col, (0.13 + 0.27 * used) * a), 0.11)
 		ui_dial(ui, centre, r, RING_W, sweep, color_alpha(col, a))
 	}
 
-	// What is in the middle of the dial depends on whether the names got
-	// drawn, because it is answering whatever they are not: with the column
-	// beside it the rings are already labelled and the hole says what the
-	// whole panel measures, and without it the hole is the only place a figure
-	// can go, so it takes the window that is furthest along.
-	hole := Rect{centre.x - 20, centre.y - 11, 40, 22}
-	if named {
-		ui_text_centred(ui, &ui.regular, "used", hole, 11, color_alpha(FAINT, a))
-	} else {
-		ui_text_centred(ui, &ui.bold, usage_pct(worst), hole, 17, color_alpha(usage_meter_color(worst), a))
-	}
+	// The words, only while the pointer is on the rings. The popover is not
+	// drawn over the dial and does not reach it, so nothing it says can hide
+	// the thing it is saying it about.
+	pop := ui_anim(ui, ui_id("usage-pop"), ui_hovered(ui, box) ? 1 : 0, 16)
+	if pop > 0.01 do popover(app, box, windows[:], pop * a)
 
-	if named {
-		lx := box.x + USAGE_PAD + d + NAMES_GAP
-		room := box.x + box.w - USAGE_PAD - lx
-		top := centre.y - NAME_H * 1.5 - 1
-		for n, i in windows {
-			name(app, {lx, top + f32(i) * NAME_H, room, 0}, i, n.long, n.short, n.w, a)
-		}
-	}
-
-	// Read off the panel rather than printed on it, which is where the reset
-	// times went: the dial says how much, the column says of what, and the
-	// minute it comes back is a question you have to ask.
+	// What Super+C takes off the dial: the whole reading on one line, whether
+	// or not the popover has come up.
 	line := strings.builder_make(context.temp_allocator)
 	for n, i in windows {
 		if i > 0 do strings.write_string(&line, " · ")
@@ -394,18 +348,26 @@ draw_usage :: proc(app: ^App, full: Rect, strip: Rect) {
 	ui_hover_text(ui, box, strings.to_string(line))
 }
 
-// The unspent part of a ring. Darker than the panel rather than lighter, so an
-// empty allowance reads as a groove waiting to be filled and a full one as
+// The unspent part of a ring. Darker than the window rather than lighter, so
+// an empty allowance reads as a groove waiting to be filled and a full one as
 // something sitting in it.
 @(private = "file")
 TRACK :: Color(0xff222525)
 
 // Where one window's ring sits, outermost first. The order is the only thing
-// that says which ring is which, and it is the order the names are listed in
-// beside them.
+// that says which ring is which, and it is the order the popover lists them
+// in.
 @(private = "file")
 ring_r :: proc(d: f32, i: int) -> f32 {
 	return d / 2 - f32(i) * (RING_W + RING_GAP)
+}
+
+// How long a window has left, said in full. The bare duration is what the dial
+// is measured in and reads as one beside a percentage — "41% 2h 40m" is a rate
+// until the word is there.
+@(private = "file")
+until_left :: proc(resets: i64) -> string {
+	return fmt.tprintf("%s left", usage_until(resets))
 }
 
 @(private = "file")
@@ -414,32 +376,63 @@ until_say :: proc(resets: i64) -> string {
 	return left == "" ? "" : fmt.tprintf(" (%s left)", left)
 }
 
-// One ring's name and its figure, beside the dial and in the ring's own
-// colour, ordered outermost at the top — which is the only thing that says
-// which ring is which. The figure is what `/usage` would say about it and
-// nothing else: this window worked its own numbers out for a while, and they
-// disagreed with the account.
 @(private = "file")
-name :: proc(app: ^App, at: Rect, i: int, long, short: string, w: Allowance, a: f32) {
+POP_PAD :: f32(14)
+@(private = "file")
+POP_ROW :: f32(34)
+
+// What each ring is and how long it has left, standing above the dial while
+// the pointer is on it. One row per ring, top to bottom as the rings go
+// outside in, in the ring's own colour — the order and the colour together are
+// the whole of what ties a row to its arc.
+//
+// It is sized to what it is about to say rather than to a number written here:
+// the column that used to be beside the dial had a width picked by hand, and
+// "fable week" ended a pixel off the edge of it.
+@(private = "file")
+popover :: proc(app: ^App, dial: Rect, windows: []struct {
+		long, short: string,
+		w:           Allowance,
+	}, a: f32) {
 	ui := &app.ui
-	used := window_used(w)
-	known := w.resets != 0
-	col := known ? usage_meter_color(used) : FAINT
 
-	// The short name when the long one will not fit whole: a panel squeezed in
-	// beside the capture box has room for "fable" and not for "fable week",
-	// and "fable w..." is not the name of anything.
-	buf, alt: [32]u8
-	// Twelve, which is where the text starts: a room of eleven let a name that
-	// only just fit end one pixel past the margin the panel is drawn to.
-	room := at.w - 12
-	label := font_ellipsize(&ui.regular, long, 11, room, buf[:])
-	if label != long do label = font_ellipsize(&ui.regular, short, 11, room, alt[:])
-	ui_circle(ui, {at.x + 3.5, at.y + 7}, 3.5, color_alpha(col, a))
-	ui_text(ui, &ui.regular, label, {at.x + 12, at.y}, 11, color_alpha(FAINT, a))
+	w: f32
+	for n in windows {
+		used, known := window_used(n.w), n.w.resets != 0
+		row := font_width(&ui.regular, n.long, 11) + 12
+		figure := font_width(&ui.bold, known ? usage_pct(used) : "—", 15)
+		if known && usage_until(n.w.resets) != "" {
+			figure += 7 + font_width(&ui.regular, until_left(n.w.resets), 10.5)
+		}
+		w = max(w, row, figure)
+	}
+	w += POP_PAD * 2
 
-	// The same easing the ring runs on, off the same stored value, so the
-	// figure and the slice it labels cannot say two different things.
-	shown := known ? ui_anim(ui, ui_id("usage-ring", i), used, 9) : 0
-	ui_text(ui, &ui.bold, known ? usage_pct(shown) : "—", {at.x, at.y + 13}, 17, color_alpha(col, a))
+	h := POP_PAD * 2 + POP_ROW * f32(len(windows))
+	// Above the dial, and never off the top of the window: a dial that has had
+	// to move up out of a box filling a short window has less above it than
+	// the popover is tall.
+	box := Rect{dial.x, max(dial.y - DIAL_GAP - h, PAD), w, h}
+	box.y += (1 - a) * 8
+
+	ui_rect(ui, {box.x + 1, box.y + 5, box.w, box.h}, color_alpha(Color(0xff000000), 0.30 * a), 12)
+	ui_rect(ui, box, color_alpha(PANEL, 0.97 * a), 12)
+
+	for n, i in windows {
+		at := [2]f32{box.x + POP_PAD, box.y + POP_PAD + f32(i) * POP_ROW}
+		used, known := window_used(n.w), n.w.resets != 0
+		col := known ? usage_meter_color(used) : FAINT
+
+		ui_circle(ui, {at.x + 3.5, at.y + 7}, 3.5, color_alpha(col, a))
+		ui_text(ui, &ui.regular, n.long, {at.x + 12, at.y}, 11, color_alpha(FAINT, a))
+
+		// The same easing the ring runs on, off the same stored value, so the
+		// figure and the slice it labels cannot say two different things.
+		shown := known ? ui_anim(ui, ui_id("usage-ring", i), used, 9) : 0
+		figure := known ? usage_pct(shown) : "—"
+		x := ui_text(ui, &ui.bold, figure, {at.x, at.y + 13}, 15, color_alpha(col, a))
+		if known && usage_until(n.w.resets) != "" {
+			ui_text(ui, &ui.regular, until_left(n.w.resets), {at.x + x + 7, at.y + 17}, 10.5, color_alpha(FAINT, a))
+		}
+	}
 }

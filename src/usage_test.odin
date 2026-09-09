@@ -156,96 +156,50 @@ test_usage_fable_week_survives_other_models :: proc(t: ^testing.T) {
 	testing.expect_value(t, window_used(app.usage.limits.fable), 0.8)
 }
 
-// The corner is the one thing in the window that never moves, and what it
-// stands on is the box's bottom right corner — which is where the model and
-// effort chips are. It kept a floor under its own width, so at the width the
-// composer actually is there was not room beside it and the panel came down
-// over the chips: the only two controls the window has, under an opaque
-// readout, with the picker opening behind it.
+// The dial has the bottom left corner and the box along the bottom is centred
+// in the window, so at a narrow enough width there is no beside for the dial
+// to be in. What it must never do is come down on the box: the composer is
+// where the work is typed, and a set of rings over the first line of it is
+// exactly the failure the readout in the other corner had, where it landed on
+// the two chips and the picker opened behind it.
 //
-// Nothing here needs a window or a font, which is the point — it is two
-// numbers agreeing, and they used to be worked out in two places.
+// Nothing here needs a window or a font, which is the point — it is two rects
+// not touching, worked out from the same room.
 @(test)
-the_corner_never_stands_on_the_chips :: proc(t: ^testing.T) {
+the_dial_never_stands_on_the_box :: proc(t: ^testing.T) {
 	// Every width from too narrow for the box to wider than it will ever
-	// grow, because the two answers are worked out from the same room and
-	// the failure was a width in the middle of that range.
+	// grow, because the dial changes what it does partway along that range.
 	for w := f32(600); w <= 2400; w += 7 {
 		full := Rect{0, 0, w, 800}
 		// The box along the bottom, laid out the way draw_page lays it out:
 		// content width at most, centred, PAD clear either side.
 		bw := min(w - 16 * 2, 880)
 		box := Rect{(w - bw) / 2, 700, bw, 84}
-		corner := usage_rect(full, box)
-		if corner.w <= 0 do continue
+		dial := usage_rect(full, box)
+
+		testing.expectf(t, dial.w == dial.h, "at %v wide the dial is %v by %v", w, dial.w, dial.h)
 		testing.expectf(
 			t,
-			chips_right(full, box) <= corner.x,
-			"at %v wide the chips end at %v, inside a corner that starts at %v",
+			dial.x + dial.w <= box.x || dial.y + dial.h <= box.y,
+			"at %v wide the dial %v is on the box %v",
 			w,
-			chips_right(full, box),
-			corner.x,
+			dial,
+			box,
 		)
-		// And the corner is still in the window it was given.
-		testing.expect(t, corner.x + corner.w <= full.w)
+		// And it is still in the window it was given, with its margin.
+		testing.expectf(t, dial.x >= PAD, "at %v wide the dial starts at %v", w, dial.x)
+		testing.expect(t, dial.y >= 0)
+		testing.expect(t, dial.y + dial.h <= full.h - PAD)
 	}
 }
 
-// The panel is one of two shapes and there is nothing in between: the full
-// corner, dial and names, or a square with just the dial in it. A width in
-// between is a panel with a small dial floating in the middle of a lot of
-// nothing, which is what it was while the names were dropped on their own room
-// running out and the panel kept whatever width it had been squeezed to.
+// With no box under it — the grid before a project is picked — the dial is in
+// the corner at its full size, because there is nothing for it to give room to.
 @(test)
-the_corner_is_the_dial_or_the_dial_and_its_names :: proc(t: ^testing.T) {
-	for w := f32(600); w <= 2400; w += 7 {
-		full := Rect{0, 0, w, 800}
-		bw := min(w - 16 * 2, 880)
-		box := Rect{(w - bw) / 2, 700, bw, 84}
-		corner := usage_rect(full, box)
-		testing.expectf(t, corner.w >= USAGE_MIN, "at %v wide the corner is %v, under its own dial", w, corner.w)
-		if corner.w == USAGE_MIN {
-			testing.expectf(t, corner.h == corner.w, "the dial on its own is %v by %v", corner.w, corner.h)
-		} else {
-			testing.expectf(t, corner.h == USAGE_H, "a corner with names in it is %v tall", corner.h)
-		}
-		// Whichever shape it is, its bottom right corner is the window's.
-		testing.expect_value(t, corner.x + corner.w, full.w - PAD)
-		testing.expect_value(t, corner.y + corner.h, full.h - PAD)
-	}
-}
-
-// How far along the green-to-warning run a colour has got, 0 at GREEN and 1 at
-// ACCENT. Read off the one channel the two differ in most, which is enough to
-// say whether a figure looks green or looks gold.
-@(private = "file")
-toward_warning :: proc(c: Color) -> f32 {
-	chan :: proc(c: Color, shift: u32) -> f32 {return f32((u32(c) >> shift) & 0xff)}
-	g, a, x := chan(GREEN, 0), chan(ACCENT, 0), chan(c, 0)
-	return (x - g) / (a - g)
-}
-
-// A window with four fifths of it left is not a warning. The ramp used to run
-// straight from nothing to half, so 18% of the week gone came out a third of
-// the way to the warning colour — a gold ring and a gold figure beside two
-// green ones, for a window nobody needed to think about.
-@(test)
-a_barely_used_window_reads_green :: proc(t: ^testing.T) {
-	testing.expectf(
-		t,
-		toward_warning(usage_meter_color(0.18)) < 0.15,
-		"18%% used is %v of the way to the warning colour",
-		toward_warning(usage_meter_color(0.18)),
-	)
-	testing.expect_value(t, usage_meter_color(0), GREEN)
-	testing.expect_value(t, usage_meter_color(1), RED)
-
-	// And it only ever goes one way: every step up the ramp is a step further
-	// from green, which is the whole of what the colour is for.
-	last := f32(-1)
-	for i in 0 ..= 100 {
-		here := toward_warning(usage_meter_color(f32(i) / 100))
-		testing.expectf(t, here >= last, "%d%% used stepped back toward green", i)
-		last = here
-	}
+the_dial_is_whole_when_nothing_is_beside_it :: proc(t: ^testing.T) {
+	full := Rect{0, 0, 1180, 800}
+	dial := usage_rect(full, {})
+	testing.expect_value(t, dial.w, DIAL_D)
+	testing.expect_value(t, dial.x, PAD)
+	testing.expect_value(t, dial.y + dial.h, full.h - PAD)
 }

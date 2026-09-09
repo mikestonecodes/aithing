@@ -249,7 +249,7 @@ draw_capture :: proc(app: ^App, full: Rect) {
 	// once, and the cards it was warning about appear the moment Enter is
 	// pressed anyway.
 	chip_y := box.y + box.h - COMPOSER_CHIPS / 2 - 8
-	draw_chips(app, full, box, chip_y)
+	draw_chips(app, box, chip_y)
 }
 
 // --- the launcher ------------------------------------------------------------
@@ -529,7 +529,7 @@ draw_composer :: proc(app: ^App, r: Rect) {
 	// it thinks. Permissions are whatever the harness is already configured
 	// to do.
 	chip_y := box.y + box.h - COMPOSER_CHIPS / 2 - 8
-	draw_chips(app, {r.x, 0, r.w, r.y + r.h}, box, chip_y)
+	draw_chips(app, box, chip_y)
 	if app_chat_busy(app) {
 		// While a turn is in flight the same corner says so, and stops it.
 		stop := Rect{box.x + 14, chip_y - 3, 58, 22}
@@ -744,9 +744,14 @@ draw_picker :: proc(
 // opens off them, and two boxes each keeping their own copy of where their
 // chips were is two popups to keep in step.
 @(private = "file")
-draw_chips :: proc(app: ^App, full, box: Rect, y: f32) {
+draw_chips :: proc(app: ^App, box: Rect, y: f32) {
 	ui := &app.ui
-	right := chips_right(full, box)
+	// The chips end where the box does. They used to have to stop short of
+	// the corner that says what the harness has cost, which was a panel in
+	// this one — the two controls the window has, under an opaque readout,
+	// with their picker opening behind it. The dial that replaced it stands in
+	// the other corner, so there is nothing here to be kept off.
+	right := box.x + box.w - 12
 	// The model reads first, left to right: it is the choice that decides
 	// what answers, and effort is a setting on top of it. They were the other
 	// way round because the row is laid out from its right edge, which is a
@@ -757,20 +762,6 @@ draw_chips :: proc(app: ^App, full, box: Rect, y: f32) {
 	cx := draw_chip(app, ui_id("model-chip"), ex - 8, y, model_label[app.model], app.overlay == .Model)
 	if ui.pressed && ui.hot == ui_id("model-chip") do app.overlay = app.overlay == .Model ? .None : .Model
 	app.model_chip = Rect{cx, y - 5, ex - 8 - cx, 26}
-}
-
-// Where the chip row ends. The box's own right edge, except where the corner
-// that says what the harness has cost is standing in it: that panel keeps a
-// floor under its width and is drawn last and opaque, so at the width the
-// composer actually is — centred, 880 wide, in a 1180 window — it came down
-// over the box's bottom right corner, which is exactly where these two chips
-// are. The chips move in rather than the panel moving out, because where the
-// panel stands is fixed on purpose: it is the one thing in the window that
-// never changes, and it used to jump every time the box grew a line.
-chips_right :: proc(full, box: Rect) -> f32 {
-	right := box.x + box.w - 12
-	if corner := usage_rect(full, box); corner.w > 0 do right = min(right, corner.x - 12)
-	return right
 }
 
 // Both of them, every frame, whether or not they are open: the movement in
