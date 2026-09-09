@@ -420,6 +420,24 @@ app_input :: proc(app: ^App) {
 	search_changed := false
 
 	for k in win.input.keys {
+		// The picker is the top thing on screen, so it is asked first: up and
+		// down walk it and Enter puts it away. Enter used to fall through to
+		// the composer, which sent the message that happened to be sitting in
+		// the box behind an open list.
+		if app.overlay == .Model || app.overlay == .Effort {
+			switch k.code {
+			case KEY_UP:
+				app_picker_step(app, -1)
+				continue
+			case KEY_DOWN:
+				app_picker_step(app, 1)
+				continue
+			case KEY_ENTER:
+				app.overlay = .None
+				continue
+			}
+		}
+
 		// The grid and its launcher are driven from the keyboard; the caret
 		// only gets what they do not want.
 		if app.overlay == .Launcher {
