@@ -146,6 +146,7 @@ main :: proc() {
 	// Work that lands in this repository rebuilds this program: see build.odin.
 	build_init()
 	defer build_destroy()
+	defer update_destroy()
 	defer push_destroy()
 	// Anything finished but never landed, before the window is on screen. It
 	// runs after build_init so that a card of this program's own that lands
@@ -274,6 +275,9 @@ main :: proc() {
 		watch(.Jobs)
 		if app_poll_jobs(app) do needs_draw = true
 		if build_poll(app) do needs_draw = true
+		// The harness only updates itself when somebody runs it by hand, and
+		// nobody here ever does: see update.odin.
+		if update_poll(app) do needs_draw = true
 		if push_poll(app) do needs_draw = true
 		// The map keeps itself current. Threads are re-read on a slow tick,
 		// so a run that finished in another window, or work that has been
