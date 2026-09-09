@@ -16,6 +16,12 @@ PAD :: f32(16)
 // that the desktop behind the window still shows through it.
 COMPOSER_BG :: Color(0x66202224)
 BLINK :: f32(0.55) // caret on/off, in seconds
+// How wide the block caret is where there is no character under it to take
+// its width from, as a fraction of the type size. A box with nothing in it
+// prints what it is for, and that line has to start clear of this: it used to
+// start at the same x, so "what needs doing" read as a block and then "hat
+// needs doing".
+CARET_EMPTY :: f32(0.55)
 RESULT_BYTES :: 4000 // how much of a tool result is ever shown
 RESULT_LINES :: 40
 
@@ -105,19 +111,26 @@ draw_app :: proc(app: ^App) {
 		}
 		composer_h := composer_height(app, full.w)
 		// Nothing inside is touchable until it has arrived: a click that lands
-		// on a composer still on its way is a click nobody aimed, and while
+		// on a transcript still on its way is a click nobody aimed, and while
 		// the zoom is on it is not where it was laid out anyway.
 		panel_mouse := ui.mouse
 		if !arrived do ui.mouse = {-1e6, -1e6}
 		draw_transcript(app, {full.x, full.y, full.w, full.h - composer_h})
-		draw_composer(app, {full.x, full.y + full.h - composer_h, full.w, composer_h})
 		ui.mouse = panel_mouse
-		cw := composer_width(full.w)
-		strip = {full.x + (full.w - cw) / 2, full.y + full.h - composer_h, cw, composer_h}
+		// The box, outside the panel: it is drawn at the size and place it
+		// ends up at from the first frame of the movement to the last, and it
+		// takes clicks the whole way. It used to be drawn inside the zoom
+		// along with the transcript, so opening a card sent the thing you had
+		// been typing into flying up into the card and back down at full size
+		// — the one part of the window that had nothing to do with which
+		// thread you were opening, moving further than anything else.
 		if !arrived {
 			ui_pop_zoom(ui)
 			ui_pop_clip(ui)
 		}
+		draw_composer(app, {full.x, full.y + full.h - composer_h, full.w, composer_h})
+		cw := composer_width(full.w)
+		strip = {full.x + (full.w - cw) / 2, full.y + full.h - composer_h, cw, composer_h}
 	} else {
 		draw_project_head(app, full)
 		if app_capture_open(app) {
@@ -126,11 +139,13 @@ draw_app :: proc(app: ^App) {
 			cw := composer_width(full.w)
 			strip = {full.x + (full.w - cw) / 2, full.y + full.h - ch, cw, ch}
 		}
-		// Bottom left, clear of the capture box in the middle and of the
-		// usage corner on the right.
-		bottom := strip.h > 0 ? strip.y - 24 : full.y + full.h - PAD - 18
-		draw_status(app, {full.x + PAD, bottom, full.w / 2 - PAD, 16})
 	}
+	// What the window has to say for itself, in the same corner on either
+	// page. It used to be printed inside the composer's chip band on a thread
+	// and above the box on the grid, which is two places for one line — and
+	// the line jumped from one to the other the moment a card was opened.
+	bottom := strip.h > 0 ? strip.y - 24 : full.y + full.h - PAD - 18
+	draw_status(app, {full.x + PAD, bottom, full.w / 2 - PAD, 16})
 	draw_usage(app, full, strip)
 	// Last, over everything: the corner that says what the harness has cost
 	// is opaque and is drawn after the box the chips sit on, so a picker
@@ -181,27 +196,19 @@ draw_project_head :: proc(app: ^App, full: Rect) {
 // point, a sentence — rather than being a rule the writer has to keep to, and
 // the count under the box says what was made of it before Enter is pressed.
 
-CAPTURE_PX :: f32(15)
-CAPTURE_PAD :: f32(12)
-CAPTURE_LINES :: 6 // how tall the box grows before it starts scrolling
-
-// How wide the text in the box is, which is the one number the height and the
-// draw have to agree on: they used to work it out separately — the height off
-// the whole box, the draw off the box less ninety pixels it kept for a note —
-// so a line that fitted for one wrapped for the other and the box came out a
-// line short of what it was drawing.
-@(private = "file")
-capture_text_width :: proc(width: f32) -> f32 {
-	return composer_width(width) - COMPOSER_SIDE * 2
-}
+// The box under the grid is the same box the thread has — the same width, the
+// same type, the same paddings, the same band of chips — because it is the
+// same box as far as anyone looking at it is concerned. It used to be its own
+// size, 15px type in a 6-line box against the composer's 19px in 8, and the
+// difference was six pixels of height and a change of typeface at the exact
+// moment a card was clicked: the thing you had just been typing into jumped
+// as the thread came up over it. Nothing about opening a card is about the
+// box, so nothing about the box moves when one is opened. See strip_height.
 
 // How much of the window the box takes, which the grid above it keeps clear.
 capture_height :: proc(app: ^App, width: f32) -> f32 {
-	ui := &app.ui
 	if !app_capture_open(app) do return 0
-	editor_layout_lines(ui, &app.capture, capture_text_width(width), &ui.regular, CAPTURE_PX)
-	_, lines := editor_window(&app.capture, CAPTURE_LINES)
-	return CAPTURE_PAD * 2 + f32(lines) * (CAPTURE_PX * 1.5) + COMPOSER_CHIPS
+	return strip_height(strip_box_height(app, &app.capture, width))
 }
 
 @(private = "file")
@@ -221,15 +228,15 @@ draw_capture :: proc(app: ^App, full: Rect) {
 	ui_rect(ui, box, focused ? color_alpha(ACCENT, 0.35) : color_alpha(BORDER, 0.9), 14)
 	if ui_hovered(ui, box) do ui.cursor_text = true
 
-	text_w := capture_text_width(full.w)
-	editor_layout_lines(ui, &app.capture, text_w, &ui.regular, CAPTURE_PX)
-	_, lines := editor_window(&app.capture, CAPTURE_LINES)
-	text_h := f32(lines) * (CAPTURE_PX * 1.5)
-	text_r := Rect{box.x + COMPOSER_SIDE, box.y + CAPTURE_PAD, text_w, text_h}
+	text_w := box.w - COMPOSER_SIDE * 2
+	editor_layout_lines(ui, &app.capture, text_w, &ui.regular, COMPOSER_PX)
+	_, lines := editor_window(&app.capture, COMPOSER_LINES)
+	text_h := f32(lines) * (COMPOSER_PX * 1.5)
+	text_r := Rect{box.x + COMPOSER_SIDE, box.y + COMPOSER_PAD, text_w, text_h}
 	if editor_text(&app.capture) == "" {
-		ui_text(ui, &ui.regular, "what needs doing", {text_r.x, text_r.y + 1}, CAPTURE_PX, FAINT)
+		ui_text(ui, &ui.regular, "what needs doing", {placeholder_x(text_r.x), text_r.y + 2}, COMPOSER_PX, FAINT)
 	}
-	draw_editor(app, &app.capture, text_r, &ui.regular, CAPTURE_PX, focused, CAPTURE_LINES)
+	draw_editor(app, &app.capture, text_r, &ui.regular, COMPOSER_PX, focused, COMPOSER_LINES)
 
 	// The same band along the bottom the composer has, and the same two chips
 	// in the corner of it: what is typed here is what a card runs on, so the
@@ -416,15 +423,34 @@ COMPOSER_THUMB :: f32(72)
 
 // The box is exactly as tall as what goes in it, and this is the one place
 // that says how tall that is: draw_composer lays out against the same numbers,
-// so the text never lands under the chip row.
-composer_box_height :: proc(app: ^App, width: f32) -> f32 {
+// so the text never lands under the chip row. Both boxes ask it — the grid's
+// about what is written there, the thread's about the reply — so an empty box
+// is the same height on either page and the swap at the moment a card opens
+// is no swap at all.
+strip_box_height :: proc(app: ^App, e: ^Editor, width: f32) -> f32 {
 	ui := &app.ui
 	inner := composer_width(width) - COMPOSER_SIDE * 2
-	editor_layout_lines(ui, &app.editor, inner, &ui.regular, COMPOSER_PX)
-	_, lines := editor_window(&app.editor, COMPOSER_LINES)
-	h := COMPOSER_PAD * 2 + f32(lines) * (COMPOSER_PX * 1.5)
+	editor_layout_lines(ui, e, inner, &ui.regular, COMPOSER_PX)
+	_, lines := editor_window(e, COMPOSER_LINES)
+	return COMPOSER_PAD * 2 + f32(lines) * (COMPOSER_PX * 1.5) + COMPOSER_CHIPS
+}
+
+// Where the line an empty box prints starts: past the caret sitting at the
+// head of it, with a hair of air after.
+placeholder_x :: proc(x: f32) -> f32 {
+	return x + COMPOSER_PX * CARET_EMPTY + 4
+}
+
+// The room the whole strip takes: the box plus the 6px of air above it and the
+// 12px below it that the draw insets by, and never less than the floor.
+strip_height :: proc(box_h: f32) -> f32 {
+	return max(box_h + 18, COMPOSER_MIN)
+}
+
+composer_box_height :: proc(app: ^App, width: f32) -> f32 {
+	h := strip_box_height(app, &app.editor, width)
 	if len(app.attach) > 0 do h += COMPOSER_THUMB + 14
-	return h + COMPOSER_CHIPS
+	return h
 }
 
 @(private = "file")
@@ -438,7 +464,7 @@ composer_width :: proc(width: f32) -> f32 {
 // knows about, which a plain clamp here was not: the box stopped growing at
 // 300px and the text kept going out through the bottom of it.
 composer_height :: proc(app: ^App, width: f32) -> f32 {
-	return max(composer_box_height(app, width) + 18, COMPOSER_MIN)
+	return strip_height(composer_box_height(app, width))
 }
 
 draw_composer :: proc(app: ^App, r: Rect) {
@@ -491,8 +517,11 @@ draw_composer :: proc(app: ^App, r: Rect) {
 	_, lines := editor_window(&app.editor, COMPOSER_LINES)
 	text_h := f32(lines) * (COMPOSER_PX * 1.5)
 	text_r := Rect{box.x + COMPOSER_SIDE, inner_y, text_w, text_h}
-	if editor_text(&app.editor) == "" && !focused {
-		ui_text(ui, &ui.regular, "Reply to Claude...", {text_r.x, text_r.y + 2}, COMPOSER_PX, FAINT)
+	// What the box is for, whenever there is nothing in it. It used to be
+	// hidden as soon as the box had the caret, which on a thread is always —
+	// so the line existed and was never once seen.
+	if editor_text(&app.editor) == "" {
+		ui_text(ui, &ui.regular, "Reply to Claude...", {placeholder_x(text_r.x), text_r.y + 2}, COMPOSER_PX, FAINT)
 	}
 	draw_editor(app, &app.editor, text_r, &ui.regular, COMPOSER_PX, focused, COMPOSER_LINES)
 
@@ -510,15 +539,14 @@ draw_composer :: proc(app: ^App, r: Rect) {
 		ui_text(ui, &ui.regular, "stop", {stop.x + 22, stop.y + 3}, 13, hovered ? TEXT : MUTED)
 		if clicked do app_interrupt(app)
 	}
-	// The strip that used to carry the status is gone, so it says its piece
-	// down here instead, out of the way of the text.
-	left := f32(14) + (app_chat_busy(app) ? 66 : 0)
-	draw_status(app, {box.x + left, chip_y + 3, box.w - 220 - left, 16})
 }
 
-// What the window has to say for itself, wherever it is standing. This used
-// to be drawn inside the composer and nowhere else, so it existed only on the
-// thread page — and the grid is where you sit while cards run, which meant
+// What the window has to say for itself, in the same corner on every page:
+// bottom left, above the box. It used to be drawn inside the composer's chip
+// band on a thread and above the box on the grid, which is two places for one
+// line, and before that inside the composer and nowhere else, so it existed
+// only on the thread page — and the grid is where you sit while cards run,
+// which meant
 // "built — restart to pick it up" was said to an empty room. Every landing
 // note, every push that was refused and every finished build announced itself
 // somewhere nobody was looking, which is most of what "nothing ever seems to
@@ -536,86 +564,75 @@ draw_status :: proc(app: ^App, at: Rect) {
 // ends up. Short enough that it is under the pointer by the time the pointer
 // has got there, and long enough to say which chip it came out of.
 PICKER_OPEN :: f32(0.11)
-PICKER_ANIM :: 101 // salts on the tag, clear of the row ids, which are 0..n
-PICKER_PILL :: 102
-GAUGE_W :: f32(38)
+PICKER_ANIM :: 101 // salts on the tag, clear of anything else keyed on it
+PICKER_KNOB :: 102
+PICKER_STEP :: f32(46) // between one stop and the next, up the track
+PICKER_END :: f32(30) // track to panel edge, top and bottom
 
-// The picker itself: rows stacked above the chip that opened it. Both chips
-// share it — the model's and the effort's are the same popup with a different
-// list, and a second copy of this is a second popup to keep in step.
+// The picker: a slider standing on the chip that opened it, one stop per
+// choice, lowest at the bottom.
 //
-// What is different between them is data, not code: the heading, the rows,
-// the line under each row saying what it is for, and then either the exact
-// release the row runs — the ids are pinned so a name cannot drift to another
-// build, and the picker was the one place that promise was invisible — or a
-// gauge, for a list that is a ladder. It is sized off that content and off
-// nothing else; the width used to be max(chip.w, 150), which is the chip's
-// business and not the list's.
+// It has been a list twice. First a column of bare words, then the same
+// column with a heading, a line under every row saying what that choice was
+// for, and the exact release each one runs — four lines of prose and a
+// monospaced id to change one word on a chip. Nobody reads a paragraph to
+// pick between five things they already know the names of; what they want to
+// know is which one they are on and which way is more, and both of those are
+// a position, not a sentence. So the words went and the shape stayed: a
+// filled bar that rises as you go up, a knob that slides between the stops,
+// and the label beside the stop swelling as the knob reaches it.
 //
-// And it grows out of the chip's own corner rather than appearing over the
-// transcript. The two chips sit side by side and this is wider than either,
-// so a list that was simply there gave no sign of which of the two it was a
-// list of. The movement says it, in the one place anyone is looking.
+// Both chips share it — the model's and the effort's are the same slider with
+// a different list — and it is dragged, clicked or walked with the arrow
+// keys, all of them writing the same one value. There is no pending choice
+// held while you drag: what the knob is on is what is chosen, and a slider
+// that had to be confirmed is a slider with a second copy of its own position.
 @(private = "file")
 draw_picker :: proc(
 	app: ^App,
 	chip: Rect,
-	head: string,
 	labels: []string,
-	notes: []string,
-	hints: []string, // what each row runs, right-aligned; empty for none
-	gauge: bool, // right-aligned rungs instead, for a list that is a ladder
 	at: int,
 	tag: string,
 	open: bool,
 ) -> (choice: int, picked: bool) {
 	ui := &app.ui
-	LABEL_PX :: f32(15)
-	NOTE_PX :: f32(12.5)
-	HINT_PX :: f32(11)
-	PAD_X :: f32(16)
-	DOT_X :: f32(16) // where the tick sits, from the row's left edge
-	TEXT_X :: f32(34)
-	GAP :: f32(24) // between the longest label and whatever is right-aligned
-
 	// Shut is a length of time from open, not a frame. The tween is ticked
-	// whether or not there is a chip to hang the popup off, so a picker the
+	// whether or not there is a chip to hang the slider off, so a picker the
 	// page took away with it cannot come back halfway through its own
 	// movement the next time it is asked for.
 	t := ui_tween(ui, ui_id(tag, PICKER_ANIM), open ? 1 : 0, PICKER_OPEN)
 	if t <= 0 || chip.w <= 0 do return 0, false
 
-	row_h := f32(48)
-	head_h := f32(28)
-	// As wide as the widest thing in it, and no wider.
-	right_w := gauge ? GAUGE_W : 0
-	for hint in hints do right_w = max(right_w, font_width(&ui.mono, hint, HINT_PX))
-	w := font_width(&ui.bold, head, 12) + TEXT_X + PAD_X
-	for label, i in labels {
-		line := font_width(&ui.regular, label, LABEL_PX)
-		if right_w > 0 do line += GAP + right_w
-		if i < len(notes) do line = max(line, font_width(&ui.regular, notes[i], NOTE_PX))
-		w = max(w, line + TEXT_X + PAD_X)
-	}
-	w = min(w, ui.size.x - 24)
-	h := head_h + row_h * f32(len(labels)) + 12
+	n := len(labels)
+	LABEL_PX :: f32(15) // the stop the knob is on; the rest shrink toward 13
+	TRACK_X :: f32(30) // the track's centre, from the panel's right edge
+	GAP :: f32(28) // between the longest label and the track
 
-	r := Rect{chip.x + chip.w - w, chip.y - h - 8, w, h}
-	// It opens upward off a chip that sits near the bottom of the window, but
-	// a list this tall in a short window can run off the top, and one this
-	// wide off the left. Both edges are checked here rather than by keeping
-	// the popup small enough that neither could happen.
+	text_w := f32(0)
+	for label in labels do text_w = max(text_w, font_width(&ui.bold, label, LABEL_PX + 2))
+	w := max(chip.w, 20 + text_w + GAP + TRACK_X)
+	h := f32(n - 1) * PICKER_STEP + PICKER_END * 2
+	r := Rect{chip.x + chip.w - w, chip.y - h - 10, w, h}
+	// It stands up off a chip near the bottom of the window, and in a short
+	// window a tall enough slider runs off the top of it. Checked here rather
+	// than by keeping the list short enough that it could not happen.
 	if r.y < 8 do r.y = min(chip.y + chip.h + 8, ui.size.y - h - 8)
 	r.y = max(r.y, 8)
 	r.x = clamp(r.x, 8, max(8, ui.size.x - w - 8))
-	row_at :: proc(r: Rect, head_h, row_h: f32, i: int) -> Rect {
-		return {r.x + 6, r.y + head_h + 6 + f32(i) * row_h, r.w - 12, row_h - 4}
+
+	track_x := r.x + r.w - TRACK_X
+	foot := r.y + r.h - PICKER_END // the bottom stop, which is choice 0
+	stop_y :: proc(foot: f32, i: f32) -> f32 {return foot - i * PICKER_STEP}
+	// Which stop a point on the track is nearest. The whole panel is the
+	// grab area: it is a slider, not a list of buttons with a slider drawn
+	// down one side, and a press three pixels off the rail that did nothing
+	// is the thing that makes a control feel like it is ignoring you.
+	nearest :: proc(foot, y: f32, n: int) -> int {
+		return clamp(int(math.round((foot - y) / PICKER_STEP)), 0, n - 1)
 	}
 
-	// What the pointer is on, asked before anything is drawn: the lit row
-	// goes under the labels, and finding it means asking every row first.
-	// While it is on its way out it asks nothing — a popup nobody can see any
-	// more must not be eating presses meant for what is behind it.
+	drag := ui_id(tag, PICKER_KNOB)
 	hover := -1
 	if open {
 		// Anywhere else closes it.
@@ -623,84 +640,98 @@ draw_picker :: proc(
 		// And a press inside it belongs to it, whatever has already claimed
 		// it: this is drawn last, over things that are drawn as buttons.
 		ui_claim(ui, r)
-		for i in 0 ..< len(labels) {
-			clicked, hovered := ui_invisible_button(ui, ui_id(tag, i), row_at(r, head_h, row_h, i))
-			if hovered do hover = i
-			if clicked {
+		if ui.pressed && rect_contains(r, ui.mouse) do ui.active = drag
+		if ui.active == drag {
+			if v := nearest(foot, ui.mouse.y, n); v != at do choice, picked = v, true
+			// Let go and it is put away, wherever the pointer has got to: the
+			// press picked, and there is nothing left to confirm.
+			if ui.released {
+				ui.active = 0
 				app.overlay = .None
-				choice, picked = i, true
 			}
+		} else if ui_hovered(ui, r) {
+			hover = nearest(foot, ui.mouse.y, n)
 		}
 	}
 
 	// Anchored at the corner the chip is under, so it comes up out of the
 	// chip and not out of the middle of nothing. Only the drawing moves: the
-	// rows are hit where they have settled, which is where they are for all
+	// stops are hit where they have settled, which is where they are for all
 	// but a tenth of a second.
 	e := ease_out(t)
-	s := 0.96 + 0.04 * e
-	ui_push_zoom(ui, s, {(r.x + r.w) * (1 - s), (r.y + r.h) * (1 - s) + (1 - e) * 12})
+	s := 0.94 + 0.06 * e
+	ui_push_zoom(ui, s, {(r.x + r.w) * (1 - s), (r.y + r.h) * (1 - s) + (1 - e) * 14})
 	defer ui_pop_zoom(ui)
 	a := t
 
 	SHADOW :: Color(0xff000000)
-	ui_rect(ui, {r.x - 10, r.y + 2, r.w + 20, r.h + 18}, color_alpha(SHADOW, 0.12 * a), 26)
-	ui_rect(ui, {r.x - 2, r.y + 4, r.w + 4, r.h + 8}, color_alpha(SHADOW, 0.26 * a), 16)
+	ui_rect(ui, {r.x - 10, r.y + 2, r.w + 20, r.h + 18}, color_alpha(SHADOW, 0.12 * a), 28)
+	ui_rect(ui, {r.x - 2, r.y + 4, r.w + 4, r.h + 8}, color_alpha(SHADOW, 0.26 * a), 18)
 	// A hairline of the type colour around it, so the panel has an edge
 	// against the transcript it covers instead of melting into it.
-	ui_rect(ui, {r.x - 1, r.y - 1, r.w + 2, r.h + 2}, color_alpha(TEXT, 0.12 * a), 15)
-	ui_rect(ui, r, color_alpha(PANEL_HI, a), 14)
+	ui_rect(ui, {r.x - 1, r.y - 1, r.w + 2, r.h + 2}, color_alpha(TEXT, 0.12 * a), 17)
+	ui_rect(ui, r, color_alpha(PANEL_HI, a), 16)
 
-	// What you are choosing, said once at the top. Two chips sit side by side
-	// and open the same shaped list, and without this the only way to tell
-	// which one you had clicked was to read the words in it.
-	ui_text(ui, &ui.bold, head, {r.x + TEXT_X, r.y + 9}, 12, color_alpha(FAINT, a))
-	ui_rect(ui, {r.x + PAD_X, r.y + head_h + 1, r.w - PAD_X * 2, 1}, color_alpha(TEXT, 0.08 * a))
+	// Where the knob actually is, which is a moment behind where it belongs:
+	// the bar, the labels and the light all read off this one number, so
+	// nothing in here can be a step ahead of anything else in it.
+	pos := ui_anim(ui, drag, f32(at), 24)
+	knob := stop_y(foot, pos)
+	// How far it still has to go, which is how hard it is moving. The knob
+	// swells while it travels and settles when it lands — the whole reason
+	// the eye follows it across four stops instead of losing it.
+	kick := clamp(abs(f32(at) - pos), 0, 1)
 
-	// One lit row that slides between them, rather than a rectangle blinking
-	// on and off wherever the pointer lands. It rests on the row that is
-	// chosen when the pointer is elsewhere, so the list is never showing
-	// nothing at all — and where it slid from is what says the row you left
-	// and the row you are on are the same kind of thing.
-	pos := ui_anim(ui, ui_id(tag, PICKER_PILL), f32(hover >= 0 ? hover : at), 30)
-	pill := row_at(r, head_h, row_h, 0)
-	pill.y += pos * row_h
-	ui_rect(ui, pill, color_alpha(color_mix(PANEL, ACCENT, hover >= 0 ? 0.34 : 0.16), a), 10)
+	top := stop_y(foot, f32(n - 1))
+	ui_rect(ui, {track_x - 3, top, 6, foot - top}, color_alpha(TEXT, 0.10 * a), 3)
+	// The light under the bar. It is drawn wide and faint under the bar
+	// itself rather than as a second bar, so the track glows where it is
+	// filled instead of gaining an outline.
+	ui_rect(ui, {track_x - 9, knob - 6, 18, foot - knob + 12}, color_alpha(ACCENT, 0.14 * a), 9)
+	// The bar, brightest at the knob and falling away toward the foot, so it
+	// reads as filled from below rather than as a coloured stick.
+	fill := Rect{track_x - 3, knob, 6, foot - knob}
+	lo := color_alpha(ACCENT, 0.45 * a)
+	hi := color_alpha(ACCENT, a)
+	ui_quad_corners(
+		ui,
+		{{fill.x, fill.y}, {fill.x + fill.w, fill.y}, {fill.x + fill.w, fill.y + fill.h}, {fill.x, fill.y + fill.h}},
+		{{0, 0}, {1, 0}, {1, 1}, {0, 1}},
+		{hi, hi, lo, lo},
+		WHITE_TEX,
+	)
+	ui_circle(ui, {track_x, foot}, 3, lo)
 
 	for label, i in labels {
-		row := row_at(r, head_h, row_h, i)
-		on := i == at
-		lit := on || i == hover
-		if on {
-			ui_circle(ui, {row.x + DOT_X - 6, row.y + 14}, 7, color_alpha(ACCENT_DIM, 0.4 * a))
-			ui_circle(ui, {row.x + DOT_X - 6, row.y + 14}, 3.5, color_alpha(ACCENT, a))
-		}
-		ui_text(ui, on ? &ui.bold : &ui.regular, label, {row.x + TEXT_X - 6, row.y + 6}, LABEL_PX, color_alpha(lit ? TEXT : MUTED, a))
-		if i < len(notes) {
-			ui_text(ui, &ui.regular, notes[i], {row.x + TEXT_X - 6, row.y + 25}, NOTE_PX, color_alpha(lit ? MUTED : FAINT, a))
-		}
-		if i < len(hints) {
-			hw := font_width(&ui.mono, hints[i], HINT_PX)
-			ui_text(ui, &ui.mono, hints[i], {row.x + row.w - PAD_X - hw, row.y + 9}, HINT_PX, color_alpha(lit ? MUTED : FAINT, a))
-		}
-		if gauge do draw_gauge(ui, {row.x + row.w - PAD_X - GAUGE_W, row.y + 15}, i, len(labels), lit, a)
+		y := stop_y(foot, f32(i))
+		// How near the knob is to this stop, which is the one number every
+		// row is drawn from: the notch, the type size and the colour all come
+		// off it, so a label cannot be lit while its notch is dark.
+		near := clamp(1 - abs(pos - f32(i)), 0, 1)
+		on := i <= at
+		// Where a press would land, said on the track and not only in the
+		// label: the whole panel is the grab area, so the ring is the only
+		// thing telling you that the pointer over a word is over a stop.
+		if i == hover do ui_circle(ui, {track_x, y}, 9, color_alpha(TEXT, 0.12 * a))
+		ui_circle(ui, {track_x, y}, 3.5 + 1.5 * near, color_alpha(on ? ACCENT : TEXT, (on ? 0.9 : 0.18) * a))
+		px := LABEL_PX - 2 + 3 * near
+		col := color_mix(i == hover ? MUTED : FAINT, TEXT, near)
+		lw := font_width(near > 0.5 ? &ui.bold : &ui.regular, label, px)
+		ui_text(
+			ui,
+			near > 0.5 ? &ui.bold : &ui.regular,
+			label,
+			{track_x - GAP - lw, y - px * 0.72},
+			px,
+			color_alpha(col, a),
+		)
 	}
-	return
-}
 
-// How far up the ladder a row stands, as a shape rather than as a word. The
-// five efforts are five claims that it is a lot, and only somebody who has
-// read the enum knows that Max is past Xhigh.
-@(private = "file")
-draw_gauge :: proc(ui: ^UI, left_mid: [2]f32, level, of: int, lit: bool, a: f32) {
-	bar := f32(5)
-	gap := (GAUGE_W - bar * f32(of)) / f32(max(of - 1, 1))
-	for j in 0 ..< of {
-		bh := 4 + f32(j) * 2
-		col := color_alpha(TEXT, 0.12)
-		if j <= level do col = lit ? ACCENT : color_mix(ACCENT, MUTED, 0.45)
-		ui_rect(ui, {left_mid.x + f32(j) * (bar + gap), left_mid.y + 6 - bh, bar, bh}, color_alpha(col, a), 1.5)
-	}
+	// The knob last, over the bar and the notches it sits on.
+	ui_circle(ui, {track_x, knob}, 15 + 4 * kick, color_alpha(ACCENT, 0.18 * a))
+	ui_circle(ui, {track_x, knob}, 9 + 2 * kick, color_alpha(ACCENT, a))
+	ui_circle(ui, {track_x, knob}, 3.5, color_alpha(TEXT, a))
+	return
 }
 
 // The two controls the window has: which model answers and how hard it
@@ -716,12 +747,16 @@ draw_gauge :: proc(ui: ^UI, left_mid: [2]f32, level, of: int, lit: bool, a: f32)
 draw_chips :: proc(app: ^App, full, box: Rect, y: f32) {
 	ui := &app.ui
 	right := chips_right(full, box)
-	cx := draw_chip(app, ui_id("model-chip"), right, y, model_label[app.model], app.overlay == .Model)
-	if ui.pressed && ui.hot == ui_id("model-chip") do app.overlay = app.overlay == .Model ? .None : .Model
-	app.model_chip = Rect{cx, y - 5, right - cx, 26}
-	ex := draw_chip(app, ui_id("effort-chip"), cx - 8, y, effort_label[app.effort], app.overlay == .Effort)
+	// The model reads first, left to right: it is the choice that decides
+	// what answers, and effort is a setting on top of it. They were the other
+	// way round because the row is laid out from its right edge, which is a
+	// reason about the code and not about the two words.
+	ex := draw_chip(app, ui_id("effort-chip"), right, y, effort_label[app.effort], app.overlay == .Effort)
 	if ui.pressed && ui.hot == ui_id("effort-chip") do app.overlay = app.overlay == .Effort ? .None : .Effort
-	app.effort_chip = Rect{ex, y - 5, cx - 8 - ex, 26}
+	app.effort_chip = Rect{ex, y - 5, right - ex, 26}
+	cx := draw_chip(app, ui_id("model-chip"), ex - 8, y, model_label[app.model], app.overlay == .Model)
+	if ui.pressed && ui.hot == ui_id("model-chip") do app.overlay = app.overlay == .Model ? .None : .Model
+	app.model_chip = Rect{cx, y - 5, ex - 8 - cx, 26}
 }
 
 // Where the chip row ends. The box's own right edge, except where the corner
@@ -747,11 +782,7 @@ draw_pickers :: proc(app: ^App) {
 	if m, picked := draw_picker(
 		app,
 		app.model_chip,
-		"which model answers",
 		slice.enumerated_array(&model_label),
-		slice.enumerated_array(&model_note),
-		slice.enumerated_array(&model_flag),
-		false,
 		int(app.model),
 		"model",
 		app.overlay == .Model,
@@ -762,11 +793,7 @@ draw_pickers :: proc(app: ^App) {
 	if e, picked := draw_picker(
 		app,
 		app.effort_chip,
-		"how hard it thinks",
 		slice.enumerated_array(&effort_label),
-		slice.enumerated_array(&effort_note),
-		nil,
-		true,
 		int(app.effort),
 		"effort",
 		app.overlay == .Effort,
@@ -933,7 +960,7 @@ draw_editor :: proc(app: ^App, e: ^Editor, r: Rect, font: ^Font, px: f32, focuse
 		// cell the glyph is drawn into — same origin and same height as the
 		// text above, so the block lands on the character and not beside it.
 		under: string
-		w := px * 0.55
+		w := px * CARET_EMPTY
 		if e.cursor < span.end {
 			under = text[e.cursor:next_rune(text, e.cursor)]
 			w = max(font_width(font, under, px), px * 0.35)
