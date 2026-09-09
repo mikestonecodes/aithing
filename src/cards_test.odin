@@ -1931,3 +1931,77 @@ starting_again_in_a_thread_puts_a_card_back :: proc(t: ^testing.T) {
 	app_sync_todos(app)
 	testing.expect_value(t, len(app.todos.list), 1)
 }
+
+// A card clicked while its turn is running reads its thread now, off the file
+// the harness is writing, without waiting for the scan to have heard of it.
+//
+// It used to wait, and the wait had no end in sight: the scan drops a file
+// with nothing in it worth a title, which is what a turn a second old has
+// written, and it is held off entirely while the thread on screen is
+// streaming — which, the moment the card is clicked, this thread is. So the
+// transcript sat on "loading..." with nothing in it, the live stream landing
+// in it as the turn went on, and no sign of the prompt that started the work
+// until the turn was over.
+@(test)
+a_thread_the_scan_has_not_listed_is_read_off_disk :: proc(t: ^testing.T) {
+	scratch_dir(t)
+	projects := "/tmp/aithing-test-projects"
+	dir := strings.concatenate({projects, "/-tmp-proj"}, context.temp_allocator)
+	os.make_directory_all(dir)
+	_ = os.set_env("AITHING_PROJECTS", projects)
+	defer _ = os.set_env("AITHING_PROJECTS", "")
+
+	body := strings.concatenate(
+		{
+			`{"type":"user","cwd":"/tmp/proj","message":{"role":"user","content":`,
+			json_quote("bake the atlas"),
+			"}}\n",
+		},
+		context.temp_allocator,
+	)
+	path := strings.concatenate({dir, "/sess-unlisted.jsonl"}, context.temp_allocator)
+	_ = os.write_entire_file(path, transmute([]byte)body)
+	defer os.remove(path)
+
+	app := scratch_app()
+	defer scratch_free(app)
+	app.sessions = make([]Session, 0) // the scan has never heard of it
+
+	id := todos_add(&app.todos, "bake the atlas", "sess-unlisted", "/tmp/proj")
+	app_open_todo(app, id)
+	_ = app_apply_clicks(app)
+
+	// Honoured on the click, not held for a scan.
+	testing.expect_value(t, app.pending_open, "")
+	testing.expect_value(t, app.chat.session_id, "sess-unlisted")
+
+	// And what was said in it turns up, which is the whole point: the prompt
+	// that started the card is the one thing the live stream can never show.
+	for _ in 0 ..< 400 {
+		if app_poll_jobs(app) && len(app.chat.msgs) > 0 do break
+		time.sleep(5 * time.Millisecond)
+	}
+	testing.expect_value(t, len(app.chat.msgs), 1)
+	testing.expect_value(t, block_text(chat_block(&app.chat, Ref{0, 0, -1})), "bake the atlas")
+}
+
+// A thread whose file the harness has not written yet is still waited for:
+// the click is kept and a scan asked for, the way it always was.
+@(test)
+a_thread_with_no_file_yet_keeps_the_click :: proc(t: ^testing.T) {
+	scratch_dir(t)
+	projects := "/tmp/aithing-test-projects"
+	os.make_directory_all(projects)
+	_ = os.set_env("AITHING_PROJECTS", projects)
+	defer _ = os.set_env("AITHING_PROJECTS", "")
+
+	app := scratch_app()
+	defer scratch_free(app)
+	app.sessions = make([]Session, 0)
+
+	id := todos_add(&app.todos, "bake the atlas", "sess-nofile", "/tmp/proj")
+	app_open_todo(app, id)
+	_ = app_apply_clicks(app)
+	testing.expect_value(t, app.pending_open, "sess-nofile")
+	testing.expect(t, app.rescan)
+}

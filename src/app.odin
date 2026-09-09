@@ -311,11 +311,24 @@ app_apply_clicks :: proc(app: ^App) -> bool {
 		at := session_index(app, id)
 		if at < 0 {
 			// A thread this window made a moment ago, which the last scan
-			// knew nothing about. The click is kept rather than dropped —
-			// dropping it is why clicking a card that had just finished did
-			// nothing at all — and a scan is asked for so the next frame can
-			// honour it.
-			app.rescan = true
+			// knew nothing about. Waiting for the scan to hear of it is what
+			// left a clicked card on "loading..." over an empty transcript
+			// for the whole of its turn: the scan skips a file too new to
+			// have a title, and it is held off entirely while the thread on
+			// screen is streaming — which, the moment the card was clicked,
+			// this thread is. So the file is looked for where it must be
+			// instead, and the read starts off that.
+			//
+			// The click is still kept rather than dropped if it is not there
+			// yet — dropping it is why clicking a card that had just finished
+			// did nothing at all — and a scan is asked for so the next frame
+			// can honour it.
+			if app_open_unlisted(app, id) {
+				delete(id)
+				app.pending_open = ""
+			} else {
+				app.rescan = true
+			}
 		} else {
 			delete(id)
 			app.pending_open = ""
@@ -939,6 +952,28 @@ app_select :: proc(app: ^App, id: string) {
 	app.transcript.target = 0
 	turns_rebind(app)
 	app_status(app, "loading...")
+}
+
+// Reads a thread the session list has never heard of, off the file the
+// harness is writing it into. Everything app_open takes from the list is
+// already on the chat — app_select put it there from the turn or the card —
+// so the only thing missing is the path, and that is worked out from the id
+// and the directory rather than waited for (see session_file).
+//
+// False means the file is not there yet, which for a turn a second old is the
+// usual answer: the caller keeps the click and asks again next frame.
+//
+// One thread, never a group: a task's other threads are what the scan knows
+// and this is the case where it knows nothing.
+@(private = "file")
+app_open_unlisted :: proc(app: ^App, id: string) -> bool {
+	if app.chat.session_id != id do return false
+	path := session_file(id, app.chat.cwd, context.temp_allocator)
+	if path == "" do return false
+	delete(app.chat.path)
+	app.chat.path = strings.clone(path)
+	load_start_group(&app.load, Session{id = id, cwd = app.chat.cwd, path = path}, nil)
+	return true
 }
 
 // Where a thread runs, for a thread the scan has not listed yet: the turn

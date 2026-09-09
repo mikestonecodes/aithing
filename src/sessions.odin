@@ -44,6 +44,12 @@ Verify :: enum {
 }
 
 claude_home :: proc(allocator := context.allocator) -> string {
+	// AITHING_PROJECTS points this somewhere else, the way AITHING_CONFIG
+	// points the saved state: a test that has to put a session file on disk
+	// must not put it in the directory the window someone is using reads.
+	if dir := os.get_env("AITHING_PROJECTS", context.temp_allocator); dir != "" {
+		return strings.clone(dir, allocator)
+	}
 	home := os.get_env("HOME", context.temp_allocator)
 	path, _ := filepath.join({home, ".claude", "projects"}, allocator)
 	return path
@@ -689,4 +695,41 @@ content_first_text :: proc(msg: json.Value) -> string {
 		}
 	}
 	return ""
+}
+
+// Where a thread's file is, worked out from what the thread already knows
+// rather than looked up in the scan: Claude Code's directory per project is
+// the cwd with every character that is not a letter or a digit turned into a
+// dash, and the file in it is the id.
+//
+// This exists because the scan is not a way to find a thread that has just
+// started. It drops any file with nothing in it worth a title, which is
+// exactly what a turn one second old has written, and it does not run at all
+// while the thread on screen is streaming — so a card clicked while its turn
+// was running waited for the end of that turn to be read, showing "loading..."
+// over an empty transcript with the live stream landing in it and no sign of
+// the prompt that started it.
+//
+// Empty counts as not there: a file the harness has created and not yet
+// written is a transcript that would read as a thread with nothing in it, and
+// the read is only worth doing once.
+session_file :: proc(id, cwd: string, allocator := context.allocator) -> string {
+	if id == "" || cwd == "" do return ""
+	slug := strings.builder_make(context.temp_allocator)
+	for ch in cwd {
+		alnum := (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9')
+		strings.write_rune(&slug, alnum ? ch : '-')
+	}
+	name := strings.concatenate({id, ".jsonl"}, context.temp_allocator)
+	path, jerr := filepath.join(
+		{claude_home(context.temp_allocator), strings.to_string(slug), name},
+		allocator,
+	)
+	if jerr != nil do return ""
+	info, serr := os.stat(path, context.temp_allocator)
+	if serr != nil || info.size == 0 {
+		delete(path, allocator)
+		return ""
+	}
+	return path
 }
