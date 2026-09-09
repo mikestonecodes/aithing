@@ -85,3 +85,18 @@ empty_composer_sends_nothing :: proc(t: ^testing.T) {
 	testing.expect_value(t, app_turns_live(app), 1)
 	testing.expect_value(t, len(app.chat.msgs), 0)
 }
+
+// Sending says nothing on the status line. It used to write "thinking..."
+// there, which only a Done from that same thread took off — so leaving the
+// thread left the project page saying it over a grid of cards for good.
+@(test)
+sending_leaves_nothing_on_the_status_line :: proc(t: ^testing.T) {
+	app := scratch_app()
+	defer scratch_free(app)
+
+	editor_set_text(&app.editor, "off it goes")
+	app_send(app)
+
+	testing.expect_value(t, app_turns_live(app), 1)
+	testing.expect_value(t, app.status, "")
+}
