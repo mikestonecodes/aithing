@@ -1039,9 +1039,6 @@ app_apply :: proc(app: ^App, at: int, e: ^Event) {
 	case .Limits:
 		// Taken above as well, and for the same reason.
 
-	case .Status:
-		if e.text != "" do app_status(app, e.text)
-
 	case .Msg_Start:
 		if e.parent == "" do app.cur_msg = chat_append(c, .Assistant)
 

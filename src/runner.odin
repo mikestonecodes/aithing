@@ -17,7 +17,6 @@ import "core:thread"
 
 Ev_Kind :: enum {
 	Session, // the id to --resume next time
-	Status,
 	Msg_Start,
 	Block_Start,
 	Delta,
@@ -345,11 +344,16 @@ runner_line :: proc(r: ^Runner, line: string) {
 
 	switch jstr(v, "type") {
 	case "system":
+		// Only `init` is worth anything here. The harness also reports its
+		// own progress through a request — `requesting` and friends — and
+		// that was fed straight to the status line, so the bottom-left of the
+		// grid sat there reading "requesting" over a wall of cards that
+		// already say what they are doing. It also overwrote the lines the
+		// window writes for itself, the ones nobody is around to see twice:
+		// "built — restart to pick it up", a push that was refused.
 		switch jstr(v, "subtype") {
 		case "init":
 			runner_emit(r, Event{kind = .Session, id = strings.clone(jstr(v, "session_id"))})
-		case "status":
-			runner_emit(r, Event{kind = .Status, text = strings.clone(jstr(v, "status"))})
 		}
 
 	case "stream_event":
