@@ -124,6 +124,10 @@ App :: struct {
 	// started where it is decided: that is inside the walk over app.turns, and
 	// taking a slot can grow the list the walk is holding a pointer into.
 	pending_resolve: [dynamic;32]string,
+	// Messages typed into a thread that already had a turn in it, waiting for
+	// it to end so they can resume the same thread rather than run beside it:
+	// see turns.odin.
+	queued:          [dynamic]Queued,
 
 	chat:      Chat,
 	// Every turn in flight, one slot each: see turns.odin. Grown as far as the
@@ -354,6 +358,9 @@ app_poll_jobs :: proc(app: ^App) -> bool {
 	// saying Done or Failed would otherwise leave its card reading
 	// `processing` for good.
 	if turns_reap(app) do changed = true
+	// And a message that was waiting for one of those turns goes out now. The
+	// reap above is the whole of what says its thread is free.
+	if turns_pump(app) do changed = true
 
 	if list, ok := scan_take(&app.scan); ok {
 		// The thread on screen is the one app.chat names, and nothing else
@@ -752,6 +759,9 @@ app_drop_todo :: proc(app: ^App, id: string) {
 	// deliberate — which is the whole difference between it and what Esc used
 	// to do.
 	if at := turn_for_todo(app, id); at >= 0 do turn_stop(app, at)
+	// Including anything typed into that thread and still waiting: a card off
+	// the grid must not start a turn a second later.
+	if session != "" do _ = turn_unqueue(app, session)
 	if session != "" && !todos_has(&app.todos, session) {
 		archive_set(&app.archive, session, true)
 	}
@@ -1097,18 +1107,31 @@ app_submit :: proc(app: ^App, text, prompt: string) -> bool {
 	cwd := worktree_restore(app, app_chat_cwd(app))
 	route_clear(app)
 
-	// A turn already running in this thread is no reason to hold this one:
-	// it starts now, beside the one before it. There used to be a queue here
-	// — a follow-up waited in it until the turn it was typed over finished,
-	// because two `--resume`s of one session are two processes writing one
-	// session file. The waiting is what broke: a turn that ended in a way
-	// nothing noticed left its follow-ups sitting in the queue for good, and
-	// a message that never goes out is worse than two harnesses arguing over
-	// a session file — which the harness settles for itself, and which
-	// nothing waiting in this process ever settled.
+	// A turn already running in this thread is one this message waits for.
+	// Two `--resume`s of one session are two harnesses that each read the
+	// thread as it stood and each re-send the whole of it, and the second one
+	// comes back on a thread whose records the first interleaved — so what
+	// running them beside each other buys is the conversation paid for twice
+	// and a turn answering out of order.
+	//
+	// The queue this replaces waited on a turn saying it had ended, and left
+	// follow-ups in it for good when one died without saying so; this one
+	// waits on the process being gone, which nothing has to remember to say.
+	// See turns.odin.
 	//
 	// The composer's turn is the one that draws into the transcript.
-	if !turn_start(app, cwd, app_project(app), app.chat.session_id, prompt, "", true) {
+	session := app.chat.session_id
+	// The turn on screen, whether or not the harness has named its thread
+	// yet: a follow-up typed in that first second has no session to wait for,
+	// so it waits for the turn instead and takes the name when it arrives.
+	// It used to go out as it stood, which started a second thread.
+	unnamed: ^Turn
+	if at := turn_chat(app); session == "" && at >= 0 && runner_busy(&app.turns[at].runner) {
+		unnamed = app.turns[at]
+	}
+	if app_session_busy(app, session) || unnamed != nil {
+		turn_queue(app, session, unnamed, cwd, app_project(app), prompt)
+	} else if !turn_start(app, cwd, app_project(app), session, prompt, "", true) {
 		app_status(app, "could not start claude")
 		return false
 	}

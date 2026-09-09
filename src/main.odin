@@ -765,15 +765,27 @@ app_paste_image :: proc(app: ^App, target: ^Editor, data: []byte, mime: string) 
 app_interrupt :: proc(app: ^App) {
 	if app.page == .Thread {
 		at := turn_chat(app)
-		if at < 0 do return
+		// What is waiting to go out in this thread is part of the work in
+		// front of you, so it stops with it — otherwise the turn you just
+		// stopped is replaced by the next one a frame later.
+		dropped := turn_unqueue(app, app.chat.session_id, at >= 0 ? app.turns[at] : nil)
+		if at < 0 {
+			if dropped do app_status(app, "stopped")
+			return
+		}
 		turn_stop(app, at)
 		app_status(app, "stopped")
 		return
 	}
 	at := todos_find(&app.todos, app.canvas.sel)
 	if at < 0 do return
-	turn := turn_for_todo(app, app.todos.list[at].id)
-	if turn < 0 do return
+	td := app.todos.list[at]
+	dropped := turn_unqueue(app, td.session)
+	turn := turn_for_todo(app, td.id)
+	if turn < 0 {
+		if dropped do app_status(app, "stopped")
+		return
+	}
 	turn_stop(app, turn)
 	app_status(app, "stopped")
 }
