@@ -1886,3 +1886,48 @@ clicking_a_card_leaves_the_box_alone_for_the_rest_of_the_frame :: proc(t: ^testi
 	testing.expect_value(t, app.pending_open, "")
 	testing.expect_value(t, app.chat.session_id, "sess-click")
 }
+
+// Picking a thread out of the search and saying the next thing in it. The
+// card had been dismissed, so the grid has nothing for that thread; the work
+// starting again is what puts one back.
+@(test)
+starting_again_in_a_thread_puts_a_card_back :: proc(t: ^testing.T) {
+	scratch_dir(t)
+	app := scratch_app()
+	defer scratch_free(app)
+
+	list := make([]Session, 1)
+	list[0] = Session {
+		id    = "s-home",
+		title = "the thing",
+		cwd   = "/home",
+		mtime = time.now(),
+		size  = 100,
+	}
+	app.sessions = list
+
+	// A card put down: off the grid, its thread filed away.
+	id := todos_add(&app.todos, "the thing", "s-home", "/home")
+	app_dismiss_todo(app, id)
+	app_apply_clicks(app)
+	testing.expect_value(t, len(app.todos.list), 0)
+
+	// The launcher's way in, then the next thing said in the thread.
+	canvas_open(app, "s-home")
+	editor_set_text(&app.editor, "pick this back up")
+	app_send(app)
+	canvas_close(app)
+
+	testing.expect_value(t, len(app.todos.list), 1)
+	testing.expect_value(t, app.todos.list[0].cwd, "/home")
+	// And on the grid of every project, which is the home screen.
+	app_build_cards(app)
+	testing.expect_value(t, len(app.todo_view), 1)
+
+	// The next scan lands, and the card is still there. This is the half that
+	// would go quietly: the sweep drops cards whose thread is gone, and a card
+	// made in the middle of a run is the one it is easiest to be wrong about.
+	app.scan_at = time.now()
+	app_sync_todos(app)
+	testing.expect_value(t, len(app.todos.list), 1)
+}
