@@ -976,7 +976,12 @@ app_submit :: proc(app: ^App, text, prompt: string) -> bool {
 	}
 	app.cur_msg = -1
 	app.stick = true
-	app_status(app, "thinking...")
+	// The status line is not told. It used to say "thinking...", and only a
+	// Done from this very thread took it off again — so going back to the
+	// grid, or opening any other thread, left the project page saying
+	// "thinking..." over a grid of cards, for the rest of the run. Whether a
+	// turn is in flight is read off the turns (`app_chat_busy`, and on the
+	// grid the card itself), never written down beside them.
 	return true
 }
 
@@ -1167,7 +1172,6 @@ app_apply :: proc(app: ^App, at: int, e: ^Event) {
 		clear(&app.open)
 		app.cur_msg = -1
 		app_turn_ended(app, t, .Done)
-		app_status(app, "ready")
 	}
 }
 
