@@ -28,6 +28,18 @@ SECTION_GAP :: f32(26)
 GRID_PAD :: f32(24)
 GRID_TOP :: f32(58) // under the line that says which project you are in
 
+// How far a card comes up out of the cell it was laid out in when the pointer
+// is on it: the swell, half of which is above the cell, and the lift on top of
+// that. One answer, read by the drawing that does the growing and by the
+// layout, which keeps that much room above the first row. The grid is drawn
+// inside a scissor at the top of its scroll area, so a top-row card that grew
+// into the space above it came back with its rounded corners sawn off — a red
+// card with a flat top edge, which is what this was found as.
+CARD_SWELL_W :: f32(0.035)
+CARD_SWELL_H :: f32(0.06)
+CARD_LIFT :: f32(3)
+CARD_ROOM :: CARD_H * CARD_SWELL_H / 2 + CARD_LIFT
+
 Card :: struct {
 	todo:  int, // index into app.todos.list
 	r:     Rect, // in content space: add the scroll offset to place it
@@ -120,7 +132,10 @@ grid_layout :: proc(app: ^App, r: Rect) -> f32 {
 	// the top run of cards sat there belonging to no one.
 	sections, _ := app_view_projects(app)
 
-	y := f32(0)
+	// The first row starts a card's rise below the top of the view rather
+	// than flush against it, so a card under the pointer has somewhere to
+	// grow into that the scissor will not take back.
+	y := CARD_ROOM
 	col := 0
 	cwd := ""
 	for at in app.todo_view {
@@ -342,17 +357,19 @@ draw_card :: proc(app: ^App, card: Card, base: Rect) {
 	// wound to different rates, so it wobbles for a moment before it holds,
 	// and a press squashes it down until it is let go. The layout is not
 	// touched — `base` is where it is and what it is hit against, and the
-	// text wraps to it — only the drawing swells around the centre.
+	// text wraps to it — only the drawing swells around the centre. How far
+	// out of the cell that reaches is CARD_ROOM, which the layout keeps clear
+	// above the first row.
 	up := hovered || selected ? f32(1) : 0
 	held := ui.active == id || ui.active == bid ? f32(1) : 0
 	lift := ui_spring(ui, id, up, 260, 14)
 	sw := ui_spring(ui, ui_id(td.id, CARD_SW), up, 330, 9)
 	sh := ui_spring(ui, ui_id(td.id, CARD_SH), up, 190, 8)
 	press := ui_spring(ui, ui_id(td.id, CARD_PRESS), held, 500, 18)
-	r.w = base.w * (1 + 0.035 * sw - 0.04 * press)
-	r.h = base.h * (1 + 0.06 * sh - 0.06 * press)
+	r.w = base.w * (1 + CARD_SWELL_W * sw - 0.04 * press)
+	r.h = base.h * (1 + CARD_SWELL_H * sh - 0.06 * press)
 	r.x = base.x + (base.w - r.w) / 2
-	r.y = base.y + (base.h - r.h) / 2 - 3 * lift
+	r.y = base.y + (base.h - r.h) / 2 - CARD_LIFT * lift
 	btn = {r.x + r.w - pad - 28, r.y + pad - 4, 28, 28}
 
 	if lift > 0.01 do ui_rect(ui, {r.x + 1, r.y + 4 + 4 * lift, r.w, r.h}, color_alpha(Color(0xff000000), 0.3 * lift), 12)
