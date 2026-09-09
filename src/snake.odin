@@ -458,7 +458,6 @@ draw_tile :: proc(app: ^App, t: Tile, r: Rect) -> bool {
 // bars, dots and rings. `bg` is the stone under it, which is how a ring is
 // made: a disc of the mark's colour with a disc of the stone punched back into
 // the middle of it.
-@(private = "file")
 draw_icon :: proc(ui: ^UI, icon: Icon, r: Rect, col, bg: Color) {
 	s := r.w / TILE // the stone's own scale, so a nested one shrinks its mark
 	cx := r.x + r.w / 2

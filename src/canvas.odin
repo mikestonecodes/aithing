@@ -2,6 +2,7 @@ package aithing
 
 import "core:math"
 import "core:path/filepath"
+import "core:slice"
 import "core:strings"
 
 // The home view is a fixed grid: every todo item is a card, cards are grouped
@@ -67,6 +68,15 @@ Canvas :: struct {
 	ghosts:   [dynamic]Ghost,
 }
 
+// A card and where it is drawn this frame, for the ones held back to be
+// drawn last.
+@(private = "file")
+Placed :: struct {
+	card: Card,
+	r:    Rect,
+	left: f32, // distance squared to where it is going
+}
+
 Ghost :: struct {
 	r:    Rect, // content space, like a card
 	text: string, // its own copy: the todo it came from is freed
@@ -99,6 +109,24 @@ CARD_SW :: 4 // width swell, hovered
 CARD_SH :: 5 // height swell, hovered — a different rate, so it wobbles
 CARD_PRESS :: 6
 HEAD_Y :: 7
+CARD_BORN :: 8 // 0 the frame a card is made, 1 once it has arrived
+
+// The moment a card is made from the box: it is seeded under the box, small,
+// so its first frame draws it rising out of where it was typed. Before this a
+// new card was simply there, at the head of its section, and the only thing
+// that moved was every other card in the section sliding along a slot to make
+// room — motion with no cause on screen, which is what "the shifting is
+// weird" was. Now the cause is in the picture: the card comes up out of the
+// box and the others get out of its way. The seeds only take on an id the
+// springs have never seen, so a card that already has a place keeps it.
+canvas_born :: proc(app: ^App, id: string) {
+	ui := &app.ui
+	c := &app.canvas
+	// Content space, like a card: the box sits just under the grid's view.
+	ui_spring_seed(ui, ui_id(id, CARD_X), c.view.x + c.view.w / 2 - CARD_W / 2)
+	ui_spring_seed(ui, ui_id(id, CARD_Y), c.scroll.offset + c.view.h - GRID_TOP)
+	ui_spring_seed(ui, ui_id(id, CARD_BORN), 0)
+}
 
 // The moment a card is dismissed: it is copied out to implode where it was,
 // and the wave that starts from it. Called from both places a card can be
@@ -217,15 +245,23 @@ draw_canvas :: proc(app: ^App, r: Rect) {
 	canvas_keep_sel_in_view(app, view)
 
 	ui_begin_scroll(ui, view, &c.scroll, content)
+	moving := make([dynamic]Placed, context.temp_allocator)
 	// Where a card is drawn is where it is laid out, chased by a spring: a
 	// card whose row moved — one before it went, the window narrowed — slides
 	// there and settles rather than being there. Every card's springs are
 	// ticked, on screen or not, so one scrolled back into view is where it
 	// belongs and not sliding in from where it was last seen.
+	//
+	// Damped to just short of critical. At 13 the springs rang, and a card
+	// shoved along a slot by one made above it went past the slot and came
+	// back, every card in the section at once — a row of things overshooting
+	// looks like a mistake being corrected, not like room being made. The
+	// wave a dismissed card sends still moves them: a kick shows as a
+	// displacement and a return either way.
 	for card in c.cards {
 		if card.head {
 			hy := ui_id(card.name, HEAD_Y)
-			y := ui_spring(ui, hy, card.r.y, 170, 15)
+			y := ui_spring(ui, hy, card.r.y, 170, 22)
 			cr := Rect{card.r.x, y - c.scroll.offset + view.y, card.r.w, card.r.h}
 			if cr.y > view.y + view.h || cr.y + cr.h < view.y do continue
 			draw_section_head(app, card, cr)
@@ -234,12 +270,28 @@ draw_canvas :: proc(app: ^App, r: Rect) {
 		td := app.todos.list[card.todo]
 		kx, ky := ui_id(td.id, CARD_X), ui_id(td.id, CARD_Y)
 		canvas_wave(app, card.r, kx, ky, ui_id(td.id, CARD_SW), ui_id(td.id, CARD_SH))
-		x := ui_spring(ui, kx, card.r.x, 170, 13)
-		y := ui_spring(ui, ky, card.r.y, 170, 13)
+		x := ui_spring(ui, kx, card.r.x, 170, 22)
+		y := ui_spring(ui, ky, card.r.y, 170, 22)
 		cr := Rect{x, y - c.scroll.offset + view.y, card.r.w, card.r.h}
 		if cr.y > view.y + view.h || cr.y + cr.h < view.y do continue
+		// A card on the move goes over the ones sitting still. The card at
+		// the end of a row that has to make room crosses the grid to the
+		// start of the next, and drawn in list order it went under every card
+		// laid out after it — cut through by the things it was passing.
+		// Every card in the section is moving when room is being made, so
+		// the order among them is by how far each has left to go: the one
+		// crossing the grid from the end of a row to the start of the next
+		// is the one furthest from home, and goes over the ones nudging
+		// along a slot.
+		dx, dy := x - card.r.x, y - card.r.y
+		if abs(dx) > 1 || abs(dy) > 1 {
+			append(&moving, Placed{card, cr, dx * dx + dy * dy})
+			continue
+		}
 		draw_card(app, card, cr)
 	}
+	slice.sort_by(moving[:], proc(a, b: Placed) -> bool { return a.left < b.left })
+	for m in moving do draw_card(app, m.card, m.r)
 	draw_ghosts(app, view)
 	ui_end_scroll(ui, view, &c.scroll)
 
@@ -366,10 +418,17 @@ draw_card :: proc(app: ^App, card: Card, base: Rect) {
 	sw := ui_spring(ui, ui_id(td.id, CARD_SW), up, 330, 9)
 	sh := ui_spring(ui, ui_id(td.id, CARD_SH), up, 190, 8)
 	press := ui_spring(ui, ui_id(td.id, CARD_PRESS), held, 500, 18)
-	r.w = base.w * (1 + CARD_SWELL_W * sw - 0.04 * press)
-	r.h = base.h * (1 + CARD_SWELL_H * sh - 0.06 * press)
+	// A card just made grows to size as it rises out of the box (see
+	// canvas_born), with a touch of overshoot so it lands rather than fades
+	// in. Any card the spring has not met before rests at 1, so this is a
+	// no-op for everything already on the grid.
+	born := ui_spring(ui, ui_id(td.id, CARD_BORN), 1, 240, 17)
+	grow := 0.7 + 0.3 * born
+	r.w = base.w * (1 + CARD_SWELL_W * sw - 0.04 * press) * grow
+	r.h = base.h * (1 + CARD_SWELL_H * sh - 0.06 * press) * grow
 	r.x = base.x + (base.w - r.w) / 2
 	r.y = base.y + (base.h - r.h) / 2 - CARD_LIFT * lift
+	if born < 0.99 do ui_rect(ui, {r.x + 1, r.y + 6, r.w, r.h}, color_alpha(Color(0xff000000), 0.35 * (1 - born)), 12)
 	btn = {r.x + r.w - pad - 28, r.y + pad - 4, 28, 28}
 
 	if lift > 0.01 do ui_rect(ui, {r.x + 1, r.y + 4 + 4 * lift, r.w, r.h}, color_alpha(Color(0xff000000), 0.3 * lift), 12)
@@ -441,27 +500,30 @@ draw_card :: proc(app: ^App, card: Card, base: Rect) {
 	ui_circle(ui, {cx + DOT / 2, pill.y + pill.h / 2}, DOT / 2, color_alpha(col, alpha))
 	ui_text_middle(ui, &ui.regular, label, cx + DOT + DOT_GAP, pill, 11.5, color_alpha(col, alpha))
 
-	// What the turn is doing right now, beside the pill. This is the whole of
-	// what a headless turn shows anyone: there is no transcript on screen for
-	// it, and a card that says nothing but `processing` for two minutes is a
-	// card you have to open a thread to believe.
+	// What the turn is doing right now, in the corner beside the pill. This
+	// was the tool and its arguments in words — `Bash  cp -r src build` —
+	// ellipsized into whatever room the pill had left over, which at 11.5px
+	// was a line that changed shape every second and said less at a glance
+	// than its own first word did. The mark is the one the transcript draws
+	// for that family of tool, so a sweep across the grid says which cards
+	// are reading and which are running something without reading a word;
+	// the words themselves are still there, under the pointer.
 	room := r.w - pad * 2 - pill.w - 14
-	note, note_col := "", FAINT
 	if turn := turn_for_todo(app, td.id); turn >= 0 {
-		note = turn_doing(app.turns[turn])
+		if room > DOING do draw_doing(app, app.turns[turn], {r.x + r.w - pad - DOING / 2, pill.y + pill.h / 2}, id)
 	} else if state == .Failed || state == .Asked {
 		// Why. A headless turn has no transcript to read it out of, and a
 		// card that says `failed` and nothing else is a card you cannot act
 		// on — which is exactly how it read. A card that stopped to ask
 		// something is the same: the question is the whole of what it wants.
-		note = app.notes[td.id]
-		note_col = state == .Failed ? RED : AMBER
-	}
-	if note != "" && room > 40 {
-		buf: [192]u8
-		note = font_ellipsize(&ui.regular, note, 11.5, room, buf[:])
-		nw := font_width(&ui.regular, note, 11.5)
-		ui_text_middle(ui, &ui.regular, note, r.x + r.w - pad - nw, pill, 11.5, note_col)
+		note := app.notes[td.id]
+		note_col := state == .Failed ? RED : AMBER
+		if note != "" && room > 40 {
+			buf: [192]u8
+			note = font_ellipsize(&ui.regular, note, 11.5, room, buf[:])
+			nw := font_width(&ui.regular, note, 11.5)
+			ui_text_middle(ui, &ui.regular, note, r.x + r.w - pad - nw, pill, 11.5, note_col)
+		}
 	}
 
 	// Dismissing it, which every card answers to the same way: the card goes
@@ -481,6 +543,80 @@ draw_card :: proc(app: ^App, card: Card, base: Rect) {
 	}
 
 	if clicked do app_open_todo(app, td.id)
+}
+
+DOING :: f32(26) // the disc in a card's corner that says what its turn is at
+
+// What a running turn is doing: the mark for it, with the work going round it.
+// Everything here moves — the disc breathes, a bead runs the ring, and the
+// whole thing takes a knock each time the tool changes — because a headless
+// card has no transcript anyone can watch, and a mark that sat still would be
+// a picture of a turn rather than a turn. The word `processing` under it says
+// the same thing and has said it for two minutes; this says it now.
+@(private = "file")
+draw_doing :: proc(app: ^App, t: ^Turn, at: [2]f32, card: u64) {
+	ui := &app.ui
+	ui.time_effects = true
+	col, icon := tool_style(t.tool)
+	// No tool named means the agent is writing, which is a thing it is doing
+	// and not a gap between the things it does. The transcript's own mark for
+	// something said stands in, in its own colour, so a card that is thinking
+	// does not wear the grey nut kept for tools this build has never heard of.
+	if t.tool == "" do col, icon = TILE_SAID, .Said
+
+	// The knock. Which tool it is is the one thing written down — no note is
+	// kept of the last one — so the change is caught by handing the name's
+	// hash to ui_changed, which remembers a number for exactly one frame.
+	id := card ~ 0xd01
+	pop := ui_spring(ui, id, 0, 340, 11)
+	if ui_changed(ui, id, f32(ui_id(t.tool) & 0xffff)) {
+		ui_spring_kick(ui, id, 9)
+		// Through the card's own ripple channel, so the ring is clipped to
+		// the card and the card reads as the thing that felt it.
+		ui_ripple(ui, card, at, col, DOING * 2.6)
+	}
+
+	breath := 0.5 + 0.5 * math.sin(ui.time * 4.5)
+	rad := DOING / 2 * (1 + 0.06 * breath + 0.16 * pop)
+
+	g := rad * (1.5 + 0.5 * breath)
+	ui_quad(
+		ui,
+		{at.x - g, at.y - g, g * 2, g * 2},
+		{0, 0},
+		{1, 1},
+		color_alpha(col, 0.2 + 0.16 * breath + 0.24 * pop),
+		WHITE_TEX,
+		NO_ROUND,
+		.Glow,
+	)
+
+	disc := color_mix(PANEL, col, 0.2 + 0.16 * breath + 0.2 * pop)
+	ui_circle(ui, at, rad, disc)
+	// The light going round. ui_dial only ever fills clockwise from twelve, so
+	// the bead is a disc placed on the circle rather than an arc rotated round
+	// it — the same thing to look at, and it can trail.
+	ui_dial(ui, at, rad, 2, 1, color_alpha(col, 0.34))
+	// Spaced far enough apart to read as four: at 0.26 radians they were 3px
+	// apart on a 13px ring and overlapped into one bright blob at the top.
+	for i in 0 ..= 3 {
+		a := ui.time * 3.2 - f32(i) * 0.45
+		ui_circle(
+			ui,
+			{at.x + math.sin(a) * rad, at.y - math.cos(a) * rad},
+			3 - f32(i) * 0.62 + 0.9 * pop,
+			color_alpha(col, 1 - f32(i) * 0.27),
+		)
+	}
+
+	// The mark, in the box draw_icon takes its scale from: bigger than the
+	// disc, because that box is a transcript stone and the mark inside it is
+	// half its width.
+	box := DOING * 1.28 * (1 + 0.16 * pop)
+	draw_icon(ui, icon, {at.x - box / 2, at.y - box / 2, box, box}, col, disc)
+	// The line it replaced, for whoever wants it: pointing at the mark is
+	// asking what it stands for.
+	ui_hover_text(ui, {at.x - rad, at.y - rad, rad * 2, rad * 2}, turn_doing(t))
 }
 
 // A few lines of body text, ellipsized on the last. Returns the height.
