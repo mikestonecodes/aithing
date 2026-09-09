@@ -33,7 +33,6 @@ Block :: struct {
 	result:    strings.Builder,
 	tool_id:   string,
 	running:   bool,
-	expanded:  bool,
 	sub:       [dynamic]Block, // a subagent's own blocks, for Task calls
 	image:     Attachment,
 
