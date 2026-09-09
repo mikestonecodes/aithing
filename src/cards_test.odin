@@ -452,7 +452,7 @@ launcher_narrows_and_esc_widens :: proc(t: ^testing.T) {
 	// The way back out is offered where the narrowing was chosen too, as the
 	// first row of the launcher.
 	app_launcher(app, true)
-	hits := launcher_hits(app, "")
+	hits := launcher_hits(app)
 	testing.expect(t, len(hits) > 0)
 	testing.expect_value(t, hits[0].name, "all projects")
 	launcher_take(app, hits[0])
@@ -477,7 +477,7 @@ launcher_opens_on_the_projects :: proc(t: ^testing.T) {
 	app.sessions = sessions
 	app_filter(app)
 
-	hits := launcher_hits(app, "")
+	hits := launcher_hits(app)
 	testing.expect(t, len(hits) >= 3)
 	// One row a project, newest first, and the second of a project's threads
 	// counts towards the row rather than making another.
@@ -492,7 +492,7 @@ launcher_opens_on_the_projects :: proc(t: ^testing.T) {
 	// Narrowed, the project you are in is not offered again: the row that
 	// widens it is what the top of the menu is for.
 	canvas_filter_project(app, "/tmp/proj")
-	hits = launcher_hits(app, "")
+	hits = launcher_hits(app)
 	testing.expect_value(t, hits[0].name, "all projects")
 	for hit in hits {
 		testing.expect(t, !(hit.session < 0 && hit.cwd == "/tmp/proj"))

@@ -67,10 +67,36 @@ draw_app :: proc(app: ^App) {
 				effort_save(app.effort)
 			}
 		}
-	} else if t > 0.01 {
-		ui_rect(ui, {panel.x + 2, panel.y + 8, panel.w, panel.h}, color_alpha(Color(0xff000000), 0.4 * (1 - t)), 14 * (1 - t))
-		ui_rect(ui, panel, BG, 14 * (1 - t))
-		ui_text(ui, &ui.bold, app_chat_title(app), {panel.x + 20, panel.y + 16}, 16, color_alpha(TEXT, t))
+	} else if t > 0 {
+		// The card on its way to being the page. Three things make it read as
+		// the card lifting rather than as a box appearing over the grid.
+		//
+		// It replaces what is under it instead of being blended over it. A
+		// sheet at the window's own alpha left the grid showing through the
+		// growing thread, and the frame the grid stopped being drawn on
+		// everything under it vanished at once — a flash at the end of every
+		// open. A punch is exactly the pixels the arrived thread has, so the
+		// last frame of the movement and the first frame of the thread are
+		// the same picture.
+		//
+		// It starts the colour of the card it came from and ends the colour
+		// of the page, and its corners round off over the same stretch: the
+		// card is a rounded tile and the page is the window.
+		//
+		// And it carries the card's own line, in the card's type at the card's
+		// place in it, fading as the panel outgrows it — the one piece of the
+		// card that is also the first thing the thread says.
+		ease := ease_out(t)
+		ui_rect(ui, {panel.x + 2, panel.y + 8, panel.w, panel.h}, color_alpha(Color(0xff000000), 0.45 * (1 - ease)), 12 * (1 - ease))
+		ui_punch(ui, panel, color_mix(PANEL_HI, BG, ease), 12 * (1 - ease))
+		ui_text(
+			ui,
+			&ui.bold,
+			app_chat_title(app),
+			{panel.x + 14 + 6 * ease, panel.y + 14 + 2 * ease},
+			15 + ease,
+			color_alpha(TEXT, 1 - ease * ease),
+		)
 	} else {
 		draw_project_head(app, full)
 		if app_capture_open(app) {
@@ -86,7 +112,7 @@ draw_app :: proc(app: ^App) {
 	}
 	draw_usage(app, full, strip)
 	draw_launcher(app, full)
-	if t > 0.01 && !arrived do ui_wake_in(ui, 0)
+	if t > 0 && !arrived do ui_wake_in(ui, 0)
 }
 
 // The one line above the grid: the name of the project it is showing, and
@@ -226,8 +252,15 @@ LAUNCH_PROJECTS :: 4
 // to offer nothing but threads, which is the one thing the grid behind it is
 // already showing; the projects are what it cannot say, so they are what the
 // menu opens on. Newest first, because the sessions are.
-launcher_hits :: proc(app: ^App, query: string) -> []Hit {
+// The query is read here rather than passed in: it is app.search and nothing
+// else, and the three callers that each trimmed and lowered their own copy of
+// it were three chances for the menu to be filtered by something other than
+// what is in the box.
+launcher_hits :: proc(app: ^App) -> []Hit {
 	out := make([dynamic]Hit, context.temp_allocator)
+	query := strings.trim_space(editor_text(&app.search))
+	// Once for the sweep, not once per session: see worktree_root.
+	root := worktree_root()
 	// The way back out of a narrowed grid, offered where the narrowing was
 	// chosen. Esc does not do this: a project you picked is a thing you said,
 	// and a key that backs out of everything else should not undo it.
@@ -240,14 +273,11 @@ launcher_hits :: proc(app: ^App, query: string) -> []Hit {
 		// the end, so typing the project's name found it once per card ever
 		// run there and offered to narrow the grid to a directory in the
 		// cache that has nothing on it.
-		if worktree_card(s.cwd) != "" do continue
+		if worktree_card_under(root, s.cwd) != "" do continue
 		// The project the grid is already narrowed to is not offered: the row
 		// above widens it, and narrowing to where you are does nothing.
 		if app.canvas.project != "" && s.cwd == app.canvas.project do continue
-		if query != "" {
-			name := strings.to_lower(base_name(s.cwd), context.temp_allocator)
-			if !strings.contains(name, query) do continue
-		}
+		if !contains_fold(base_name(s.cwd), query) do continue
 		if at, has := seen[s.cwd]; has {
 			out[at].count += 1
 			continue
@@ -283,11 +313,14 @@ draw_launcher :: proc(app: ^App, full: Rect) {
 	x := full.x + (full.w - w) / 2
 	y := full.y + full.h * 0.14 + (1 - t) * 18
 
+	// What the menu is offering, worked out once for the frame. The card
+	// behind the rows is sized from it and the rows are drawn from it, and
+	// those used to be two calls: the same sweep over every session on the
+	// machine, twice a frame, for one number and one list.
+	hits := launcher_hits(app)
 	// One card holding the whole menu, so the grid behind it reads as a
 	// backdrop rather than as something still being offered.
-	lower0 := strings.to_lower(strings.trim_space(editor_text(&app.search)), context.temp_allocator)
-	rows := f32(len(launcher_hits(app, lower0)))
-	card := Rect{x - 34, y - 34, w + 68, 128 + max(rows, 1) * 52 + 46}
+	card := Rect{x - 34, y - 34, w + 68, 128 + max(f32(len(hits)), 1) * 52 + 46}
 	ui_rect(ui, {card.x + 3, card.y + 10, card.w, card.h}, color_alpha(Color(0xff000000), 0.5 * t), 20)
 	ui_rect(ui, card, color_alpha(PANEL, 0.97 * t), 20)
 	ui_rect(ui, card, color_alpha(BORDER, 0.8 * t), 20)
@@ -305,8 +338,6 @@ draw_launcher :: proc(app: ^App, full: Rect) {
 	ui_rect(ui, {x, y, w, 1}, color_alpha(BORDER, t))
 	y += 22
 
-	lower := strings.to_lower(strings.trim_space(query), context.temp_allocator)
-	hits := launcher_hits(app, lower)
 	if len(hits) == 0 {
 		ui_text(ui, &ui.regular, "nothing by that name", {x, y + 8}, 22, color_alpha(FAINT, t))
 		return
@@ -349,8 +380,7 @@ launcher_take :: proc(app: ^App, hit: Hit) {
 
 // Enter, from the key handler.
 launcher_confirm :: proc(app: ^App) {
-	query := strings.to_lower(strings.trim_space(editor_text(&app.search)), context.temp_allocator)
-	hits := launcher_hits(app, query)
+	hits := launcher_hits(app)
 	if len(hits) == 0 do return
 	launcher_take(app, hits[clamp(app.canvas.menu_at, 0, len(hits) - 1)])
 }

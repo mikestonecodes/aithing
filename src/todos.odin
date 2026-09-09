@@ -362,9 +362,7 @@ todo_set_state :: proc(t: ^Todos, id: string, state: Todo_State) {
 
 // Everything an item can be found by.
 todo_matches :: proc(td: Todo, query: string) -> bool {
-	text := strings.to_lower(td.text, context.temp_allocator)
-	cwd := strings.to_lower(td.cwd, context.temp_allocator)
-	return strings.contains(text, query) || strings.contains(cwd, query)
+	return contains_fold(td.text, query) || contains_fold(td.cwd, query)
 }
 
 // --- typing a list ----------------------------------------------------------

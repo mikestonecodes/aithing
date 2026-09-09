@@ -141,6 +141,33 @@ ease_rate :: proc "contextless" (dt, speed: f32) -> f32 {
 	return 1 - math.exp(-speed * dt)
 }
 
+// A movement with a length, rather than one that only ever gets closer.
+// ui_anim covers a fraction of what is left each frame, so the last tenth of
+// the way takes as long as the first half did: the card opening into a thread
+// grew for a hundred milliseconds and then crept for three hundred more, with
+// nothing inside it, because the transcript only goes in once the panel has
+// stopped. This arrives, and it arrives when it looks like it has.
+//
+// It shares ui.anim with ui_anim — one store of where every moving thing is —
+// so an id belongs to one or the other and not to both.
+ui_tween :: proc(ui: ^UI, id: u64, target: f32, seconds: f32) -> f32 {
+	current := ui.anim[id]
+	step := ui.dt / max(seconds, 0.0001)
+	next := target > current ? min(current + step, target) : max(current - step, target)
+	if next != target do ui.animating = true
+	ui.anim[id] = next
+	return next
+}
+
+// Out of the gate fast and settling into place, which is how something that
+// was picked up moves. The old curve was a smoothstep laid over an easing
+// that was already slowing down, so the movement was slow at both ends and
+// only quick in a moment in the middle nobody could see.
+ease_out :: proc "contextless" (t: f32) -> f32 {
+	u := 1 - t
+	return 1 - u * u * u
+}
+
 NO_ROUND :: f32(-1)
 NEVER :: f32(1e9)
 

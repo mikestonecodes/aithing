@@ -405,12 +405,28 @@ worktree_sweep :: proc(t: ^Todos) {
 	}
 }
 
+// Where every card's tree lives. Its own name because the two loops that ask
+// whether a session ran in one ask it of every session on the machine, and
+// working the answer out per session is what this used to do: a getenv, a
+// join and a `mkdir` apiece, a few thousand syscalls a frame, which is most
+// of why typing into the search box lagged. It is one answer to one question,
+// so it is worked out once and passed down.
+worktree_root :: proc(allocator := context.temp_allocator) -> string {
+	return cache_path("worktrees", allocator)
+}
+
 // The card a tree belongs to, read off its name — `<project>-n-<number>`, and
 // the number is the card's. "" for anything that is not one of ours, which is
 // the only thing that keeps a sweep of a directory in the cache from being a
 // sweep of whatever else happens to be in there.
 worktree_card :: proc(path: string) -> string {
-	if !strings.has_prefix(path, cache_path("worktrees")) do return ""
+	return worktree_card_under(worktree_root(), path)
+}
+
+// The same question asked of a whole list at once, with the root worked out
+// once by the caller.
+worktree_card_under :: proc(root, path: string) -> string {
+	if !strings.has_prefix(path, root) do return ""
 	name := base_name(path)
 	at := strings.last_index(name, "-n-")
 	if at < 0 do return ""

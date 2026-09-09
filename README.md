@@ -284,7 +284,7 @@ every session on the machine rather than the handful anyone would click.
 ## Looking at it without looking at it
 
 ```sh
-./aithing --shot out.png --scene grid      # grid, project, thread, launcher
+./aithing --shot out.png --scene grid      # grid, project, thread, opening, launcher
 ./aithing --shot out.png --scene thread --size 1600x1000
 ```
 
@@ -296,6 +296,10 @@ the failed one said and which thread is open, so the same picture comes out on
 a machine that has never run a turn. Two runs of a scene are byte-identical:
 the animations are settled at a fixed timestep first and the shader clock is
 put back to zero for the frame that is kept.
+
+`opening` is the one scene that is not settled: it is a card partway through
+becoming a thread, stopped at a fixed frame, which is the only way to look at
+that movement without pointing a camera at a screen.
 
 The window is see-through where the compositor blurs the desktop through it,
 and a file has no desktop; those places are filled with the window's own colour

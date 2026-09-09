@@ -52,7 +52,14 @@ through. Two exist: `Todos.per_session` (a refcount via `session_claim` /
 second) and `app.heights` (transcript measurement, keyed on `chat_ver`).
 Adding a third needs a measurement, not a hunch — the per-frame rebuild of the
 whole grid costs about half a millisecond at 1200 sessions and 400 cards, and
-frames are only drawn on input or animation.
+frames are only drawn on input or animation. That number is not a claim, it is
+a test: `the_grid_is_cheap_to_rebuild` in `src/grid_cost_test.odin` builds a
+list that size and fails if a rebuild goes over its budget. It is there
+because the number was once wrong by two orders of magnitude — the sweep asked
+where the worktree cache was once per session, which is a `mkdir` per session
+per call, and the search lowercased four fields of every session into fresh
+copies on top. The answer to a slow derived list is to make deriving it cheap
+and to pin the cost; reach for a cache only when that has been tried.
 
 ## Build and test
 

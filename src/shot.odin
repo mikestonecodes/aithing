@@ -26,6 +26,7 @@ Scene :: enum {
 	Grid, // every project's cards, in the states a card can be in
 	Project, // narrowed to one, so the box under the grid is there
 	Thread, // a card opened: transcript and composer over the grid
+	Opening, // that same card halfway there: the panel still growing out of it
 	Launcher, // the menu, with a query typed into it
 }
 
@@ -34,6 +35,7 @@ scene_names := [Scene]string {
 	.Grid     = "grid",
 	.Project  = "project",
 	.Thread   = "thread",
+	.Opening  = "opening",
 	.Launcher = "launcher",
 }
 
@@ -64,6 +66,11 @@ SHOT_BG :: Color(0xff242626)
 // whether the machine is fast or busy.
 SHOT_DT :: f32(1.0 / 60)
 SHOT_SETTLE :: 240
+// Where the opening scene is caught. A quarter of the way through, counting
+// the extra frame every shot draws at the end — early enough that the panel
+// is still visibly the card it grew out of, which is the part of the movement
+// worth being able to look at.
+SHOT_OPENING :: 2
 
 shot_run :: proc(path: string, scene: Scene, width, height: int) -> bool {
 	// Nothing here is allowed to read or write the real thing: a screenshot
@@ -93,11 +100,16 @@ shot_run :: proc(path: string, scene: Scene, width, height: int) -> bool {
 	// what the scene asked for.
 	app.win.input.mouse = {-1e6, -1e6}
 
-	for i in 0 ..< SHOT_SETTLE {
+	// The opening scene is the one picture that is not of a settled window:
+	// it is the card on its way to being a thread, stopped partway, which is
+	// the only way to look at that movement without a camera pointed at a
+	// screen.
+	frames := scene == .Opening ? SHOT_OPENING : SHOT_SETTLE
+	for i in 0 ..< frames {
 		ui_begin(&app.ui, width, height, &app.win.input, SHOT_DT)
 		draw_app(app)
 		ui_end(&app.ui)
-		if !app.ui.animating do break
+		if scene != .Opening && !app.ui.animating do break
 	}
 	// The shader clock drives the running card's pulse, so the frame that is
 	// kept starts it from a known place rather than from however many frames
@@ -214,7 +226,7 @@ shot_build :: proc(app: ^App, scene: Scene) {
 	case .Project:
 		app.canvas.project = PROJ
 		editor_set_text(&app.capture, "split the grid measurement out of the frame\n*\ncheck it at 1200 sessions")
-	case .Thread:
+	case .Thread, .Opening:
 		app.canvas.project = PROJ
 		app.page = .Thread
 		shot_thread(app)

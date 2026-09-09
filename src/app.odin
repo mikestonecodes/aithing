@@ -408,7 +408,10 @@ app_visible :: proc(app: ^App) -> []int {
 // where the grid drew a card that was no longer there.
 app_filter :: proc(app: ^App) {
 	clear(&app.visible)
-	query := strings.to_lower(strings.trim_space(editor_text(&app.search)), context.temp_allocator)
+	query := strings.trim_space(editor_text(&app.search))
+	// Worked out once for the whole sweep, not once per session: see
+	// worktree_root.
+	root := worktree_root()
 	for s, i in app.sessions {
 		// A card's own tree is not a place you browse to. Threads that ran in
 		// one filled the launcher with a project per card ever run —
@@ -416,7 +419,7 @@ app_filter :: proc(app: ^App) {
 		// wearing a card's id, and half of them directories that have since
 		// been given back. The card on the grid is the door to that thread,
 		// and it is the only one that stays true.
-		if worktree_card(s.cwd) != "" do continue
+		if worktree_card_under(root, s.cwd) != "" do continue
 		if app.canvas.project != "" && s.cwd != app.canvas.project do continue
 		if query != "" {
 			// Searching looks everywhere: the archive and the abandoned
@@ -464,7 +467,7 @@ card_before :: proc(a, b: Card_Sort) -> bool {
 // anything. A card leaves when it is dismissed, and that is the only way.
 app_build_cards :: proc(app: ^App) {
 	clear(&app.todo_view)
-	query := strings.to_lower(strings.trim_space(editor_text(&app.search)), context.temp_allocator)
+	query := strings.trim_space(editor_text(&app.search))
 
 	rows := make([dynamic]Card_Sort, 0, len(app.todos.list), context.temp_allocator)
 	for td, i in app.todos.list {
@@ -728,15 +731,11 @@ app_history :: proc(app: ^App, back: int) -> bool {
 // Everything a thread can be found by: what it is called, what was asked of
 // it, where it lives, and what it looks like it is about.
 session_matches :: proc(s: Session, query: string) -> bool {
-	title := strings.to_lower(s.title, context.temp_allocator)
-	preview := strings.to_lower(s.preview, context.temp_allocator)
-	project := strings.to_lower(s.project, context.temp_allocator)
-	cwd := strings.to_lower(s.cwd, context.temp_allocator)
-	return strings.contains(title, query) ||
-		strings.contains(preview, query) ||
-		strings.contains(project, query) ||
-		strings.contains(cwd, query) ||
-		(s.guess != "" && strings.contains(s.guess, query))
+	return contains_fold(s.title, query) ||
+		contains_fold(s.preview, query) ||
+		contains_fold(s.project, query) ||
+		contains_fold(s.cwd, query) ||
+		contains_fold(s.guess, query)
 }
 
 // Esc, wherever it is pressed. Backs out of exactly one thing, and the order
@@ -1365,6 +1364,35 @@ relative_time :: proc(t: time.Time, buf: []u8) -> string {
 		return fmt.bprintf(buf, "%dd", int(secs / 86400))
 	}
 	return fmt.bprintf(buf, "%dw", int(secs / (86400 * 7)))
+}
+
+// Case-insensitive `contains`, without making a lowercase copy of either
+// side. Everything the search looks at goes through here — every session on
+// the machine and every card, several times a frame while the query is being
+// typed — and it used to be `strings.to_lower` on each field first: four temp
+// copies per session per pass, a few thousand allocations a keystroke, which
+// is what the box was waiting on before it caught up with what you typed.
+//
+// The fold is ASCII, which is the whole of what anyone types into it; a
+// non-ASCII capital in a title is matched by the same capital and not by its
+// lowercase, and that is the price of not copying a thousand strings a frame.
+contains_fold :: proc(haystack, needle: string) -> bool {
+	if len(needle) == 0 do return true
+	if len(needle) > len(haystack) do return false
+	fold :: proc(c: u8) -> u8 {return c >= 'A' && c <= 'Z' ? c + 32 : c}
+	first := fold(needle[0])
+	for i in 0 ..= len(haystack) - len(needle) {
+		if fold(haystack[i]) != first do continue
+		hit := true
+		for j in 1 ..< len(needle) {
+			if fold(haystack[i + j]) != fold(needle[j]) {
+				hit = false
+				break
+			}
+		}
+		if hit do return true
+	}
+	return false
 }
 
 base_name :: proc(path: string) -> string {

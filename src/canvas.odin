@@ -346,10 +346,13 @@ draw_wrapped :: proc(ui: ^UI, font: ^Font, text: string, x, y, w, size: f32, col
 
 // --- the keyboard cursor ------------------------------------------------------
 
+// Reads the layout the caller has already built rather than building another
+// one: its only caller is canvas_keep_sel_in_view, three lines after the
+// layout that draws this frame, and laying the whole grid out twice to answer
+// the same question twice is half of what a frame on the grid used to cost.
 @(private = "file")
 sel_rect :: proc(app: ^App) -> (Rect, bool) {
 	c := &app.canvas
-	canvas_layout(app)
 	for card in c.cards do if !card.head && app.todos.list[card.todo].id == c.sel do return card.r, true
 	return {}, false
 }
@@ -469,26 +472,39 @@ canvas_filter_project :: proc(app: ^App, cwd: string) {
 	app.canvas.scroll.target, app.canvas.scroll.offset = 0, 0
 }
 
+// How long a card takes to become a thread, and to fall back into the grid.
+// Long enough to see where the thread came from, short enough that nobody
+// waits for it — and it is a length now rather than a rate, so the panel is
+// full size at the end of it and the transcript goes in on time. It used to
+// be an exponential easing called "arrived" at 98.5%, which took the better
+// part of half a second to reach and spent most of it drawing an empty box.
+CANVAS_OPEN :: f32(0.19)
+
 // The panel a card zooms open into: from its place in the grid to the whole
 // window, and back. Returns the rect the transcript should use, and whether it
 // has arrived (only then is the real transcript drawn inside).
 canvas_panel :: proc(app: ^App, full: Rect) -> (r: Rect, arrived: bool, t: f32) {
 	ui := &app.ui
 	c := &app.canvas
-	t = ui_anim(ui, ui_id("canvas-open"), app.page == .Thread ? 1 : 0, 11)
+	t = ui_tween(ui, ui_id("canvas-open"), app.page == .Thread ? 1 : 0, CANVAS_OPEN)
 	// This runs before draw_canvas, so on the first frame it is the one that
 	// tells the layout how wide the grid is.
 	c.view = full
+	// Nothing is moving: the thread fills the window, or the grid has it.
+	// Neither case has a card to grow out of, and asking where that card is
+	// laid the whole grid out again — every frame of every keystroke typed
+	// into a thread, which is the last place that work belongs.
+	if t >= 1 do return full, true, t
+	if t <= 0 do return {}, false, t
 	from, ok := canvas_node_rect(app, app.chat.session_id)
 	if !ok do from = {full.x + full.w * 0.35, full.y + full.h * 0.4, full.w * 0.3, full.h * 0.2}
-	ease := t * t * (3 - 2 * t)
+	ease := ease_out(t)
 	r = {
 		from.x + (full.x - from.x) * ease,
 		from.y + (full.y - from.y) * ease,
 		from.w + (full.w - from.w) * ease,
 		from.h + (full.h - from.h) * ease,
 	}
-	arrived = t > 0.985
 	return
 }
 
