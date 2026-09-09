@@ -127,13 +127,20 @@ shot_run :: proc(path: string, scene: Scene, width, height: int) -> bool {
 		app.win.input.has_mouse = true
 	}
 
-	// The picture under the pointer is the whole of what this scene is of:
-	// the thumbnail is 72 pixels of a screenshot and the point of the hover
-	// is everything those 72 pixels lost.
+	// The picture under the pointer is the whole of what this scene is of: in
+	// the words it is the size of the letters around it, and the point of the
+	// hover is everything that size lost. Where it lands is wherever the
+	// sentence puts it, which is not known until the box has been drawn once —
+	// so one frame is drawn with the pointer away, the cell it recorded is
+	// read back, and the settle below starts with the pointer on it.
 	if scene == .Paste {
-		thumb := capture_thumb(app, {0, 0, f32(width), f32(height)}, 0)
-		app.win.input.mouse = {thumb.x + thumb.w / 2, thumb.y + thumb.h / 2}
-		app.win.input.has_mouse = true
+		ui_begin(&app.ui, width, height, &app.win.input, SHOT_DT)
+		draw_app(app)
+		ui_end(&app.ui)
+		if cell, ok := capture_thumb(app, 0); ok {
+			app.win.input.mouse = {cell.x + cell.w / 2, cell.y + cell.h / 2}
+			app.win.input.has_mouse = true
+		}
 	}
 
 	// The dial says everything it says in three arcs; what each arc is only
@@ -321,9 +328,10 @@ shot_build :: proc(app: ^App, scene: Scene) {
 		app.canvas.project = PROJ
 		editor_set_text(&app.capture, "split the grid measurement out of the frame\n*\ncheck it at 1200 sessions")
 	case .Paste:
-		// A paste puts a path in the box and nothing else; the thumbnail over
-		// it is that path read back. So the scene writes a picture to disk and
-		// types its path, which is exactly what pasting does.
+		// A paste puts a path in the box and nothing else; the picture drawn
+		// in the sentence is that path read back. So the scene writes a
+		// picture to disk and types its path, which is exactly what pasting
+		// does.
 		app.canvas.project = PROJ
 		png := shot_png()
 		editor_set_text(&app.capture, fmt.tprintf("the ring is too pale here %s", png))
@@ -342,8 +350,8 @@ shot_build :: proc(app: ^App, scene: Scene) {
 
 // A picture to have pasted: a corner of a window with a ring in it, drawn
 // rather than shipped so the shot needs nothing beside the binary. Wide and
-// short, the shape a screenshot is, which is the shape the square thumbnail
-// has to crop and the hover has to give back.
+// short, the shape a screenshot is, which is the shape the square cell in the
+// words has to crop and the hover has to give back.
 @(private = "file")
 shot_png :: proc() -> string {
 	w, h :: 640, 360

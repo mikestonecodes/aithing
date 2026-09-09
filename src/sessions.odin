@@ -544,8 +544,7 @@ load_user_message :: proc(chat: ^Chat, msg: json.Value, sidechain: bool, task: R
 	if txt, is_str := content.(json.String); is_str {
 		if sidechain do return // the subagent's own prompt, already shown as the Task arg
 		m := chat_append(chat, .User)
-		ref := msg_append_block(chat, m, Block{kind = .Text})
-		strings.write_string(&chat_block(chat, ref).text, verdict_unwrap(string(txt)))
+		msg_write_user(chat, m, verdict_unwrap(string(txt)))
 		return
 	}
 
@@ -556,8 +555,7 @@ load_user_message :: proc(chat: ^Chat, msg: json.Value, sidechain: bool, task: R
 		case "text":
 			if sidechain do continue
 			m := chat_append(chat, .User)
-			ref := msg_append_block(chat, m, Block{kind = .Text})
-			strings.write_string(&chat_block(chat, ref).text, verdict_unwrap(jstr(item, "text")))
+			msg_write_user(chat, m, verdict_unwrap(jstr(item, "text")))
 		case "tool_result":
 			target := chat_block(chat, chat_find_tool(chat, jstr(item, "tool_use_id")))
 			if target == nil do continue

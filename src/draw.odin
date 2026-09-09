@@ -5,6 +5,7 @@ import "core:math"
 import "core:time"
 import "core:slice"
 import "core:strings"
+import "core:unicode/utf8"
 
 // Everything on screen, rebuilt from the app state every frame. Measurement
 // and drawing share one procedure per element with a `draw` flag, so a
@@ -217,30 +218,29 @@ draw_project_head :: proc(app: ^App, full: Rect) {
 // How much of the window the box takes, which the grid above it keeps clear.
 capture_height :: proc(app: ^App, width: f32) -> f32 {
 	if !app_capture_open(app) do return 0
-	h := strip_box_height(app, &app.capture, width)
-	// The pictures the text names sit above it, the same row the composer
-	// gives an attachment. Asked for again here rather than passed down from
-	// the draw, because this is measured before the draw runs and the two
-	// must not be able to disagree about how tall the box is.
-	if len(capture_images(app)) > 0 do h += COMPOSER_THUMB + 14
-	return strip_height(h)
+	// Nothing is added for the pictures. They used to sit in a row along the
+	// top of the box, over the path that named them, and both were on screen
+	// at once: the same screenshot twice, once as a thumbnail and once as
+	// eighty characters of cache path in the middle of the sentence. The path
+	// is drawn as the picture now, in the words, where it was pasted — so the
+	// box is as tall as what is written in it and nothing else.
+	return strip_height(strip_box_height(app, &app.capture, width))
 }
 
-// Where the box under the grid lands, and where the picture the text names
-// lands on top of it. Worked out here and read by everyone who needs it —
-// the draw, and the headless shot putting a pointer on a thumbnail — because
-// a second copy of this arithmetic is a pointer that misses by four pixels
-// and a shot of nothing happening.
+// Where the box under the grid lands.
 capture_box :: proc(app: ^App, full: Rect) -> Rect {
 	h := capture_height(app, full.w)
 	width := composer_width(full.w)
 	return {full.x + (full.w - width) / 2, full.y + full.h - h + 6, width, h - 18}
 }
 
-capture_thumb :: proc(app: ^App, full: Rect, i: int) -> Rect {
-	box := capture_box(app, full)
-	x := box.x + 14 + f32(i) * (COMPOSER_THUMB + 8)
-	return {x, box.y + COMPOSER_PAD, COMPOSER_THUMB, COMPOSER_THUMB}
+// Where the i'th picture in the box was drawn, which is wherever the words put
+// it: the editor records the cells it drew and this is the one place they are
+// read from, by the headless shot putting a pointer on one. Empty until a
+// frame has been drawn, because until then nobody has said where the words go.
+capture_thumb :: proc(app: ^App, i: int) -> (Rect, bool) {
+	if i < 0 || i >= len(app.capture.imgs) do return {}, false
+	return app.capture.imgs[i].r, true
 }
 
 @(private = "file")
@@ -265,21 +265,11 @@ draw_capture :: proc(app: ^App, full: Rect) {
 	draw_box_edge(app, box, focused, ui_id("capture-edge"))
 	if ui_hovered(ui, box) do ui.cursor_text = true
 
-	// A pasted picture is a path in the text and a thumbnail above it. There
-	// is no x on these: the path is the picture, so a picture is dropped by
-	// deleting the words that name it, in the box you are already typing in.
+	// A pasted picture is a path in the text, drawn as the picture it names
+	// where it was pasted. There is no x on one and no row of thumbnails over
+	// the box: the path is the picture, so a picture is dropped by deleting it
+	// like a letter, in the box you are already typing in.
 	inner_y := box.y + COMPOSER_PAD
-	imgs := capture_images(app)
-	peek := Rect{}
-	peek_at := -1
-	if len(imgs) > 0 {
-		for a, i in imgs {
-			tr := capture_thumb(app, full, i)
-			ui_image_cover(ui, tr, a.tex, a.width, a.height, 8)
-			if ui_hovered(ui, tr) do peek, peek_at = tr, i
-		}
-		inner_y += COMPOSER_THUMB + 14
-	}
 
 	text_w := box.w - COMPOSER_SIDE * 2
 	editor_layout_lines(ui, &app.capture, text_w, &ui.regular, COMPOSER_PX)
@@ -304,10 +294,6 @@ draw_capture :: proc(app: ^App, full: Rect) {
 	// pressed anyway.
 	chip_y := box.y + box.h - COMPOSER_CHIPS / 2 - 8
 	draw_chips(app, box, chip_y)
-
-	// Last, so it is over the box rather than under the text that follows it.
-	grow := ui_spring(ui, ui_id("capture-peek"), peek_at >= 0 ? 1 : 0, 320, 18)
-	if peek_at >= 0 do draw_image_peek(app, peek, imgs[peek_at], grow)
 }
 
 // --- the launcher ------------------------------------------------------------
@@ -983,6 +969,32 @@ draw_chip :: proc(app: ^App, id: u64, right, y: f32, label: string, open: bool) 
 
 // --- an editable text box ---------------------------------------------------
 
+// How wide a pasted picture is where it sits in the words, in multiples of the
+// type size. Everything the box measures — the wrap, the click, the selection,
+// the caret — asks editor_width for it, so there is one answer to how far a
+// picture pushes the words after it along.
+IMG_CELL :: f32(1.6)
+
+// The width of `text[from:to]` as it is drawn, which is not the width of the
+// letters in it: a path is drawn as the picture it names, one cell wide
+// however long the path is.
+editor_width :: proc(font: ^Font, text: string, px: f32, from, to: int) -> f32 {
+	w: f32
+	run := from
+	i := from
+	for i < to {
+		end, ok := image_at(text, i)
+		if !ok || end > to {
+			i += 1
+			continue
+		}
+		w += font_width(font, text[run:i], px) + px * IMG_CELL
+		i = end
+		run = i
+	}
+	return w + font_width(font, text[run:to], px)
+}
+
 // Wraps the editor's text and records the byte range of every laid-out line,
 // which is what makes up/down movement and click-to-position work.
 editor_layout_lines :: proc(ui: ^UI, e: ^Editor, width: f32, font: ^Font, px: f32) {
@@ -998,6 +1010,23 @@ editor_layout_lines :: proc(ui: ^UI, e: ^Editor, width: f32, font: ^Font, px: f3
 		if i == len(text) {
 			append(&e.lines, Span{start, i})
 			break
+		}
+		// A picture measures as one thing and never breaks in the middle: the
+		// path is not on screen, so a line ending halfway through one would be
+		// a line ending nowhere.
+		if end, is_img := image_at(text, i); is_img {
+			cw := px * IMG_CELL
+			if w + cw > width && i > start {
+				cut := last_break > start ? last_break : i
+				append(&e.lines, Span{start, cut})
+				start = cut
+				last_break = -1
+				w = 0
+				continue
+			}
+			w += cw
+			i = end
+			continue
 		}
 		if text[i] == '\n' {
 			append(&e.lines, Span{start, i})
@@ -1031,16 +1060,28 @@ editor_layout_lines :: proc(ui: ^UI, e: ^Editor, width: f32, font: ^Font, px: f3
 	if len(e.lines) == 0 do append(&e.lines, Span{0, 0})
 }
 
+// Which byte of a laid-out line the pointer landed on. A picture is one thing
+// to land on: click either half of it and the caret goes to the side it was
+// nearer, never into the middle of a path nobody can see.
 @(private = "file")
-byte_at_x :: proc(font: ^Font, text: string, px, target: f32) -> int {
+byte_at_x :: proc(font: ^Font, text: string, span: Span, px, target: f32) -> int {
 	scale := font_scale(font, px)
 	w: f32
-	for ch, i in text {
-		cw := font_glyph(font, ch).advance * scale
+	i := span.start
+	for i < span.end {
+		cw: f32
+		next := i
+		if end, ok := image_at(text, i); ok {
+			cw, next = px * IMG_CELL, end
+		} else {
+			r, size := utf8.decode_rune_in_string(text[i:])
+			cw, next = font_glyph(font, r).advance * scale, i + max(size, 1)
+		}
 		if w + cw / 2 > target do return i
 		w += cw
+		i = next
 	}
-	return len(text)
+	return span.end
 }
 
 draw_editor :: proc(app: ^App, e: ^Editor, r: Rect, font: ^Font, px: f32, focused: bool, max_lines: int) {
@@ -1056,8 +1097,7 @@ draw_editor :: proc(app: ^App, e: ^Editor, r: Rect, font: ^Font, px: f32, focuse
 	if (ui.pressed && ui_hovered(ui, r)) || (ui.down && ui.active == id) {
 		row := clamp(first + int((ui.mouse.y - r.y) / lh), 0, max(len(e.lines) - 1, 0))
 		span := e.lines[row]
-		off := byte_at_x(font, text[span.start:span.end], px, ui.mouse.x - r.x)
-		e.cursor = span.start + off
+		e.cursor = byte_at_x(font, text, span, px, ui.mouse.x - r.x)
 		if ui.pressed {
 			e.anchor = e.cursor
 			if ui.click_count >= 2 {
@@ -1073,26 +1113,24 @@ draw_editor :: proc(app: ^App, e: ^Editor, r: Rect, font: ^Font, px: f32, focuse
 	}
 
 	// Selection, then the text, then the caret on top.
+	clear(&e.imgs)
 	lo, hi := editor_selection(e)
 	y := r.y
 	for i in first ..< min(first + shown, len(e.lines)) {
 		span := e.lines[i]
-		line := text[span.start:span.end]
 		if hi > lo && span.end >= lo && span.start <= hi {
-			s := max(lo, span.start) - span.start
-			t := min(hi, span.end) - span.start
-			x0 := font_width(font, line[:s], px)
-			x1 := font_width(font, line[:t], px)
+			x0 := editor_width(font, text, px, span.start, max(lo, span.start))
+			x1 := editor_width(font, text, px, span.start, min(hi, span.end))
 			ui_rect(ui, {r.x + x0, y, max(x1 - x0, 2), lh}, color_alpha(ACCENT, 0.30), 2)
 		}
-		ui_text(ui, font, line, {r.x, y + 2}, px, TEXT)
+		draw_editor_line(app, e, font, text, span, r.x, y, px, lh)
 		y += lh
 	}
 
 	if focused {
 		row, off := editor_locate(e, e.cursor)
 		span := e.lines[clamp(row, 0, len(e.lines) - 1)]
-		cx := r.x + font_width(font, text[span.start:span.start + off], px)
+		cx := r.x + editor_width(font, text, px, span.start, span.start + off)
 		row -= first
 
 		// A block caret, the width of the character it sits on, with that
@@ -1116,17 +1154,81 @@ draw_editor :: proc(app: ^App, e: ^Editor, r: Rect, font: ^Font, px: f32, focuse
 		// text above, so the block lands on the character and not beside it.
 		under: string
 		w := px * CARET_EMPTY
+		alpha_over := f32(1)
 		if e.cursor < span.end {
-			under = text[e.cursor:next_rune(text, e.cursor)]
-			w = max(font_width(font, under, px), px * 0.35)
+			if _, on_img := image_at(text, e.cursor); on_img {
+				// Over a picture the block goes see-through and the glyph
+				// underneath is not redrawn: a solid caret the width of the
+				// picture is a caret that hides what it is sitting on.
+				w = px * IMG_CELL
+				alpha_over = 0.35
+			} else {
+				under = text[e.cursor:next_rune(text, e.cursor)]
+				w = max(font_width(font, under, px), px * 0.35)
+			}
 		}
 		top := r.y + f32(row) * lh + 2
 		height := (font.ascent - font.descent) * font_scale(font, px)
-		ui_rect(ui, {cx, top, w, height}, color_alpha(ACCENT, alpha), 1.5)
+		ui_rect(ui, {cx, top, w, height}, color_alpha(ACCENT, alpha * alpha_over), 1.5)
 		if under != "" && alpha > 0.6 {
 			ui_text(ui, font, under, {cx, top}, px, BG)
 		}
 	}
+
+	// A picture in the middle of a sentence is the size of the letters around
+	// it, which is enough to say one is there and nothing like enough to see
+	// what is in it. Resting on it gives the whole thing, out of the same
+	// spring the composer's thumbnails use — and nothing is written down about
+	// which one is open, because the answer is the one under the pointer.
+	peek := Rect{}
+	peek_at := -1
+	for cell, i in e.imgs do if ui_hovered(ui, cell.r) do peek, peek_at = cell.r, i
+	grow := ui_spring(ui, ui_id_ptr(e) + 7, peek_at >= 0 ? 1 : 0, 320, 18)
+	if peek_at >= 0 {
+		cell := e.imgs[peek_at]
+		end, _ := image_at(text, cell.at)
+		draw_image_peek(app, peek, app_preview(app, text[cell.at:end]), grow)
+	}
+}
+
+// One laid-out line, with the pictures it names drawn where their paths are
+// written. The path itself is never on screen: it is what the harness is given
+// and what tells the card which picture it carries, and it is eighty
+// characters of noise in the middle of a sentence someone is writing. What it
+// names is the only part worth seeing, so that is what sits there.
+@(private = "file")
+draw_editor_line :: proc(app: ^App, e: ^Editor, font: ^Font, text: string, span: Span, x, y, px, lh: f32) {
+	ui := &app.ui
+	cell := px * IMG_CELL
+	at := x
+	run := span.start
+	i := span.start
+	for i < span.end {
+		end, ok := image_at(text, i)
+		if !ok || end > span.end {
+			i += 1
+			continue
+		}
+		ui_text(ui, font, text[run:i], {at, y + 2}, px, TEXT)
+		at += font_width(font, text[run:i], px)
+		// A shade smaller than the line it sits in, so a picture in the middle
+		// of a sentence does not push the line apart.
+		box := Rect{at + 1, y + (lh - cell) / 2 + 1, cell - 2, cell - 2}
+		append(&e.imgs, Image_Cell{i, box})
+		if a := app_preview(app, text[i:end]); a.width > 0 {
+			ui_image_cover(ui, box, a.tex, a.width, a.height, 4)
+		} else {
+			// Nothing decoded: a file that has been moved or deleted since it
+			// was pasted. The words still carry the path — it is still what
+			// goes out — so the space it takes is still held, in the shape of
+			// a picture that will not open.
+			ui_rect(ui, box, color_alpha(MUTED, 0.35), 4)
+		}
+		at += cell
+		i = end
+		run = i
+	}
+	ui_text(ui, font, text[run:span.end], {at, y + 2}, px, TEXT)
 }
 
 // True if the pointer was pressed inside `r` this frame, regardless of what

@@ -35,7 +35,7 @@ Block :: struct {
 	running:   bool,
 	expanded:  bool,
 	sub:       [dynamic]Block, // a subagent's own blocks, for Task calls
-	image:     Attachment,
+	image:     string, // an Image block is a path; app_preview draws it
 
 	// Wrapped-line cache. Laying out a long transcript every frame is the one
 	// thing that would make this UI slow, so each block remembers the lines it
@@ -148,7 +148,7 @@ block_destroy :: proc(b: ^Block) {
 	delete(b.lines)
 	for &s in b.sub do block_destroy(&s)
 	delete(b.sub)
-	attachment_destroy(&b.image)
+	delete(b.image)
 }
 
 chat_destroy :: proc(c: ^Chat) {

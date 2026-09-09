@@ -692,10 +692,15 @@ app_paste_image :: proc(app: ^App, target: ^Editor, data: []byte, mime: string) 
 		if !wrote do return false
 		// Run onto the end of the last word, the path stops being a path.
 		text := editor_text(target)
-		if target.cursor > 0 && !is_space_byte(text[target.cursor - 1]) {
+		if target.cursor > 0 && !is_space(text[target.cursor - 1]) {
 			editor_insert(target, " ")
 		}
 		editor_insert(target, path)
+		// And a space after it, because the box goes on being typed into: a
+		// letter run onto the end of the path stops it being a path, and the
+		// picture that was sitting there turns back into eighty characters of
+		// cache name as you type.
+		editor_insert(target, " ")
 		app_status(app, fmt.tprintf("attached %s", base_name(path)))
 		return true
 	}
@@ -708,10 +713,6 @@ app_paste_image :: proc(app: ^App, target: ^Editor, data: []byte, mime: string) 
 	append(&app.attach, a)
 	app_status(app, fmt.tprintf("attached %s", base_name(a.path)))
 	return true
-}
-
-is_space_byte :: proc(c: byte) -> bool {
-	return c == ' ' || c == '\t' || c == '\n' || c == '\r'
 }
 
 // There is no gesture that stops the lot, on purpose — a key that could do

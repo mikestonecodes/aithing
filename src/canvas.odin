@@ -478,8 +478,29 @@ draw_card :: proc(app: ^App, card: Card, base: Rect) {
 	// The item itself, which is the whole point of the card — and what a copy
 	// with nothing selected takes, because a card is not something that can be
 	// selected in the first place.
-	ui_hover_text(ui, r, td.text)
-	ty += draw_wrapped(ui, &ui.bold, td.text, tx, ty, tw - corner - 10, 15, settled ? MUTED : TEXT, 3)
+	// Through text_without_images: a card written in the box under the grid
+	// carries the paths of whatever was pasted into it, because that is how it
+	// hands them to Claude, and a card whose first line is a cache path says
+	// nothing about the work. The picture is drawn beside the words instead.
+	said := text_without_images(td.text)
+	ui_hover_text(ui, r, said)
+	ty += draw_wrapped(ui, &ui.bold, said, tx, ty, tw - corner - 10, 15, settled ? MUTED : TEXT, 3)
+
+	// And the pictures those words named, in the room left between them and
+	// the pill: a card whose path had been taken out of its text otherwise
+	// gave no sign it was carrying a screenshot at all.
+	pill_top := r.y + r.h - pad - 20
+	if imgs := text_images(app, td.text); len(imgs) > 0 {
+		side := min(pill_top - 8 - ty, f32(38))
+		if side >= 20 {
+			ix := tx
+			for a in imgs {
+				if ix + side > r.x + r.w - pad do break
+				ui_image_cover(ui, {ix, ty + 2, side, side}, a.tex, a.width, a.height, 5)
+				ix += side + 6
+			}
+		}
+	}
 
 	// Where the work stands, in the word for it. A turn in flight pulses,
 	// whether it was started here or in another window. There used to be a
@@ -499,7 +520,7 @@ draw_card :: proc(app: ^App, card: Card, base: Rect) {
 	DOT :: f32(7)
 	DOT_GAP :: f32(7)
 	lw := font_width(&ui.regular, label, 11.5)
-	pill := Rect{tx, r.y + r.h - pad - 20, DOT + DOT_GAP + lw + 20, 20}
+	pill := Rect{tx, pill_top, DOT + DOT_GAP + lw + 20, 20}
 	ui_rect(ui, pill, color_alpha(col, 0.16 * alpha), 10)
 	cx := pill.x + (pill.w - (DOT + DOT_GAP + lw)) / 2
 	ui_circle(ui, {cx + DOT / 2, pill.y + pill.h / 2}, DOT / 2, color_alpha(col, alpha))
@@ -542,7 +563,7 @@ draw_card :: proc(app: ^App, card: Card, base: Rect) {
 		ui_line(ui, {btn.x + 19, btn.y + 9}, {btn.x + 9, btn.y + 19}, 2, mark)
 		if bclicked {
 			app_dismiss_todo(app, td.id)
-			canvas_blast(app, card.r, td.text)
+			canvas_blast(app, card.r, said)
 			return
 		}
 	}

@@ -9,7 +9,10 @@ import stbi "vendor:stb/image"
 
 // Pasted images. Claude Code reads images off disk, so a paste is written to
 // the cache directory and the path is handed to the prompt; the decoded pixels
-// only exist so the composer can show a thumbnail of what is attached.
+// only exist so the window can show what is attached. The path itself is never
+// drawn anywhere — see text_without_images and draw_editor_line — because it
+// is a cache name with a nanosecond in it, and what it names is the only part
+// worth looking at.
 
 Attachment :: struct {
 	path:   string, // where it was written, and what goes in the prompt
@@ -175,9 +178,15 @@ path_is_image :: proc(path: string) -> bool {
 // second thing to keep in step through every split and backspace, and the
 // answer to "which pictures is this card carrying" would have two places to
 // come from. It has one: the paths in the text, which is also exactly what
-// goes out to Claude. Delete the path and the thumbnail goes with it.
+// goes out to Claude. Delete the path and the picture goes with it.
 capture_images :: proc(app: ^App, allocator := context.temp_allocator) -> []Attachment {
-	text := editor_text(&app.capture)
+	return text_images(app, editor_text(&app.capture), allocator)
+}
+
+// The pictures a piece of writing names, which is the same question wherever
+// it is asked: of the box while it is being typed into, and of a card once the
+// words have been cut out of it and given a thread of their own.
+text_images :: proc(app: ^App, text: string, allocator := context.temp_allocator) -> []Attachment {
 	if len(text) == 0 do return nil
 	out := make([dynamic]Attachment, allocator)
 	for word in strings.fields(text, context.temp_allocator) {
@@ -189,4 +198,84 @@ capture_images :: proc(app: ^App, allocator := context.temp_allocator) -> []Atta
 		if a.width > 0 do append(&out, a)
 	}
 	return out[:]
+}
+
+// --- where a picture sits in a line of prose ----------------------------------
+
+// Where the image path around byte `at` starts and stops, if what `at` falls
+// inside is one. It is the same test capture_images makes of every word —
+// absolute, and named like a picture — asked of one position instead, so the
+// box that draws a picture, the arrow key that steps over it and the card that
+// prints the words without it cannot disagree about where it begins and ends.
+image_word :: proc(text: string, at: int) -> (start, end: int, ok: bool) {
+	if at < 0 || at > len(text) do return 0, 0, false
+	start, end = at, at
+	for start > 0 && !is_space(text[start - 1]) do start -= 1
+	for end < len(text) && !is_space(text[end]) do end += 1
+	if end <= start do return 0, 0, false
+	word := text[start:end]
+	if word[0] != '/' || !path_is_image(word) do return 0, 0, false
+	return start, end, true
+}
+
+is_space :: proc(c: byte) -> bool {
+	return c == ' ' || c == '\t' || c == '\n' || c == '\r'
+}
+
+// Whether a picture's path starts at exactly this byte. Only asked at a word
+// boundary, which is the only place one can start.
+image_at :: proc(text: string, at: int) -> (end: int, ok: bool) {
+	if at > 0 && !is_space(text[at - 1]) do return 0, false
+	start, e, is_img := image_word(text, at)
+	if !is_img || start != at do return 0, false
+	return e, true
+}
+
+// The prose without the pictures in it. A path is what the harness is handed
+// and what says which card carries which picture, and it is nothing anyone
+// wants to read: every place that prints a person's words back at them —
+// a card on the grid, the line under the pointer, a turn in the transcript —
+// prints them through this, and shows the picture itself instead.
+text_without_images :: proc(text: string, allocator := context.temp_allocator) -> string {
+	b := strings.builder_make(allocator)
+	i := 0
+	word := 0 // the start of the run being copied
+	for i <= len(text) {
+		if i == len(text) {
+			strings.write_string(&b, text[word:i])
+			break
+		}
+		if end, ok := image_at(text, i); ok {
+			strings.write_string(&b, text[word:i])
+			// The space in front of the path goes with it, or the words left
+			// behind end in a gap the width of the picture that was there.
+			for len(b.buf) > 0 && is_space(b.buf[len(b.buf) - 1]) do pop(&b.buf)
+			i = end
+			word = i
+			continue
+		}
+		i += 1
+	}
+	return strings.trim_space(strings.to_string(b))
+}
+
+// A person's turn as the transcript shows it: the pictures they named become
+// stones of their own and the paths come out of the words. Both the message
+// just typed and the one read back off a session file come through here, so a
+// paste looks the same a second later and a year later.
+msg_write_user :: proc(chat: ^Chat, m: int, text: string) {
+	if body := text_without_images(text); body != "" {
+		ref := msg_append_block(chat, m, Block{kind = .Text})
+		strings.write_string(&chat_block(chat, ref).text, body)
+	}
+	i := 0
+	for i < len(text) {
+		end, ok := image_at(text, i)
+		if !ok {
+			i += 1
+			continue
+		}
+		msg_append_block(chat, m, Block{kind = .Image, image = strings.clone(text[i:end])})
+		i = end
+	}
 }

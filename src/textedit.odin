@@ -12,11 +12,21 @@ Editor :: struct {
 	cursor:   int, // byte offset
 	anchor:   int, // the other end of the selection; equal to cursor when none
 	lines:    [dynamic]Span, // byte ranges of the wrapped lines, rebuilt on draw
+	// Where the pictures the text names were drawn, rebuilt on every draw the
+	// same way the lines are. The peek that opens over one and the headless
+	// shot that puts a pointer on one read this rather than working out where
+	// a picture landed a second time and landing four pixels off.
+	imgs:     [dynamic]Image_Cell,
 	last_edit: f32, // ui.time of the last change, so the caret stops blinking
 }
 
 Span :: struct {
 	start, end: int,
+}
+
+Image_Cell :: struct {
+	at: int, // where its path starts in the text
+	r:  Rect,
 }
 
 editor_text :: proc(e: ^Editor) -> string {
@@ -26,6 +36,7 @@ editor_text :: proc(e: ^Editor) -> string {
 editor_destroy :: proc(e: ^Editor) {
 	strings.builder_destroy(&e.buf)
 	delete(e.lines)
+	delete(e.imgs)
 }
 
 editor_clear :: proc(e: ^Editor) {
@@ -76,8 +87,15 @@ editor_insert :: proc(e: ^Editor, s: string) {
 }
 
 // Byte offset one rune to the left/right of `at`.
+// A pasted picture is one of them. What the box draws where a path is written
+// is the picture, not the path (see draw_editor), and a caret that walked the
+// eighty letters of `/home/mike/.cache/aithing/paste-1770.png` would sit still
+// under forty presses of the arrow key and take forty backspaces to remove
+// something that looks like a single thing on screen. It steps and deletes as
+// what it looks like.
 prev_rune :: proc(s: string, at: int) -> int {
 	if at <= 0 do return 0
+	if start, end, ok := image_word(s, at); ok && end == at do return start
 	i := at - 1
 	for i > 0 && (s[i] & 0xc0) == 0x80 do i -= 1
 	return i
@@ -85,6 +103,7 @@ prev_rune :: proc(s: string, at: int) -> int {
 
 next_rune :: proc(s: string, at: int) -> int {
 	if at >= len(s) do return len(s)
+	if end, ok := image_at(s, at); ok do return end
 	_, size := utf8.decode_rune_in_string(s[at:])
 	return min(at + max(size, 1), len(s))
 }
@@ -100,10 +119,14 @@ is_word :: proc(c: byte) -> bool {
 	)
 }
 
+// The same for a word at a time, which a path is many of — four slashes and a
+// dot is five words — so both ends come back out to the edge of the picture
+// rather than stopping somewhere inside a thing with no inside on screen.
 word_left :: proc(s: string, at: int) -> int {
 	i := at
 	for i > 0 && !is_word(s[i - 1]) do i -= 1
 	for i > 0 && is_word(s[i - 1]) do i -= 1
+	if start, _, ok := image_word(s, i); ok do return start
 	return i
 }
 
@@ -111,6 +134,7 @@ word_right :: proc(s: string, at: int) -> int {
 	i := at
 	for i < len(s) && !is_word(s[i]) do i += 1
 	for i < len(s) && is_word(s[i]) do i += 1
+	if _, end, ok := image_word(s, i); ok do return end
 	return i
 }
 

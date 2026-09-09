@@ -445,7 +445,7 @@ draw_tile :: proc(app: ^App, t: Tile, r: Rect) -> bool {
 	if t.kind == .Image {
 		// The picture is the stone. Hovering it gives the picture, which is
 		// the whole reason a screenshot in a thread is worth keeping.
-		ui_image(ui, rr, b.image.tex, TILE_ROUND)
+		ui_image(ui, rr, app_preview(app, b.image).tex, TILE_ROUND)
 		ui_quad(ui, rr, {0, 0}, {1, 1}, color_alpha(t.col, 0.1 + 0.45 * pop), WHITE_TEX, TILE_ROUND, .Pop, lift)
 		ui_hover_text(ui, rr, t.name)
 		return open
@@ -592,7 +592,8 @@ draw_peek :: proc(app: ^App, ref: Ref, view: Rect, top: f32) {
 	img_h := f32(0)
 	switch b.kind {
 	case .Image:
-		aspect := b.image.width > 0 && b.image.height > 0 ? f32(b.image.height) / f32(b.image.width) : 0.62
+		img := app_preview(app, b.image)
+		aspect := img.width > 0 && img.height > 0 ? f32(img.height) / f32(img.width) : 0.62
 		img_h = min(inner * aspect, PEEK_MAX)
 		h += img_h
 	case .Text, .Error:
@@ -649,7 +650,7 @@ draw_peek :: proc(app: ^App, ref: Ref, view: Rect, top: f32) {
 	ix := box.x + 14
 	switch b.kind {
 	case .Image:
-		ui_image(ui, {ix, iy, inner, img_h}, b.image.tex, 6)
+		ui_image(ui, {ix, iy, inner, img_h}, app_preview(app, b.image).tex, 6)
 	case .Text, .Error:
 		ui_hover_text(ui, box, body)
 		col := b.kind == .Error ? RED : TEXT

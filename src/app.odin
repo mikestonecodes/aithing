@@ -994,13 +994,12 @@ app_submit :: proc(app: ^App, text, prompt: string) -> bool {
 	// Show the turn straight away; the harness echoes it back later, but the
 	// UI should never feel like it swallowed what was typed.
 	m := chat_append(&app.chat, .User)
-	ref := msg_append_block(&app.chat, m, Block{kind = .Text})
-	strings.write_string(&chat_block(&app.chat, ref).text, text)
-	for a in app.attach {
-		img := msg_append_block(&app.chat, m, Block{kind = .Image, image = a})
-		_ = img
-	}
-	clear(&app.attach) // the blocks own the attachments now
+	msg_write_user(&app.chat, m, text)
+	// The composer's own pastes are not in the text — it keeps a list, because
+	// it has a send to hang one off — so they are added here, as the same kind
+	// of stone the paths in the words made.
+	for a in app.attach do msg_append_block(&app.chat, m, Block{kind = .Image, image = a.path})
+	clear(&app.attach) // the blocks own the paths now
 
 	// The thread's own directory, checked out again if it was a card's tree
 	// and the card has since finished with it.
