@@ -439,7 +439,12 @@ draw_card :: proc(app: ^App, card: Card, base: Rect) {
 	ui_push_clip(ui, r)
 	ui_draw_ripples(ui, id)
 	ui_pop_clip(ui)
-	if selected do ui_rect(ui, r, color_alpha(ACCENT, 0.55), 12)
+	// The cursor is drawn at full strength when the keyboard is on the cards
+	// and faintly when the caret is down in the box, so which one the next
+	// letter goes to is on screen rather than something to remember. It is
+	// read off the same answer that dims the box's edge, not a flag set
+	// beside it.
+	if selected do ui_rect(ui, r, color_alpha(ACCENT, app_focus(app) == .Capture ? 0.2 : 0.55), 12)
 	if current do ui_rect(ui, {r.x, r.y + 12, 3, r.h - 24}, ACCENT, 2)
 	// Work that came back clean is work you are done with: it stays on the
 	// map, drawn back, rather than shouting alongside what is still open.

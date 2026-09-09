@@ -252,6 +252,14 @@ draw_capture :: proc(app: ^App, full: Rect) {
 	// project, and the heading over that grid has already said which.
 	box := capture_box(app, full)
 
+	// Clicking the box is asking to type in it, so it writes the one variable
+	// that says where the keyboard is rather than only moving a caret nobody
+	// can see: while the keyboard is on the cards the click inside would
+	// otherwise place a caret in a box that still would not take a letter.
+	// Read after it is written, so the box lights up on the press and not on
+	// the frame after.
+	if ui.pressed && ui_hovered(ui, box) do app.on_cards = false
+
 	focused := app_focus(app) == .Capture
 	ui_punch(ui, box, COMPOSER_BG, 14)
 	draw_box_edge(app, box, focused, ui_id("capture-edge"))

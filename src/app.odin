@@ -72,7 +72,7 @@ Focus :: enum {
 app_focus :: proc(app: ^App) -> Focus {
 	if app.overlay == .Launcher do return .Search
 	if app.page == .Thread do return .Composer
-	if app_capture_open(app) do return .Capture
+	if app_capture_open(app) && !app.on_cards do return .Capture
 	return .None
 }
 
@@ -130,6 +130,18 @@ App :: struct {
 	editor:    Editor,
 	search:    Editor,
 	capture:   Editor, // the box under the grid: what is typed there becomes cards
+	// Whether the keyboard is on the cards rather than in the box under them.
+	// Esc puts it on the cards and `i` puts it back, and this is the whole of
+	// what says so — app_focus reads it, which is what makes the caret leave
+	// the box, the box go dim and the letters mean hjkl instead of text. It
+	// used to be inferred from the box being empty, which meant a list could
+	// not start with h, j, k, l or x, and there was no way to walk the cards
+	// with something half written.
+	//
+	// False is typing, so a window that has never been told otherwise opens
+	// with the caret in the box. Where there is no box at all it says nothing:
+	// app_focus answers .None on a grid of every project whatever this holds.
+	on_cards:  bool,
 	page:      Page,
 	overlay:   Overlay,
 
@@ -797,6 +809,14 @@ app_cancel :: proc(app: ^App) -> bool {
 
 	case app.page == .Thread:
 		canvas_close(app)
+
+	// The caret comes out of the box first, and what is written in it stays
+	// written: Esc on the grid is now two presses deep, one to get to the
+	// cards and one to throw the list away. Clearing on the first press is
+	// what it used to do, and with a mode to leave it would have meant losing
+	// a half-typed list every time you went to look at a card.
+	case app_focus(app) == .Capture:
+		app.on_cards = true
 
 	// Only what is on screen counts as something to back out of. A state
 	// file written by an older build can restore text into the box while the

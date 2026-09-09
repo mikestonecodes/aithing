@@ -450,22 +450,35 @@ app_input :: proc(app: ^App) {
 				continue
 			}
 		} else if app.page == .Grid {
-			// Up and down are the box's history — the line typed a minute ago,
-			// back again — and the cards have left and right. They used to be
-			// split the other way round, so what had already been written
-			// could not be got back at all.
-			typing := editor_text(&app.capture) != ""
+			// With the keyboard on the cards the arrows are hjkl said the
+			// long way — every direction walks the grid, because there is no
+			// caret for them to belong to.
+			//
+			// With it in the box, up and down are the box's history — the
+			// line typed a minute ago, back again — and the cards keep left
+			// and right while nothing is written. They used to be split the
+			// other way round, so what had already been written could not be
+			// got back at all.
+			typing := app_focus(app) == .Capture
 			switch k.code {
 			case KEY_UP:
+				if !typing {
+					canvas_step_row(app, -1)
+					continue
+				}
 				if app_history(app, 1) do continue
 			case KEY_DOWN:
+				if !typing {
+					canvas_step_row(app, 1)
+					continue
+				}
 				if app_history(app, -1) do continue
 			case KEY_LEFT:
-				if typing do break
+				if typing && editor_text(&app.capture) != "" do break
 				canvas_step_sel(app, -1)
 				continue
 			case KEY_RIGHT:
-				if typing do break
+				if typing && editor_text(&app.capture) != "" do break
 				canvas_step_sel(app, 1)
 				continue
 			}
@@ -510,9 +523,12 @@ app_input :: proc(app: ^App) {
 			if app.overlay == .Launcher {
 				launcher_confirm(app)
 			} else if app.page == .Grid {
-				// Enter over a written list makes the cards; over an empty
-				// box it opens the card the cursor is on.
-				if strings.trim_space(editor_text(&app.capture)) != "" {
+				// Enter in the box makes the cards; on the cards it opens the
+				// one the cursor is on. It used to ask whether anything was
+				// written instead, which after Esc meant a half-typed list
+				// went off as cards when all that was wanted was to open the
+				// card being looked at.
+				if app_focus(app) == .Capture && strings.trim_space(editor_text(&app.capture)) != "" {
 					app_capture(app)
 				} else {
 					canvas_open_sel(app)
@@ -543,10 +559,10 @@ app_input :: proc(app: ^App) {
 	if len(win.input.text) > 0 {
 		typed := string(win.input.text[:])
 		// Typing on the grid writes the list: it lands in the box along the
-		// bottom. An empty box is the grid's, though, so the letters that
-		// walk it are taken first — and only until one of them is not a
-		// command, because by then the box has text in it and the rest of
-		// what was typed is text too.
+		// bottom. With the keyboard on the cards instead, the letters that
+		// walk them are taken here first — and taken one at a time, because
+		// `i` is one of them and everything typed after it in the same frame
+		// is text.
 		for typed != "" && grid_command(app, rune(typed[0])) do typed = typed[1:]
 		if typed != "" && focused_editor(app) != nil {
 			target = focused_editor(app)
@@ -563,22 +579,26 @@ app_input :: proc(app: ^App) {
 	if search_changed do app.canvas.menu_at = 0
 }
 
-// A letter the grid answers to itself, over a box with nothing in it: hjkl
-// walks the cards, x takes one off, `/` opens the launcher. False means it is
+// A letter the grid answers to itself rather than typing: hjkl walks the
+// cards, x takes one off, i puts the caret back in the box. False means it is
 // not one of those and the letter is text after all.
 //
-// The rule is the box's, not a mode of its own: while there is something
-// written in it every letter is text, which is the same thing the left and
-// right arrows have always asked before moving the cursor. It is what `/`
-// already did — the one character the grid took before it took five more —
-// and the cost is the same one: a list that has to start with h, j, k, l or x
-// starts with a space instead.
+// What decides is app.on_cards, through app_focus — the same one answer that
+// takes the caret out of the box and dims it. It used to be whether the box
+// was empty, which is a rule with no way out of it: a list that had to start
+// with an h could not be typed, and a list already half written could not be
+// left alone while you went to look at a card.
 grid_command :: proc(app: ^App, c: rune) -> bool {
 	if app.page != .Grid || app.overlay != .None do return false
-	if editor_text(&app.capture) != "" do return false
-	switch c {
-	case '/':
+	// `/` opened the launcher over an empty box before there were modes at
+	// all, and it still does, so that habit is not taken away by a caret that
+	// happens to be sitting in an empty box.
+	if c == '/' && editor_text(&app.capture) == "" {
 		app_launcher(app, true)
+		return true
+	}
+	if app_focus(app) == .Capture do return false
+	switch c {
 	case 'h':
 		canvas_step_sel(app, -1)
 	case 'l':
@@ -589,6 +609,8 @@ grid_command :: proc(app: ^App, c: rune) -> bool {
 		canvas_step_row(app, 1)
 	case 'x':
 		canvas_dismiss_sel(app)
+	case 'i':
+		app.on_cards = false
 	case:
 		return false
 	}

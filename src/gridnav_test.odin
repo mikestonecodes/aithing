@@ -103,22 +103,58 @@ x_takes_the_card_and_the_cursor_stays_put :: proc(t: ^testing.T) {
 	testing.expect_value(t, app.canvas.sel, fourth)
 }
 
-// The letters are the grid's only while the box under it is empty. That is
-// the same thing the arrows already ask, and it is what `/` has always done.
+// Esc takes the keyboard out of the box and onto the cards, i puts it back,
+// and the list that was half written survives the trip. The rule used to be
+// whether the box was empty, so a list starting with an h could not be typed
+// at all and one already written could not be left alone.
 @(test)
-the_box_takes_the_letters_back :: proc(t: ^testing.T) {
+esc_goes_to_the_cards_and_i_comes_back :: proc(t: ^testing.T) {
 	app := seven_cards()
 	defer drop_app(app)
 
-	app.page = .Grid
-	app.overlay = .None
+	// A grid narrowed to one project is a grid with a box under it.
+	app.canvas.project = strings.clone("/tmp/proj")
 	canvas_set_sel(app, grid_id(app, 0))
 
-	testing.expect(t, grid_command(app, 'l'), "l walks the grid over an empty box")
-	testing.expect_value(t, app.canvas.sel, grid_id(app, 1))
-	testing.expect(t, !grid_command(app, 'q'), "q is not a command, so it is text")
+	// The caret starts in the box, so every letter is text — h and l
+	// included.
+	testing.expect_value(t, app_focus(app), Focus.Capture)
+	testing.expect(t, !grid_command(app, 'l'), "in the box, l is text")
+	testing.expect_value(t, app.canvas.sel, grid_id(app, 0))
 
+	// Esc over a half-written list: the caret comes out, the words stay.
 	editor_set_text(&app.capture, "hello")
-	testing.expect(t, !grid_command(app, 'l'), "with something written, l is text")
+	app_cancel(app)
+	testing.expect_value(t, app_focus(app), Focus.None)
+	testing.expect_value(t, editor_text(&app.capture), "hello")
+
+	testing.expect(t, grid_command(app, 'l'), "on the cards, l walks them")
+	testing.expect_value(t, app.canvas.sel, grid_id(app, 1))
+	testing.expect(t, !grid_command(app, 'q'), "q is not a command")
+
+	// i puts the caret back, and the list is where it was left.
+	testing.expect(t, grid_command(app, 'i'), "i goes back to the box")
+	testing.expect_value(t, app_focus(app), Focus.Capture)
+	testing.expect_value(t, editor_text(&app.capture), "hello")
+	testing.expect(t, !grid_command(app, 'l'), "back in the box, l is text again")
+
+	// The second Esc is the one that throws the list away.
+	app_cancel(app)
+	testing.expect_value(t, editor_text(&app.capture), "hello")
+	app_cancel(app)
+	testing.expect_value(t, editor_text(&app.capture), "")
+}
+
+// A grid of every project has no box, so it has nothing to take the letters:
+// they are the cards' whatever the mode says, because app_focus answers .None
+// before it ever looks.
+@(test)
+with_no_box_the_letters_are_always_the_cards :: proc(t: ^testing.T) {
+	app := seven_cards()
+	defer drop_app(app)
+
+	canvas_set_sel(app, grid_id(app, 0))
+	app.on_cards = false
+	testing.expect(t, grid_command(app, 'l'), "no box, so l walks the grid")
 	testing.expect_value(t, app.canvas.sel, grid_id(app, 1))
 }

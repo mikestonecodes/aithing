@@ -406,8 +406,14 @@ esc_widens_the_grid_last :: proc(t: ^testing.T) {
 	canvas_filter_project(app, "/tmp/proj")
 	testing.expect_value(t, len(app_visible(app)), 1)
 
-	// What is half-typed goes, and the view it was typed into stays.
+	// The caret comes out of the box first and what is half-typed stays
+	// written: going to look at a card is not throwing the list away.
 	editor_set_text(&app.capture, "half a thought")
+	_ = app_cancel(app)
+	testing.expect_value(t, app_focus(app), Focus.None)
+	testing.expect_value(t, editor_text(&app.capture), "half a thought")
+
+	// Then what is half-typed goes, and the view it was typed into stays.
 	_ = app_cancel(app)
 	testing.expect_value(t, editor_text(&app.capture), "")
 	testing.expect_value(t, app.canvas.project, "/tmp/proj")
