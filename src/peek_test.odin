@@ -12,7 +12,7 @@ import "core:testing"
 tool_block :: proc(name, input, result: string) -> Block {
 	b := Block {
 		kind   = .Tool,
-		name   = name,
+		name   = strings.clone(name),
 		input  = strings.builder_make(),
 		result = strings.builder_make(),
 	}

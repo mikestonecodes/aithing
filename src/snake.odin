@@ -137,7 +137,7 @@ tile_of :: proc(b: ^Block, ref: Ref, role: Role, depth: int) -> Tile {
 		t.icon = .Image
 		t.name = "image"
 	case .Tool:
-		t.col, t.icon = tool_style(b.name)
+		t.col, t.icon = tool_style(b.name, strings.to_string(b.input))
 		t.name = b.name
 	}
 	// Whatever it is, it is working while it is still being written into.
@@ -145,28 +145,72 @@ tile_of :: proc(b: ^Block, ref: Ref, role: Role, depth: int) -> Tile {
 	return t
 }
 
-// Which family a tool belongs to. Anything the harness grew since this was
-// written still gets a stone — in the house grey, under the generic mark —
-// rather than being dropped off the path, which is how a transcript that only
-// knew six tool names used to lose whole turns.
-tool_style :: proc(name: string) -> (Color, Icon) {
+// Which family a call belongs to, and the colour that family wears. Anything
+// the harness grew since this was written still gets a stone — in the house
+// grey, under the generic mark — rather than being dropped off the path, which
+// is how a transcript that only knew six tool names used to lose whole turns.
+//
+// A shell call is asked what it does rather than told what it is (see
+// shell.odin): `python3 - <<EOF ... EOF` that rewrites a file is an edit and
+// gets the pencil, `cat` is a read, `grep` is a search. The agent changes far
+// more files through Bash than through Edit, and every one of those turns used
+// to sit on the path as a green terminal stone — the move worth seeing,
+// wearing the colour of the move that says least.
+tool_style :: proc(name: string, input := "") -> (Color, Icon) {
+	icon := tool_icon(name, input)
+	return icon_colour(icon), icon
+}
+
+@(private = "file")
+tool_icon :: proc(name, input: string) -> Icon {
 	switch name {
 	case "Read", "NotebookRead", "Glob", "LS":
-		return TILE_READ, .Read
+		return .Read
 	case "Edit", "MultiEdit", "Write", "NotebookEdit":
-		return TILE_EDIT, .Edit
+		return .Edit
 	case "Bash", "BashOutput", "KillShell":
-		return TILE_RUN, .Run
+		return shell_icon(input)
 	case "Grep", "Search":
-		return TILE_FIND, .Find
+		return .Find
 	case "Task", "Agent":
-		return ACCENT, .Agent
+		return .Agent
 	case "WebFetch", "WebSearch":
-		return TILE_WEB, .Web
+		return .Web
 	case "TodoWrite", "ExitPlanMode", "ReportFindings":
-		return TILE_ANY, .Plan
+		return .Plan
 	}
-	return TILE_ANY, .Tool
+	return .Tool
+}
+
+// One colour per family, so the colour and the mark cannot disagree about what
+// a stone is. They used to be handed back together from a table of names,
+// which was the same answer written twice.
+icon_colour :: proc(icon: Icon) -> Color {
+	switch icon {
+	case .Read:
+		return TILE_READ
+	case .Edit:
+		return TILE_EDIT
+	case .Run:
+		return TILE_RUN
+	case .Find:
+		return TILE_FIND
+	case .Web, .Image:
+		return TILE_WEB
+	case .Agent:
+		return ACCENT
+	case .You:
+		return ACCENT
+	case .Said:
+		return TILE_SAID
+	case .Answer:
+		return GOLD
+	case .Error:
+		return RED
+	case .Plan, .Tool:
+		return TILE_ANY
+	}
+	return TILE_ANY
 }
 
 // Places the tiles on a fixed grid and snakes it: odd rows are read backwards,

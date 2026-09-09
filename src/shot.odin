@@ -32,6 +32,7 @@ Scene :: enum {
 	Peek, // the same thread with the pointer resting on a tile of its path
 	Command, // the pointer on a shell stone: the command, and what it printed
 	Plan, // the pointer on a plan stone: its items, with their boxes
+	Script, // and on a shell stone that rewrote a file: a diff, not a command
 	Picker, // the model picker, open off the composer's chip
 	Launcher, // the menu, with a query typed into it
 	Usage, // the pointer on the dial, so what each ring is is on screen
@@ -49,6 +50,7 @@ scene_names := [Scene]string {
 	.Peek     = "peek",
 	.Command  = "command",
 	.Plan     = "plan",
+	.Script   = "script",
 	.Picker   = "picker",
 	.Launcher = "launcher",
 	.Usage    = "usage",
@@ -342,7 +344,7 @@ shot_build :: proc(app: ^App, scene: Scene) {
 		app.canvas.project = PROJ
 		png := shot_png()
 		editor_set_text(&app.capture, fmt.tprintf("the ring is too pale here %s", png))
-	case .Thread, .Opening, .Peek, .Command, .Plan, .Picker:
+	case .Thread, .Opening, .Peek, .Command, .Plan, .Script, .Picker:
 		app.canvas.project = PROJ
 		app.page = .Thread
 		shot_thread(app)
@@ -357,8 +359,7 @@ shot_build :: proc(app: ^App, scene: Scene) {
 
 // Which stone of the path a scene rests the pointer on, counting from the
 // start of the thread, and -1 for a scene that is not about a stone. They are
-// all on the first row: nineteen fit across a shot, and shot_thread is
-// seventeen stones long.
+// all on the first row: nineteen fit across a shot.
 @(private = "file")
 scene_stone :: proc(scene: Scene) -> int {
 	#partial switch scene {
@@ -368,6 +369,8 @@ scene_stone :: proc(scene: Scene) -> int {
 		return 4 // a shell command, and what it printed
 	case .Plan:
 		return 8 // a plan, with its boxes
+	case .Script:
+		return 16 // a file rewritten by a python heredoc, which is an edit
 	}
 	return -1
 }
@@ -484,6 +487,7 @@ shot_thread :: proc(app: ^App) {
 	shot_tool(app, "Sparkle", `{"wish": "a tool this build has never heard of", "count": 3}`, "and it still gets a stone, and a panel that says what it was called with")
 	shot_tool(app, "Edit", `{"file_path": "src/sessions.odin", "old_string": "\tfor s in sessions {\n\t\tif worktree_of(s.cwd) == cwd do return s\n\t}\n", "new_string": "\tfor s in sessions {\n\t\tif s.cwd == cwd do return s\n\t}\n"}`, "The file src/sessions.odin has been updated.")
 	shot_tool(app, "Bash", `{"command": "odin test src", "description": "The suite, once more"}`, "All tests were successful.")
+	shot_tool(app, "Bash", `{"command": "python3 - <<'EOF'\np = 'src/snake.odin'\ns = open(p).read()\nold = '''\tt.col, t.icon = tool_style(b.name)'''\nnew = '''\tt.col, t.icon = tool_style(b.name, strings.to_string(b.input))'''\ns = s.replace(old, new)\nopen(p, 'w').write(s)\nEOF", "description": "Colour a stone by what the call did"}`, "")
 	shot_err(app, "turn stopped: the harness closed the stream mid-answer")
 	shot_text(
 		app,

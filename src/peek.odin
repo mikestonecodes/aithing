@@ -116,8 +116,15 @@ peek_rows :: proc(app: ^App, b: ^Block, inner: f32) -> []Row {
 	input, err := json.parse_string(strings.to_string(b.input), .JSON, false, context.temp_allocator)
 	if err != nil do input = nil
 
-	_, icon := tool_style(b.name)
-	switch icon {
+	_, icon := tool_style(b.name, strings.to_string(b.input))
+	// A shell call is drawn from what the command does rather than from the
+	// tool's name: the panel for `python3 - <<EOF ... EOF` that rewrites a
+	// file is a diff, the same as the edit tool's, because that is what
+	// happened. See shell.odin.
+	from := 0
+	if cmd := jstr(input, "command"); cmd != "" {
+		from = rows_shell(app, input, cmd, inner)
+	} else do switch icon {
 	case .Edit:
 		rows_edit(app, input, inner)
 	case .Run:
@@ -133,7 +140,7 @@ peek_rows :: proc(app: ^App, b: ^Block, inner: f32) -> []Row {
 	case .You, .Said, .Answer, .Error, .Image, .Tool:
 		rows_any(app, input, inner)
 	}
-	rows_result(app, b, inner, icon)
+	rows_result(app, b, inner, icon, from)
 	return rows[:]
 }
 
@@ -164,10 +171,26 @@ rows_edit :: proc(app: ^App, input: json.Value, inner: f32) {
 	}
 
 	row_head(app, old == "" ? "written" : "changed")
+	rows_diff(app, old, new, inner - PEEK_SIGN - 14)
+}
+
+// The diff itself: what one string has that the other has not. Its own proc
+// because an edit is not the only thing that makes one — a shell command that
+// swaps a string for another has exactly the same news to give, and giving it
+// twice in two shapes is how the two would come to disagree.
+@(private = "file")
+rows_diff :: proc(app: ^App, old, new: string, width: f32) {
+	a := split_lines(old)
+	c := split_lines(new)
+	head := 0
+	for head < len(a) && head < len(c) && a[head] == c[head] do head += 1
+	tail := 0
+	for tail < len(a) - head && tail < len(c) - head && a[len(a) - 1 - tail] == c[len(c) - 1 - tail] {
+		tail += 1
+	}
 	// Two lines of what was already there, so a change has somewhere to sit.
 	// The rest of a matching run is a count rather than a screenful of lines
 	// that did not change.
-	width := inner - PEEK_SIGN - 14
 	if head > DIFF_CTX do row_skip(app, head - DIFF_CTX)
 	for i in max(head - DIFF_CTX, 0) ..< head do row_code(app, .Same, a[i], 0, width)
 	n := 0
@@ -187,7 +210,29 @@ rows_edit :: proc(app: ^App, input: json.Value, inner: f32) {
 	if tail > DIFF_CTX do row_skip(app, tail - DIFF_CTX)
 }
 
-// A command and what it printed. The command comes first and in full — it is
+// A shell call, in the order the news comes: what it was for, what it changed,
+// which files it named, and then the command itself — always the command,
+// because it is what actually ran and the reading of it above is a reading.
+// Gives back the line its output starts at, when that is knowable.
+@(private = "file")
+rows_shell :: proc(app: ^App, input: json.Value, cmd: string, inner: f32) -> int {
+	sh := shell_read(cmd)
+	if d := jstr(input, "description"); d != "" do row_wrap(app, d, inner, 3)
+	for swap, i in sh.swaps {
+		if i >= SHELL_SWAPS do break
+		row_head(app, swap.old == "" ? "written" : "changed")
+		rows_diff(app, swap.old, swap.new, inner - PEEK_SIGN - 14)
+	}
+	if len(sh.files) > 0 {
+		row_head(app, sh.family == .Edit ? "files" : "read")
+		for f in sh.files do append(&app.rows, Row{kind = .Path, text = f})
+	}
+	row_head(app, "command")
+	rows_cmd(app, cmd, inner)
+	return sh.from
+}
+
+// A command and what it printed.// A command and what it printed. The command comes first and in full — it is
 // the one line of a shell tool worth reading twice — and the description the
 // model wrote for it goes above, because that is what it is for.
 @(private = "file")
@@ -200,9 +245,17 @@ rows_run :: proc(app: ^App, input: json.Value, inner: f32) {
 		return
 	}
 	row_head(app, "command")
+	rows_cmd(app, cmd, inner)
+}
+
+// The command, on the ground a terminal gives it. Only the first line carries
+// the prompt: a heredoc is one command however many lines it is fed, and a
+// chevron against every line of the script inside it says nine commands ran.
+@(private = "file")
+rows_cmd :: proc(app: ^App, cmd: string, inner: f32) {
 	for l, i in split_lines(cmd) {
 		if i >= 40 do break
-		row_code(app, .Cmd, l, 0, inner - PEEK_SIGN - 14)
+		row_code(app, .Cmd, l, i == 0 ? 0 : ROW_CONT, inner - PEEK_SIGN - 14)
 	}
 }
 
@@ -323,7 +376,7 @@ rows_any :: proc(app: ^App, input: json.Value, inner: f32) {
 // What came back. Every panel ends with it, and what it is called depends on
 // what asked: a command prints output, everything else gets a result.
 @(private = "file")
-rows_result :: proc(app: ^App, b: ^Block, inner: f32, icon: Icon) {
+rows_result :: proc(app: ^App, b: ^Block, inner: f32, icon: Icon, from: int) {
 	result := strings.trim_space(strings.to_string(b.result))
 	if len(result) > RESULT_BYTES do result = result[:RESULT_BYTES]
 	if result == "" {
@@ -342,8 +395,15 @@ rows_result :: proc(app: ^App, b: ^Block, inner: f32, icon: Icon) {
 	// stood in and others did not would be a listing with a ragged edge. It
 	// is also what the lines are folded against, so the fold and the column
 	// agree about where the text starts.
-	numbered := icon != .Find && output_numbered(result)
-	width := inner - (numbered ? PEEK_GUT : 0) - 14
+	numbered := output_numbered(result)
+	// A file printed by a command comes back with no numbers on it at all —
+	// `cat` does not number and neither does `sed -n`. The command says where
+	// it started reading, so the panel can count from there. It counts from
+	// nowhere rather than from one when the command did not say: a listing
+	// numbered from one when it began at line 120 is a hundred and nineteen
+	// wrong answers.
+	count := numbered ? 0 : from
+	width := inner - (numbered || count > 0 ? PEEK_GUT : 0) - 14
 	it := each_line(result)
 	for l in iter_next(&it) {
 		if len(app.rows) >= PEEK_LINES do break
@@ -362,6 +422,11 @@ rows_result :: proc(app: ^App, b: ^Block, inner: f32, icon: Icon) {
 				row_code(app, .Mono, rest, num, width)
 				continue
 			}
+		}
+		if count > 0 {
+			row_code(app, .Mono, l, count, width)
+			count += 1
+			continue
 		}
 		row_code(app, .Mono, l, 0, width)
 	}
@@ -843,7 +908,7 @@ draw_peek_head :: proc(app: ^App, p: Peek, rows: []Row) {
 	// Not when the panel below is already showing it: a command, a URL and a
 	// subagent's prompt are the body of those panels, and the head printed the
 	// first hundred characters of the same string directly above them.
-	if arg := head_arg(&app.chat, tile); arg != "" {
+	if arg := head_arg(&app.chat, tile, rows); arg != "" {
 		buf: [512]u8
 		room := right - x - 10
 		if room > 40 {
@@ -857,12 +922,18 @@ draw_peek_head :: proc(app: ^App, p: Peek, rows: []Row) {
 // What the head says a call was about, which is nothing when the panel below
 // leads with the same string.
 @(private = "file")
-head_arg :: proc(chat: ^Chat, tile: Tile) -> string {
+head_arg :: proc(chat: ^Chat, tile: Tile, rows: []Row) -> string {
 	b := chat_block(chat, tile.ref)
 	if b == nil do return ""
+	// The command, the URL and a subagent's prompt are the body of those
+	// panels: the head used to print the first hundred characters of the same
+	// string directly above them. Asked of the rows rather than of the tool,
+	// so a shell call that opens as a diff still keeps its command out of the
+	// head — the command is down there under its own label.
+	for row in rows do if row.kind == .Cmd do return ""
 	if b.kind == .Tool {
 		#partial switch tile.icon {
-		case .Run, .Web, .Agent:
+		case .Web, .Agent:
 			return ""
 		}
 	}

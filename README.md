@@ -238,6 +238,7 @@ screen pixels the distance ramp spans, which rides along in the vertex.
 | `src/draw.odin` | sidebar, transcript, composer, the text box |
 | `src/chat.odin` | the transcript model shared by the loader and the runner |
 | `src/peek.odin` | what a stone of the path opens into: a panel per family of tool |
+| `src/shell.odin` | what a shell command actually did: read off the command, not run |
 | `src/runner.odin` | `claude -p`, and the NDJSON reader thread |
 | `src/turns.odin` | the slots those run in: as many turns at once as asked for |
 | `src/sessions.odin` | reading `~/.claude/projects` |
@@ -286,7 +287,7 @@ every session on the machine rather than the handful anyone would click.
 
 ```sh
 ./aithing --shot out.png --scene grid      # grid, project, thread, opening, launcher
-./aithing --shot out.png --scene peek      # and peek, command, plan: a stone's panel open
+./aithing --shot out.png --scene peek      # peek, command, plan, script: a stone's panel open
 ./aithing --shot out.png --scene thread --size 1600x1000
 ```
 
@@ -299,10 +300,11 @@ a machine that has never run a turn. Two runs of a scene are byte-identical:
 the animations are settled at a fixed timestep first and the shader clock is
 put back to zero for the frame that is kept.
 
-`peek`, `command` and `plan` rest the pointer on a stone of the path so that
-the panel under it is in the picture: an edit as a diff, a shell command with
-what it printed, a plan with its boxes. Which stone is a number in
-`scene_stone`, counted along the path, rather than a pixel.
+`peek`, `command`, `plan` and `script` rest the pointer on a stone of the path
+so that the panel under it is in the picture: an edit as a diff, a shell
+command with what it printed, a plan with its boxes, and a file rewritten by a
+python heredoc — which is an edit, and is drawn as one. Which stone is a
+number in `scene_stone`, counted along the path, rather than a pixel.
 
 `opening` is the one scene that is not settled: it is a card partway through
 becoming a thread, stopped at a fixed frame, which is the only way to look at
