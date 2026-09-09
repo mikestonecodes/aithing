@@ -17,7 +17,6 @@ import "core:thread"
 
 Ev_Kind :: enum {
 	Session, // the id to --resume next time
-	Status,
 	Msg_Start,
 	Block_Start,
 	Delta,
@@ -77,6 +76,17 @@ model_label := [Model]string {
 	.Fable  = "Fable 5.1",
 }
 
+// The line under the name in the picker. A list of four bare model names
+// tells you which one is ticked and nothing about why you would tick another,
+// and the answer was living outside the window — in the docs, or in whatever
+// you happened to remember about the last release.
+model_note := [Model]string {
+	.Haiku  = "the cheapest turn there is",
+	.Sonnet = "the everyday middle",
+	.Opus   = "the heaviest thinking",
+	.Fable  = "the default here: quick, and strong",
+}
+
 MODEL_DEFAULT :: Model.Fable
 
 // Accepts the short name or the full ID.
@@ -112,6 +122,16 @@ effort_label := [Effort]string {
 	.High   = "High",
 	.Xhigh  = "Xhigh",
 	.Max    = "Max",
+}
+
+// Same job as model_note, and more needed: five words that are only a ladder
+// say nothing about where on the ladder you are standing.
+effort_note := [Effort]string {
+	.Low    = "answers, barely thinks",
+	.Medium = "what the harness picks on its own",
+	.High   = "thinks the work through first",
+	.Xhigh  = "longer reasoning, slower turns",
+	.Max    = "everything it has, for the hard ones",
 }
 
 // Medium is what the harness itself would have picked, so a window that has
@@ -345,11 +365,16 @@ runner_line :: proc(r: ^Runner, line: string) {
 
 	switch jstr(v, "type") {
 	case "system":
+		// Only `init` is worth anything here. The harness also reports its
+		// own progress through a request — `requesting` and friends — and
+		// that was fed straight to the status line, so the bottom-left of the
+		// grid sat there reading "requesting" over a wall of cards that
+		// already say what they are doing. It also overwrote the lines the
+		// window writes for itself, the ones nobody is around to see twice:
+		// "built — restart to pick it up", a push that was refused.
 		switch jstr(v, "subtype") {
 		case "init":
 			runner_emit(r, Event{kind = .Session, id = strings.clone(jstr(v, "session_id"))})
-		case "status":
-			runner_emit(r, Event{kind = .Status, text = strings.clone(jstr(v, "status"))})
 		}
 
 	case "stream_event":

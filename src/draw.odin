@@ -231,26 +231,18 @@ draw_capture :: proc(app: ^App, full: Rect) {
 	}
 	draw_editor(app, &app.capture, text_r, &ui.regular, CAPTURE_PX, focused, CAPTURE_LINES)
 
-	// What Enter will do with what is in the box. A `*` is the only thing
-	// that makes a second card — and a second thread with it — and the count
-	// is what says the one just typed was read as one. It went away with the
-	// line above the box, and taking it away made the split look broken:
-	// cards appeared out of one line with no warning.
-	note := ""
-	if strings.trim_space(editor_text(&app.capture)) != "" {
-		n := len(todos_split(editor_text(&app.capture)))
-		note = n == 1 ? "enter · runs it" : fmt.tprintf("enter · %d cards, a thread each", n)
-	}
 	// The same band along the bottom the composer has, and the same two chips
 	// in the corner of it: what is typed here is what a card runs on, so the
 	// model is chosen where the card is written rather than inside a thread
-	// opened afterwards. The note moves to the left to make room, which is
-	// where the composer's own line of small print already sits.
+	// opened afterwards.
+	//
+	// Nothing else sits in that band. It used to print what Enter would do —
+	// "enter · runs it", "enter · 3 cards, a thread each" — which is a line
+	// that says the same thing on every frame forever after it has been read
+	// once, and the cards it was warning about appear the moment Enter is
+	// pressed anyway.
 	chip_y := box.y + box.h - COMPOSER_CHIPS / 2 - 8
 	draw_chips(app, full, box, chip_y)
-	if note != "" {
-		ui_text(ui, &ui.regular, note, {box.x + COMPOSER_SIDE, chip_y + 3}, 12, FAINT)
-	}
 }
 
 // --- the launcher ------------------------------------------------------------
@@ -552,27 +544,40 @@ GAUGE_W :: f32(38)
 // share it — the model's and the effort's are the same popup with a different
 // list, and a second copy of this is a second popup to keep in step.
 //
-// It grows out of the chip rather than appearing over it. The two chips sit
-// side by side and the popup is wider than either, so a list that was simply
-// there gave no sign of which of the two it was a list of; the movement says
-// it, and says it in the only place anyone is looking.
+// What is different between them is data, not code: the heading, the rows,
+// the line under each row saying what it is for, and then either the exact
+// release the row runs — the ids are pinned so a name cannot drift to another
+// build, and the picker was the one place that promise was invisible — or a
+// gauge, for a list that is a ladder. It is sized off that content and off
+// nothing else; the width used to be max(chip.w, 150), which is the chip's
+// business and not the list's.
 //
-// Every row also carries what the label does not: the exact release a model
-// name runs — the ids are pinned so "Fable 5.1" cannot quietly become a
-// different build, and the picker was the one place that promise was not
-// visible — and, for effort, a gauge, because nothing in the words "High",
-// "Xhigh" and "Max" says which way round they go.
+// And it grows out of the chip's own corner rather than appearing over the
+// transcript. The two chips sit side by side and this is wider than either,
+// so a list that was simply there gave no sign of which of the two it was a
+// list of. The movement says it, in the one place anyone is looking.
 @(private = "file")
 draw_picker :: proc(
 	app: ^App,
 	chip: Rect,
+	head: string,
 	labels: []string,
-	hints: []string, // what each row runs, right-aligned; nil draws a gauge
+	notes: []string,
+	hints: []string, // what each row runs, right-aligned; empty for none
+	gauge: bool, // right-aligned rungs instead, for a list that is a ladder
 	at: int,
 	tag: string,
 	open: bool,
 ) -> (choice: int, picked: bool) {
 	ui := &app.ui
+	LABEL_PX :: f32(15)
+	NOTE_PX :: f32(12.5)
+	HINT_PX :: f32(11)
+	PAD_X :: f32(16)
+	DOT_X :: f32(16) // where the tick sits, from the row's left edge
+	TEXT_X :: f32(34)
+	GAP :: f32(24) // between the longest label and whatever is right-aligned
+
 	// Shut is a length of time from open, not a frame. The tween is ticked
 	// whether or not there is a chip to hang the popup off, so a picker the
 	// page took away with it cannot come back halfway through its own
@@ -580,19 +585,31 @@ draw_picker :: proc(
 	t := ui_tween(ui, ui_id(tag, PICKER_ANIM), open ? 1 : 0, PICKER_OPEN)
 	if t <= 0 || chip.w <= 0 do return 0, false
 
-	row_h := f32(34)
-	head_h := f32(26)
-	text_w, hint_w := f32(0), GAUGE_W
-	for label in labels do text_w = max(text_w, font_width(&ui.regular, label, 15))
-	if hints != nil {
-		hint_w = 0
-		for hint in hints do hint_w = max(hint_w, font_width(&ui.mono, hint, 11))
+	row_h := f32(48)
+	head_h := f32(28)
+	// As wide as the widest thing in it, and no wider.
+	right_w := gauge ? GAUGE_W : 0
+	for hint in hints do right_w = max(right_w, font_width(&ui.mono, hint, HINT_PX))
+	w := font_width(&ui.bold, head, 12) + TEXT_X + PAD_X
+	for label, i in labels {
+		line := font_width(&ui.regular, label, LABEL_PX)
+		if right_w > 0 do line += GAP + right_w
+		if i < len(notes) do line = max(line, font_width(&ui.regular, notes[i], NOTE_PX))
+		w = max(w, line + TEXT_X + PAD_X)
 	}
-	w := max(chip.w, 27 + text_w + 22 + hint_w + 14)
-	h := head_h + row_h * f32(len(labels)) + 6
+	w = min(w, ui.size.x - 24)
+	h := head_h + row_h * f32(len(labels)) + 12
+
 	r := Rect{chip.x + chip.w - w, chip.y - h - 8, w, h}
+	// It opens upward off a chip that sits near the bottom of the window, but
+	// a list this tall in a short window can run off the top, and one this
+	// wide off the left. Both edges are checked here rather than by keeping
+	// the popup small enough that neither could happen.
+	if r.y < 8 do r.y = min(chip.y + chip.h + 8, ui.size.y - h - 8)
+	r.y = max(r.y, 8)
+	r.x = clamp(r.x, 8, max(8, ui.size.x - w - 8))
 	row_at :: proc(r: Rect, head_h, row_h: f32, i: int) -> Rect {
-		return {r.x + 5, r.y + head_h + f32(i) * row_h, r.w - 10, row_h}
+		return {r.x + 6, r.y + head_h + 6 + f32(i) * row_h, r.w - 12, row_h - 4}
 	}
 
 	// What the pointer is on, asked before anything is drawn: the lit row
@@ -627,49 +644,53 @@ draw_picker :: proc(
 	a := t
 
 	SHADOW :: Color(0xff000000)
-	ui_rect(ui, {r.x - 10, r.y + 2, r.w + 20, r.h + 18}, color_alpha(SHADOW, 0.10 * a), 24)
-	ui_rect(ui, {r.x - 2, r.y + 3, r.w + 4, r.h + 8}, color_alpha(SHADOW, 0.22 * a), 15)
+	ui_rect(ui, {r.x - 10, r.y + 2, r.w + 20, r.h + 18}, color_alpha(SHADOW, 0.12 * a), 26)
+	ui_rect(ui, {r.x - 2, r.y + 4, r.w + 4, r.h + 8}, color_alpha(SHADOW, 0.26 * a), 16)
 	// A hairline of the type colour around it, so the panel has an edge
 	// against the transcript it covers instead of melting into it.
-	ui_rect(ui, {r.x - 1, r.y - 1, r.w + 2, r.h + 2}, color_alpha(TEXT, 0.12 * a), 13)
-	ui_rect(ui, r, color_alpha(PANEL_HI, a), 12)
+	ui_rect(ui, {r.x - 1, r.y - 1, r.w + 2, r.h + 2}, color_alpha(TEXT, 0.12 * a), 15)
+	ui_rect(ui, r, color_alpha(PANEL_HI, a), 14)
 
-	ui_text(ui, &ui.bold, tag, {r.x + 16, r.y + 7}, 11, color_alpha(FAINT, a))
-	ui_rect(ui, {r.x + 12, r.y + head_h - 3, r.w - 24, 1}, color_alpha(TEXT, 0.08 * a))
+	// What you are choosing, said once at the top. Two chips sit side by side
+	// and open the same shaped list, and without this the only way to tell
+	// which one you had clicked was to read the words in it.
+	ui_text(ui, &ui.bold, head, {r.x + TEXT_X, r.y + 9}, 12, color_alpha(FAINT, a))
+	ui_rect(ui, {r.x + PAD_X, r.y + head_h + 1, r.w - PAD_X * 2, 1}, color_alpha(TEXT, 0.08 * a))
 
 	// One lit row that slides between them, rather than a rectangle blinking
 	// on and off wherever the pointer lands. It rests on the row that is
 	// chosen when the pointer is elsewhere, so the list is never showing
-	// nothing at all — and where it slid from is what says the two rows are
-	// the same kind of thing.
+	// nothing at all — and where it slid from is what says the row you left
+	// and the row you are on are the same kind of thing.
 	pos := ui_anim(ui, ui_id(tag, PICKER_PILL), f32(hover >= 0 ? hover : at), 30)
 	pill := row_at(r, head_h, row_h, 0)
 	pill.y += pos * row_h
-	ui_rect(ui, pill, color_alpha(color_mix(PANEL, ACCENT, hover >= 0 ? 0.34 : 0.16), a), 9)
+	ui_rect(ui, pill, color_alpha(color_mix(PANEL, ACCENT, hover >= 0 ? 0.34 : 0.16), a), 10)
 
 	for label, i in labels {
 		row := row_at(r, head_h, row_h, i)
-		mid := row.y + row_h / 2
 		on := i == at
-		if on {
-			ui_circle(ui, {row.x + 15, mid}, 7, color_alpha(ACCENT_DIM, 0.4 * a))
-			ui_circle(ui, {row.x + 15, mid}, 3.5, color_alpha(ACCENT, a))
-		}
 		lit := on || i == hover
-		ui_text_middle(ui, on ? &ui.bold : &ui.regular, label, row.x + 27, row, 15, color_alpha(lit ? TEXT : MUTED, a))
-		if hints != nil {
-			hw := font_width(&ui.mono, hints[i], 11)
-			ui_text_middle(ui, &ui.mono, hints[i], row.x + row.w - 14 - hw, row, 11, color_alpha(lit ? MUTED : FAINT, a))
-		} else {
-			draw_gauge(ui, {row.x + row.w - 14 - GAUGE_W, mid}, i, len(labels), lit, a)
+		if on {
+			ui_circle(ui, {row.x + DOT_X - 6, row.y + 14}, 7, color_alpha(ACCENT_DIM, 0.4 * a))
+			ui_circle(ui, {row.x + DOT_X - 6, row.y + 14}, 3.5, color_alpha(ACCENT, a))
 		}
+		ui_text(ui, on ? &ui.bold : &ui.regular, label, {row.x + TEXT_X - 6, row.y + 6}, LABEL_PX, color_alpha(lit ? TEXT : MUTED, a))
+		if i < len(notes) {
+			ui_text(ui, &ui.regular, notes[i], {row.x + TEXT_X - 6, row.y + 25}, NOTE_PX, color_alpha(lit ? MUTED : FAINT, a))
+		}
+		if i < len(hints) {
+			hw := font_width(&ui.mono, hints[i], HINT_PX)
+			ui_text(ui, &ui.mono, hints[i], {row.x + row.w - PAD_X - hw, row.y + 9}, HINT_PX, color_alpha(lit ? MUTED : FAINT, a))
+		}
+		if gauge do draw_gauge(ui, {row.x + row.w - PAD_X - GAUGE_W, row.y + 15}, i, len(labels), lit, a)
 	}
 	return
 }
 
-// How hard it thinks, as a shape: the rung this row is on, out of the rungs
-// there are. The words are five claims that it is a lot, and only somebody
-// who has read the enum knows that Max is past Xhigh.
+// How far up the ladder a row stands, as a shape rather than as a word. The
+// five efforts are five claims that it is a lot, and only somebody who has
+// read the enum knows that Max is past Xhigh.
 @(private = "file")
 draw_gauge :: proc(ui: ^UI, left_mid: [2]f32, level, of: int, lit: bool, a: f32) {
 	bar := f32(5)
@@ -726,8 +747,11 @@ draw_pickers :: proc(app: ^App) {
 	if m, picked := draw_picker(
 		app,
 		app.model_chip,
+		"which model answers",
 		slice.enumerated_array(&model_label),
+		slice.enumerated_array(&model_note),
 		slice.enumerated_array(&model_flag),
+		false,
 		int(app.model),
 		"model",
 		app.overlay == .Model,
@@ -738,8 +762,11 @@ draw_pickers :: proc(app: ^App) {
 	if e, picked := draw_picker(
 		app,
 		app.effort_chip,
+		"how hard it thinks",
 		slice.enumerated_array(&effort_label),
+		slice.enumerated_array(&effort_note),
 		nil,
+		true,
 		int(app.effort),
 		"effort",
 		app.overlay == .Effort,
