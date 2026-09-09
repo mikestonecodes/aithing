@@ -217,31 +217,67 @@ draw_project_head :: proc(app: ^App, full: Rect) {
 // How much of the window the box takes, which the grid above it keeps clear.
 capture_height :: proc(app: ^App, width: f32) -> f32 {
 	if !app_capture_open(app) do return 0
-	return strip_height(strip_box_height(app, &app.capture, width))
+	h := strip_box_height(app, &app.capture, width)
+	// The pictures the text names sit above it, the same row the composer
+	// gives an attachment. Asked for again here rather than passed down from
+	// the draw, because this is measured before the draw runs and the two
+	// must not be able to disagree about how tall the box is.
+	if len(capture_images(app)) > 0 do h += COMPOSER_THUMB + 14
+	return strip_height(h)
+}
+
+// Where the box under the grid lands, and where the picture the text names
+// lands on top of it. Worked out here and read by everyone who needs it —
+// the draw, and the headless shot putting a pointer on a thumbnail — because
+// a second copy of this arithmetic is a pointer that misses by four pixels
+// and a shot of nothing happening.
+capture_box :: proc(app: ^App, full: Rect) -> Rect {
+	h := capture_height(app, full.w)
+	width := composer_width(full.w)
+	return {full.x + (full.w - width) / 2, full.y + full.h - h + 6, width, h - 18}
+}
+
+capture_thumb :: proc(app: ^App, full: Rect, i: int) -> Rect {
+	box := capture_box(app, full)
+	x := box.x + 14 + f32(i) * (COMPOSER_THUMB + 8)
+	return {x, box.y + COMPOSER_PAD, COMPOSER_THUMB, COMPOSER_THUMB}
 }
 
 @(private = "file")
 draw_capture :: proc(app: ^App, full: Rect) {
 	ui := &app.ui
-	h := capture_height(app, full.w)
-	width := composer_width(full.w)
-	x := full.x + (full.w - width) / 2
 	// The box is the box. It used to keep a line above itself naming the
 	// project the cards would land in — "in aithing" — and that line is gone
 	// with the room it took: the box is only there on a grid narrowed to one
 	// project, and the heading over that grid has already said which.
-	box := Rect{x, full.y + full.h - h + 6, width, h - 18}
+	box := capture_box(app, full)
 
 	focused := app_focus(app) == .Capture
 	ui_punch(ui, box, COMPOSER_BG, 14)
 	draw_box_edge(app, box, focused, ui_id("capture-edge"))
 	if ui_hovered(ui, box) do ui.cursor_text = true
 
+	// A pasted picture is a path in the text and a thumbnail above it. There
+	// is no x on these: the path is the picture, so a picture is dropped by
+	// deleting the words that name it, in the box you are already typing in.
+	inner_y := box.y + COMPOSER_PAD
+	imgs := capture_images(app)
+	peek := Rect{}
+	peek_at := -1
+	if len(imgs) > 0 {
+		for a, i in imgs {
+			tr := capture_thumb(app, full, i)
+			ui_image_cover(ui, tr, a.tex, a.width, a.height, 8)
+			if ui_hovered(ui, tr) do peek, peek_at = tr, i
+		}
+		inner_y += COMPOSER_THUMB + 14
+	}
+
 	text_w := box.w - COMPOSER_SIDE * 2
 	editor_layout_lines(ui, &app.capture, text_w, &ui.regular, COMPOSER_PX)
 	_, lines := editor_window(&app.capture, COMPOSER_LINES)
 	text_h := f32(lines) * (COMPOSER_PX * 1.5)
-	text_r := Rect{box.x + COMPOSER_SIDE, box.y + COMPOSER_PAD, text_w, text_h}
+	text_r := Rect{box.x + COMPOSER_SIDE, inner_y, text_w, text_h}
 	// Nothing is printed into the empty box. It used to say "what needs
 	// doing", which is a line that answers its own question once and then
 	// sits under the caret forever: the box is the only place on the grid you
@@ -260,6 +296,10 @@ draw_capture :: proc(app: ^App, full: Rect) {
 	// pressed anyway.
 	chip_y := box.y + box.h - COMPOSER_CHIPS / 2 - 8
 	draw_chips(app, box, chip_y)
+
+	// Last, so it is over the box rather than under the text that follows it.
+	grow := ui_spring(ui, ui_id("capture-peek"), peek_at >= 0 ? 1 : 0, 320, 18)
+	if peek_at >= 0 do draw_image_peek(app, peek, imgs[peek_at], grow)
 }
 
 // --- the launcher ------------------------------------------------------------
@@ -528,13 +568,16 @@ draw_composer :: proc(app: ^App, r: Rect) {
 	inner_y := box.y + COMPOSER_PAD
 
 	// Pasted images sit above the text, each with a corner button to drop it.
+	peek := Rect{}
+	peek_at := -1
 	if len(app.attach) > 0 {
 		thumb := COMPOSER_THUMB
 		tx := box.x + 14
 		for i := 0; i < len(app.attach); i += 1 {
 			a := &app.attach[i]
 			tr := Rect{tx, inner_y, thumb, thumb}
-			ui_image(ui, tr, a.tex, 8)
+			ui_image_cover(ui, tr, a.tex, a.width, a.height, 8)
+			if ui_hovered(ui, tr) do peek, peek_at = tr, i
 			del := Rect{tr.x + thumb - 16, tr.y - 4, 20, 20}
 			clicked, hovered := ui_invisible_button(ui, ui_id("unattach", i), del)
 			up := ui_spring(ui, ui_id("unattach-up", i), hovered ? 1 : 0, 400, 11)
@@ -544,6 +587,9 @@ draw_composer :: proc(app: ^App, r: Rect) {
 				attachment_destroy(a)
 				ordered_remove(&app.attach, i)
 				i -= 1
+				// Everything after it has just moved down one; the pointer is
+				// on the x, not on a thumbnail, so there is nothing to show.
+				peek_at = -1
 			}
 			tx += thumb + 8
 		}
@@ -578,6 +624,58 @@ draw_composer :: proc(app: ^App, r: Rect) {
 	// on the grid, where cards actually run, it was never drawn at all.
 	chip_y := box.y + box.h - COMPOSER_CHIPS / 2 - 8
 	draw_chips(app, box, chip_y)
+
+	// Last, so it is over the box rather than under it.
+	grow := ui_spring(ui, ui_id("composer-peek"), peek_at >= 0 ? 1 : 0, 320, 18)
+	if peek_at >= 0 && peek_at < len(app.attach) {
+		draw_image_peek(app, peek, app.attach[peek_at], grow)
+	}
+}
+
+// The whole picture, for as long as the pointer rests on its thumbnail. A
+// thumbnail is 72 pixels of a screenshot, which is enough to tell two pastes
+// apart and nothing like enough to read what is in either — and what is in it
+// is the entire reason for pasting a picture at somebody.
+//
+// Nothing is written down about which one is open, because the question
+// "which picture is being looked at" already has an answer: the one under the
+// pointer, this frame. It grows out of the thumbnail as the pointer arrives
+// and is gone the frame the pointer leaves, so there is no shut to forget.
+PEEK_IMAGE_W :: f32(760)
+
+draw_image_peek :: proc(app: ^App, thumb: Rect, a: Attachment, grow: f32) {
+	ui := &app.ui
+	// Nothing decoded means nothing to blow up: the thumbnail is a white
+	// square and the file is still attached and still handed over.
+	if a.tex == WHITE_TEX || a.width <= 0 || a.height <= 0 do return
+
+	// As big as the window over the box will take, at the picture's own shape,
+	// and never bigger than the picture is: blowing a small paste up past its
+	// own pixels is a blurry version of what the thumbnail already showed.
+	max_w := min(ui.size.x - PAD * 2, PEEK_IMAGE_W, f32(a.width))
+	max_h := thumb.y - PAD * 2
+	if max_w < 60 || max_h < 60 do return
+	w := max_w
+	h := w * f32(a.height) / f32(a.width)
+	if h > max_h {
+		h = max_h
+		w = h * f32(a.width) / f32(a.height)
+	}
+	x := clamp(thumb.x + thumb.w / 2 - w / 2, PAD, max(ui.size.x - PAD - w, PAD))
+	box := Rect{x, thumb.y - 12 - h, w, h}
+
+	// It arrives a shade small and settles, out of the thumbnail it belongs
+	// to. Only the drawing scales: the panel takes no clicks, so there is
+	// nothing that could be hit anywhere other than where it was laid out.
+	sc := 0.88 + 0.12 * clamp(grow, 0, 1)
+	ax, ay := thumb.x + thumb.w / 2, thumb.y
+	ui_push_zoom(ui, sc, {ax * (1 - sc), ay * (1 - sc)})
+	defer ui_pop_zoom(ui)
+
+	// The same ground the boxes stand on, cut out of the window: what is
+	// behind the picture is the desktop, not the transcript it is covering.
+	ui_punch(ui, {box.x - 7, box.y - 7, box.w + 14, box.h + 14}, COMPOSER_BG, 12)
+	ui_image(ui, box, a.tex, 8)
 }
 
 // What the window has to say for itself, in the same corner on every page:
