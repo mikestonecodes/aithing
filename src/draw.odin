@@ -529,17 +529,12 @@ draw_composer :: proc(app: ^App, r: Rect) {
 	// The only two controls in the window: which model answers and how hard
 	// it thinks. Permissions are whatever the harness is already configured
 	// to do.
+	// The chips are the whole chip band. A running turn used to put a `stop`
+	// button in the left of it, which is a second way to say what Ctrl+C
+	// already says, sitting in the box you are typing into and only there —
+	// on the grid, where cards actually run, it was never drawn at all.
 	chip_y := box.y + box.h - COMPOSER_CHIPS / 2 - 8
 	draw_chips(app, box, chip_y)
-	if app_chat_busy(app) {
-		// While a turn is in flight the same corner says so, and stops it.
-		stop := Rect{box.x + 14, chip_y - 3, 58, 22}
-		clicked, hovered := ui_invisible_button(ui, ui_id("stop"), stop)
-		ui_rect(ui, stop, hovered ? PANEL_HI : Color(0x00000000), 6)
-		ui_rect(ui, {stop.x + 8, stop.y + 7, 8, 8}, RED, 2)
-		ui_text(ui, &ui.regular, "stop", {stop.x + 22, stop.y + 3}, 13, hovered ? TEXT : MUTED)
-		if clicked do app_interrupt(app)
-	}
 }
 
 // What the window has to say for itself, in the same corner on every page:
