@@ -617,6 +617,7 @@ Peek :: struct {
 	box:    Rect, // the panel, on screen
 	body_h: f32, // the content under the head, before any is cut off
 	img_h:  f32,
+	pic:    string, // the picture it is holding, if it is holding one
 }
 
 @(private = "file")
@@ -639,12 +640,14 @@ peek_layout :: proc(app: ^App, ref: Ref, view: Rect, top: f32) -> (p: Peek) {
 	// contents have to agree on. What does not fit under PEEK_MAX is not
 	// thrown away any more: it scrolls, so a long result is read by turning
 	// the wheel over the stone rather than opening the transcript elsewhere.
-	switch b.kind {
-	case .Image:
-		img := app_preview(app, b.image)
+	p.pic = block_picture(b)
+	if p.pic != "" {
+		img := app_preview(app, p.pic)
 		aspect := img.width > 0 && img.height > 0 ? f32(img.height) / f32(img.width) : 0.62
 		p.img_h = min(inner * aspect, PEEK_MAX)
 		p.body_h = p.img_h
+	} else do switch b.kind {
+	case .Image:
 	case .Text, .Error:
 		md_layout(ui, b, inner)
 		p.body_h = b.height
@@ -723,9 +726,10 @@ draw_peek :: proc(app: ^App, p: Peek) {
 	ui_begin_scroll(ui, body_box, &app.peek, p.body_h + 8, p.stone)
 	iy := body_box.y - app.peek.offset
 	ix := box.x + 14
-	switch b.kind {
+	if p.pic != "" {
+		ui_image(ui, {ix, iy, inner, p.img_h}, app_preview(app, p.pic).tex, 6)
+	} else do switch b.kind {
 	case .Image:
-		ui_image(ui, {ix, iy, inner, p.img_h}, app_preview(app, b.image).tex, 6)
 	case .Text, .Error:
 		ui_hover_text(ui, box, body)
 		col := b.kind == .Error ? RED : TEXT
