@@ -37,6 +37,10 @@ PEEK_W :: f32(520)
 PEEK_MAX :: f32(470) // how tall an opened tile is allowed to get: the rest scrolls
 PEEK_LINES :: 400 // of a tool result, the most the panel will ever lay out
 PEEK_HEAD :: f32(30)
+// A panel holding a picture is sized by the picture, not by the reading
+// column: the most of the view it may take, across and down.
+PEEK_PIC_W :: f32(0.62)
+PEEK_PIC_H :: f32(0.72)
 ANSWER_GAP :: f32(26) // between the gold stone and the answer hanging off it
 
 // The tile colours, in the shader's own 0xAABBGGRR. Each family of tools has
@@ -639,19 +643,32 @@ peek_layout :: proc(app: ^App, ref: Ref, view: Rect, top: f32) -> (p: Peek) {
 	}
 	if !found do return
 
-	w := min(PEEK_W, view.w - PAD * 2)
+	avail := view.w - PAD * 2
+	w := min(PEEK_W, avail)
 	inner := w - 28
 
 	// How tall it wants to be, which is the one number the frame and its
 	// contents have to agree on. What does not fit under PEEK_MAX is not
 	// thrown away any more: it scrolls, so a long result is read by turning
 	// the wheel over the stone rather than opening the transcript elsewhere.
+	// A picture is the exception, and it is why the width is worked out here
+	// rather than fixed above: the panel used to be PEEK_W wide whatever it
+	// held, which printed a screenshot the width of a reading column in the
+	// middle of a 4K window — fine as a thumbnail, useless as the thing it
+	// is a picture of. So a picture is fitted to the view, whole, and the
+	// panel is whatever width that came out as.
 	p.pic = block_picture(b)
+	limit := PEEK_MAX
 	if p.pic != "" {
 		img := app_preview(app, p.pic)
 		aspect := img.width > 0 && img.height > 0 ? f32(img.height) / f32(img.width) : 0.62
-		p.img_h = min(inner * aspect, PEEK_MAX)
+		max_w := min(avail, view.w * PEEK_PIC_W) - 28
+		max_h := min(view.h - 20 - PEEK_HEAD - 14, view.h * PEEK_PIC_H)
+		inner = max(min(max_w, max_h / aspect), 1)
+		w = inner + 28
+		p.img_h = inner * aspect
 		p.body_h = p.img_h
+		limit = p.img_h
 	} else do switch b.kind {
 	case .Image:
 	case .Text, .Error:
@@ -670,8 +687,8 @@ peek_layout :: proc(app: ^App, ref: Ref, view: Rect, top: f32) -> (p: Peek) {
 		if lines == 0 do p.body_h += 22
 		p.body_h += f32(lines) * CODE_LH + (lines > 0 ? 10 : 0)
 	}
-	h := PEEK_HEAD + 14 + min(p.body_h, PEEK_MAX)
-	p.tall = p.body_h > PEEK_MAX
+	h := PEEK_HEAD + 14 + min(p.body_h, limit)
+	p.tall = p.body_h > limit
 
 	p.stone = Rect{p.tile.r.x, p.tile.r.y + top, p.tile.r.w, p.tile.r.h}
 	x := clamp(p.stone.x + p.stone.w / 2 - w / 2, view.x + PAD, view.x + view.w - PAD - w)
