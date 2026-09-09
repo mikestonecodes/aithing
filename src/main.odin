@@ -781,7 +781,7 @@ app_interrupt :: proc(app: ^App) {
 	if at < 0 do return
 	td := app.todos.list[at]
 	dropped := turn_unqueue(app, td.session)
-	turn := turn_for_todo(app, td.id)
+	turn := turn_for_card(app, td)
 	if turn < 0 {
 		if dropped do app_status(app, "stopped")
 		return

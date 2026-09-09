@@ -286,6 +286,44 @@ dismissing_a_card_leaves_the_rest :: proc(t: ^testing.T) {
 	testing.expect(t, app.turns[first].stopped)
 }
 
+// The mark beside the word and the word itself are the same question. A card
+// whose thread has a turn in it that was not started on the card — a message
+// typed into its composer, a resolve — reads as processing, and the disc that
+// says what that turn is doing used to ask a narrower question than the word
+// did: it asked for a turn carrying the card's id and found none, so the card
+// said `processing` with an empty corner beside it and Esc on it stopped
+// nothing. One procedure answers both now.
+@(test)
+a_card_running_in_its_thread_has_a_turn_to_show :: proc(t: ^testing.T) {
+	app := scratch_app()
+	defer scratch_free(app)
+
+	id := todos_add(&app.todos, "rebake the atlas", "sess-1", "/tmp/proj")
+	td := app.todos.list[0]
+
+	// A turn in that thread with no card named on it, which is what a message
+	// typed into the thread leaves behind.
+	at := turn_slot(app)
+	turn := app.turns[at]
+	turn^ = Turn {
+		live    = true,
+		chat    = true,
+		session = strings.clone("sess-1"),
+		cwd     = strings.clone("/tmp/proj"),
+	}
+	turn.runner.running = true
+
+	testing.expect_value(t, turn_for_todo(app, id), -1)
+	testing.expect_value(t, turn_for_card(app, td), at)
+	testing.expect_value(t, todo_display_state(app, td), Todo_State.Running)
+
+	// And when the process has gone the corner empties with the word: a slot
+	// still naming the thread for a frame is not work in flight.
+	turn.runner.running = false
+	testing.expect_value(t, turn_for_card(app, td), -1)
+	testing.expect_value(t, todo_display_state(app, td), Todo_State.Open)
+}
+
 // --- turns ------------------------------------------------------------------
 
 // Lists typed one after another are threads that all run at once, however
