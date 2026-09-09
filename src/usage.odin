@@ -223,15 +223,18 @@ usage_until :: proc(resets: i64) -> string {
 // read at a glance and spaced enough that three of them are three rings rather
 // than a gradient.
 @(private = "file")
-RING_W :: f32(7.5)
+RING_W :: f32(5)
 @(private = "file")
-RING_GAP :: f32(2.5)
+RING_GAP :: f32(2)
 // How wide the dial is when it has the room, how small it will go before it
 // stops fitting beside the box along the bottom, and how far it stands off
 // that box and off the corner of the window.
-DIAL_D :: f32(84)
+// Sixty across: it was eighty-four, which is a dial you look at rather
+// than a dial you glance at, and it is the least important thing in the
+// window until it is nearly full.
+DIAL_D :: f32(60)
 @(private = "file")
-DIAL_MIN :: f32(56)
+DIAL_MIN :: f32(44)
 @(private = "file")
 DIAL_GAP :: f32(12)
 
@@ -287,6 +290,14 @@ draw_usage :: proc(app: ^App, full: Rect, strip: Rect) {
 	d := box.w
 	centre := [2]f32{box.x + d / 2, box.y + d / 2}
 
+	// The whole dial swells under the pointer, on a spring, so it comes up
+	// to meet the hand the way a card does: `box` is what is hit, and the
+	// rings are drawn scaled about its middle.
+	over := ui_hovered(ui, box)
+	swell := ui_spring(ui, ui_id("usage-swell"), over ? 1 : 0, 300, 11)
+	dial_sc := 1 + 0.12 * swell
+	ui_push_zoom(ui, dial_sc, {centre.x * (1 - dial_sc), centre.y * (1 - dial_sc)})
+
 	// The three of them, in the order the rings are drawn in and the order the
 	// popover lists them in, because those two orders being the same is the
 	// only thing that says which ring is which. They were three fields read
@@ -338,12 +349,12 @@ draw_usage :: proc(app: ^App, full: Rect, strip: Rect) {
 	// the thing it is saying it about.
 	// On a spring: the words come up with a bounce, the way the rings under
 	// them were drawn.
-	over := ui_hovered(ui, box)
-	pop := ui_spring(ui, ui_id("usage-pop"), over ? 1 : 0, 260, 13)
 	// And the dial rings out from its middle when the pointer lands on it.
-	if ui_entered(ui, ui_id("usage-pop"), over) do ui_ripple(ui, ui_id("usage-pop"), centre, color_alpha(ACCENT, 0.5), d)
+	if ui_entered(ui, ui_id("usage-pop"), over) do ui_ripple(ui, ui_id("usage-pop"), centre, TOUCH, d)
 	ui_draw_ripples(ui, ui_id("usage-pop"))
-	if pop > 0.01 do popover(app, box, windows[:], pop * a)
+	ui_pop_zoom(ui)
+	pop := ui_spring(ui, ui_id("usage-pop"), over ? 1 : 0, 260, 13)
+	if pop > 0.01 do popover(app, box, windows[:], pop, a)
 
 	// What Super+C takes off the dial: the whole reading on one line, whether
 	// or not the popover has come up.
@@ -386,9 +397,9 @@ until_say :: proc(resets: i64) -> string {
 }
 
 @(private = "file")
-POP_PAD :: f32(14)
+POP_PAD :: f32(11)
 @(private = "file")
-POP_ROW :: f32(34)
+POP_ROW :: f32(30)
 
 // What each ring is and how long it has left, standing above the dial while
 // the pointer is on it. One row per ring, top to bottom as the rings go
@@ -402,48 +413,62 @@ POP_ROW :: f32(34)
 popover :: proc(app: ^App, dial: Rect, windows: []struct {
 		long, short: string,
 		w:           Allowance,
-	}, a: f32) {
+	}, pop, a: f32) {
 	ui := &app.ui
 
-	w: f32
-	for n in windows {
-		used, known := window_used(n.w), n.w.resets != 0
-		row := font_width(&ui.regular, n.long, 11) + 12
-		figure := font_width(&ui.bold, known ? usage_pct(used) : "—", 15)
-		if known && usage_until(n.w.resets) != "" {
-			figure += 7 + font_width(&ui.regular, until_left(n.w.resets), 10.5)
-		}
-		w = max(w, row, figure)
-	}
-	w += POP_PAD * 2
+	// One row per window: the name, a short bar the length of what is used,
+	// and the figure, with the time left tucked under the name. It was a
+	// stack of big percentages with the name over each, which took three
+	// lines to say what a bar says in one, and stood taller than the dial it
+	// explained.
+	// The name column is as wide as the longest name, measured: a width
+	// written here had "fable week" running into its own bar.
+	name_w := f32(0)
+	for n in windows do name_w = max(name_w, font_width(&ui.regular, n.long, 11))
+	NAME_W := name_w + 12
+	BAR_W :: f32(64)
+	fig_w := font_width(&ui.bold, "100%", 13)
+	w := POP_PAD * 2 + NAME_W + BAR_W + 12 + fig_w
+	h := POP_PAD * 2 + POP_ROW * f32(len(windows)) - 6
 
-	h := POP_PAD * 2 + POP_ROW * f32(len(windows))
 	// Above the dial, and never off the top of the window: a dial that has had
 	// to move up out of a box filling a short window has less above it than
 	// the popover is tall.
 	// Right edge to the dial's, so a popover wider than the dial grows into the
 	// window rather than off the side of it.
 	box := Rect{dial.x + dial.w - w, max(dial.y - DIAL_GAP - h, PAD), w, h}
-	box.y += (1 - a) * 8
 
-	ui_rect(ui, {box.x + 1, box.y + 5, box.w, box.h}, color_alpha(Color(0xff000000), 0.30 * a), 12)
-	ui_rect(ui, box, color_alpha(PANEL, 0.97 * a), 12)
+	// Out of the dial and back into it: scaled about the corner the dial is
+	// in, on the same spring the dial's hover runs on, so it lands a hair
+	// big and settles.
+	fade := clamp(pop, 0, 1) * a
+	sc := 0.7 + 0.3 * clamp(pop, 0, 1.25)
+	ox, oy := box.x + box.w, box.y + box.h
+	ui_push_zoom(ui, sc, {ox * (1 - sc), oy * (1 - sc)})
+	defer ui_pop_zoom(ui)
+
+	ui_rect(ui, {box.x + 1, box.y + 5, box.w, box.h}, color_alpha(Color(0xff000000), 0.30 * fade), 12)
+	ui_rect(ui, box, color_alpha(PANEL, 0.97 * fade), 12)
+	ui_rect(ui, box, color_alpha(BORDER, 0.6 * fade), 12)
 
 	for n, i in windows {
 		at := [2]f32{box.x + POP_PAD, box.y + POP_PAD + f32(i) * POP_ROW}
 		used, known := window_used(n.w), n.w.resets != 0
 		col := known ? usage_meter_color(used) : FAINT
 
-		ui_circle(ui, {at.x + 3.5, at.y + 7}, 3.5, color_alpha(col, a))
-		ui_text(ui, &ui.regular, n.long, {at.x + 12, at.y}, 11, color_alpha(FAINT, a))
+		ui_text(ui, &ui.regular, n.long, {at.x, at.y}, 11, color_alpha(TEXT, 0.85 * fade))
+		if known && usage_until(n.w.resets) != "" {
+			ui_text(ui, &ui.regular, until_left(n.w.resets), {at.x, at.y + 12}, 9.5, color_alpha(FAINT, fade))
+		}
 
 		// The same easing the ring runs on, off the same stored value, so the
-		// figure and the slice it labels cannot say two different things.
+		// figure and the bar it labels cannot say two different things.
 		shown := known ? ui_spring(ui, ui_id("usage-ring", i), used, 40, 7) : 0
+		bar := Rect{at.x + NAME_W, at.y + 5, BAR_W, 5}
+		ui_rect(ui, bar, color_alpha(TRACK, fade), 2.5)
+		if shown > 0 do ui_rect(ui, {bar.x, bar.y, max(bar.w * clamp(shown, 0, 1), 5), bar.h}, color_alpha(col, fade), 2.5)
 		figure := known ? usage_pct(shown) : "—"
-		x := ui_text(ui, &ui.bold, figure, {at.x, at.y + 13}, 15, color_alpha(col, a))
-		if known && usage_until(n.w.resets) != "" {
-			ui_text(ui, &ui.regular, until_left(n.w.resets), {at.x + x + 7, at.y + 17}, 10.5, color_alpha(FAINT, a))
-		}
+		fw := font_width(&ui.bold, figure, 13)
+		ui_text(ui, &ui.bold, figure, {box.x + box.w - POP_PAD - fw, at.y - 1}, 13, color_alpha(col, fade))
 	}
 }

@@ -360,7 +360,7 @@ draw_card :: proc(app: ^App, card: Card, base: Rect) {
 	ui_rect(ui, r, color_mix(USER_BG, PANEL_HI, lift * 0.7), 12)
 	// The pointer arriving sends a ring out from where it landed, kept
 	// inside the card: the card says it felt it.
-	if ui_entered(ui, id, hovered) do ui_ripple(ui, id, ui.mouse, color_alpha(ACCENT, 0.55), max(base.w, base.h) * 0.9)
+	if ui_entered(ui, id, hovered) do ui_ripple(ui, id, ui.mouse, TOUCH, max(base.w, base.h) * 0.9)
 	ui_push_clip(ui, r)
 	ui_draw_ripples(ui, id)
 	ui_pop_clip(ui)

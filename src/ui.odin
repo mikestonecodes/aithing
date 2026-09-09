@@ -233,6 +233,11 @@ Ripple :: struct {
 
 RIPPLE_LIFE :: f32(0.75)
 
+// The ring the pointer leaves on arriving: a pale one, thin enough to be
+// felt rather than seen. It was the accent for a day, and a red ring on
+// every card the pointer crossed read as a warning on each of them.
+TOUCH :: Color(0x30e9f0f2)
+
 ui_ripple :: proc(ui: ^UI, key: u64, at: [2]f32, col: Color, size: f32) {
 	append(&ui.ripples, Ripple{key, at, ui.time, col, size})
 	ui.animating = true
@@ -378,7 +383,7 @@ ui_begin :: proc(ui: ^UI, width, height: int, input: ^Input, dt: f32 = 1.0 / 60)
 		}
 	}
 	// Every press lands somewhere, and the window says so where it landed.
-	if ui.pressed && ui.has_mouse do ui_ripple(ui, 0, ui.mouse, color_alpha(TEXT, 0.35), 36)
+	if ui.pressed && ui.has_mouse do ui_ripple(ui, 0, ui.mouse, color_alpha(TEXT, 0.22), 36)
 	ui.time_effects = false
 	ui.wake_in = NEVER
 }

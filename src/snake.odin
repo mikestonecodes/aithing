@@ -387,8 +387,16 @@ draw_tile :: proc(app: ^App, t: Tile, r: Rect) -> bool {
 	// Two movements, and they are both the tile's own: it arrives by growing
 	// into place, and it lifts under the pointer. Both ease off one stored
 	// number each, so a tile that arrives while another is up leaves it alone.
-	born := ui_anim(ui, id + 1, 1, 9)
-	pop := ui_anim(ui, id + 2, open ? 1 : 0, 20)
+	// On springs, so a stone lands with a bounce and lifts with one, and the
+	// panel it opens (see draw_peek) grows out of it on the third: it is
+	// ticked here, by the stone, so the panel's own spring is wound back
+	// down while the panel is shut and can pop again next time.
+	ui_spring_seed(ui, id + 1, 0)
+	born := ui_spring(ui, id + 1, 1, 160, 9)
+	pop := ui_spring(ui, id + 2, open ? 1 : 0, 380, 12)
+	_ = ui_spring(ui, id + 3, open ? 1 : 0, 300, 13)
+	if ui_entered(ui, id, hovered) do ui_ripple(ui, id + 4, {r.x + r.w / 2, r.y + r.h / 2}, TOUCH, r.w * 1.6)
+	ui_draw_ripples(ui, id + 4)
 	// A stone that is working breathes, and the sheen the shader crosses a
 	// lit tile with crosses this one too — the halo alone was a stone a
 	// shade warmer than its neighbours, which is not something you notice
@@ -598,6 +606,19 @@ draw_peek :: proc(app: ^App, ref: Ref, view: Rect, top: f32) {
 	if y + h > view.y + view.h - 8 do y = tr.y - h - 12
 	y = clamp(y, view.y + 6, max(view.y + view.h - h - 6, view.y + 6))
 	box := Rect{x, y, w, h}
+
+	// It grows out of the stone it belongs to, on the spring the stone
+	// ticks for it, and lands a shade too big. Only the drawing scales; the
+	// panel takes no clicks, so nothing is hit anywhere but where it is.
+	// Not while the thread itself is still zooming in — one zoom at a time.
+	grow := clamp(ui.anim[ui_id_ptr(b) + 3].pos, 0, 1.3)
+	zoomed := ui.zoom == 1
+	if zoomed {
+		sc := 0.82 + 0.18 * grow
+		ax, ay := tr.x + tr.w / 2, tr.y + tr.h / 2
+		ui_push_zoom(ui, sc, {ax * (1 - sc), ay * (1 - sc)})
+	}
+	defer if zoomed do ui_pop_zoom(ui)
 
 	// The same ground the composer stands on: cut out of the window, so what
 	// is behind it is the desktop rather than the path it is covering.

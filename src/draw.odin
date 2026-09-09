@@ -185,7 +185,13 @@ draw_project_head :: proc(app: ^App, full: Rect) {
 	// it — "esc to widen", "/ to pick a project" — which said the same thing
 	// on every frame forever after it had been read once, and cost the top of
 	// the window to keep saying it.
-	ui_text(ui, &ui.bold, base_name(name), {full.x + GRID_PAD, full.y + 20}, 21, TEXT)
+	// It arrives: keyed on the name, so narrowing to another project brings
+	// the new one in from the left with a little give, and the same name
+	// staying put does not move.
+	hid := ui_id(name, 12)
+	ui_spring_seed(ui, hid, 0)
+	in_ := ui_spring(ui, hid, 1, 200, 12)
+	ui_text(ui, &ui.bold, base_name(name), {full.x + GRID_PAD - (1 - in_) * 18, full.y + 20}, 21, color_alpha(TEXT, clamp(in_, 0, 1)))
 }
 
 // --- the box under the grid ---------------------------------------------------
@@ -399,7 +405,7 @@ draw_launcher :: proc(app: ^App, full: Rect) {
 			ui_rect(ui, {r.x - g, r.y - g / 2, r.w + g * 2, r.h + g}, color_alpha(PANEL_HI, 0.9 * t * min(lit, 1)), 12)
 			ui_rect(ui, {r.x - g, r.y + 10, 3, r.h - 20}, color_alpha(ACCENT, t * min(lit, 1)), 2)
 		}
-		if ui_entered(ui, rid, hovered) do ui_ripple(ui, rid, ui.mouse, color_alpha(ACCENT, 0.45), r.w * 0.5)
+		if ui_entered(ui, rid, hovered) do ui_ripple(ui, rid, ui.mouse, TOUCH, r.w * 0.5)
 		ui_push_clip(ui, r)
 		ui_draw_ripples(ui, rid)
 		ui_pop_clip(ui)
@@ -531,7 +537,8 @@ draw_composer :: proc(app: ^App, r: Rect) {
 			ui_image(ui, tr, a.tex, 8)
 			del := Rect{tr.x + thumb - 16, tr.y - 4, 20, 20}
 			clicked, hovered := ui_invisible_button(ui, ui_id("unattach", i), del)
-			ui_circle(ui, {del.x + 10, del.y + 10}, 8, hovered ? RED : Color(0xcc000000))
+			up := ui_spring(ui, ui_id("unattach-up", i), hovered ? 1 : 0, 400, 11)
+			ui_circle(ui, {del.x + 10, del.y + 10}, 8 + 2 * up, color_mix(Color(0xcc000000), RED, clamp(up, 0, 1)))
 			ui_text_centred(ui, &ui.bold, "x", del, 11, TEXT)
 			if clicked {
 				attachment_destroy(a)
@@ -585,9 +592,15 @@ draw_status :: proc(app: ^App, at: Rect) {
 	if app.status == "" || app.status == "ready" do return
 	if at.w < 40 do return
 	ui := &app.ui
+	// A new line rises into place rather than being swapped in: the spring
+	// is keyed on the words, so it is seeded at nothing the first frame a
+	// line is seen and every line that follows arrives the same way.
+	sid := ui_id(app.status, 11)
+	ui_spring_seed(ui, sid, 0)
+	in_ := ui_spring(ui, sid, 1, 220, 13)
 	buf: [128]u8
 	msg := font_ellipsize(&ui.regular, app.status, 13, at.w, buf[:])
-	ui_text(ui, &ui.regular, msg, {at.x, at.y}, 13, FAINT)
+	ui_text(ui, &ui.regular, msg, {at.x, at.y + (1 - in_) * 10}, 13, color_alpha(FAINT, clamp(in_, 0, 1)))
 }
 
 // How long the picker takes to arrive, and how far it starts from where it
@@ -853,7 +866,7 @@ draw_chip :: proc(app: ^App, id: u64, right, y: f32, label: string, open: bool) 
 	d := Rect{r.x - g, r.y - g, r.w + g * 2, r.h + g * 2}
 	bg := color_mix(hovered ? PANEL_HI : color_alpha(PANEL_HI, 0.5), color_mix(PANEL_HI, ACCENT, 0.55), lit)
 	ui_rect(ui, d, bg, 13 + g)
-	if ui_entered(ui, id, hovered) do ui_ripple(ui, id, ui.mouse, color_alpha(ACCENT, 0.6), r.w)
+	if ui_entered(ui, id, hovered) do ui_ripple(ui, id, ui.mouse, TOUCH, r.w)
 	ui_push_clip(ui, d)
 	ui_draw_ripples(ui, id)
 	ui_pop_clip(ui)
