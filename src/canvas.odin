@@ -973,4 +973,11 @@ ui_line :: proc(ui: ^UI, a, b: [2]f32, thickness: f32, col: Color) {
 	if l < 0.5 do return
 	n := [2]f32{-d.y, d.x} / l * (thickness / 2)
 	ui_quad_corners(ui, {a + n, b + n, b - n, a - n}, {{0, 0}, {1, 0}, {1, 1}, {0, 1}}, {col, col, col, col}, WHITE_TEX)
+	// Round ends. Every chevron here is two of these meeting at a point, and
+	// two square-ended strokes meeting at an angle leave a notch on the
+	// outside of the joint — the prompt on the command stone had a bite out
+	// of its tip. A disc the stroke's own width at each end fills the joint
+	// whatever the angle, and costs nothing anyone would notice.
+	ui_circle(ui, a, thickness / 2, col)
+	ui_circle(ui, b, thickness / 2, col)
 }
