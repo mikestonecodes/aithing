@@ -156,7 +156,7 @@ test_usage_fable_week_survives_other_models :: proc(t: ^testing.T) {
 	testing.expect_value(t, window_used(app.usage.limits.fable), 0.8)
 }
 
-// The dial has the bottom left corner and the box along the bottom is centred
+// The dial has the bottom right corner and the box along the bottom is centred
 // in the window, so at a narrow enough width there is no beside for the dial
 // to be in. What it must never do is come down on the box: the composer is
 // where the work is typed, and a set of rings over the first line of it is
@@ -180,14 +180,14 @@ the_dial_never_stands_on_the_box :: proc(t: ^testing.T) {
 		testing.expectf(t, dial.w == dial.h, "at %v wide the dial is %v by %v", w, dial.w, dial.h)
 		testing.expectf(
 			t,
-			dial.x + dial.w <= box.x || dial.y + dial.h <= box.y,
+			dial.x >= box.x + box.w || dial.y + dial.h <= box.y,
 			"at %v wide the dial %v is on the box %v",
 			w,
 			dial,
 			box,
 		)
 		// And it is still in the window it was given, with its margin.
-		testing.expectf(t, dial.x >= PAD, "at %v wide the dial starts at %v", w, dial.x)
+		testing.expectf(t, dial.x + dial.w <= w - PAD, "at %v wide the dial ends at %v", w, dial.x + dial.w)
 		testing.expect(t, dial.y >= 0)
 		testing.expect(t, dial.y + dial.h <= full.h - PAD)
 	}
@@ -200,6 +200,6 @@ the_dial_is_whole_when_nothing_is_beside_it :: proc(t: ^testing.T) {
 	full := Rect{0, 0, 1180, 800}
 	dial := usage_rect(full, {})
 	testing.expect_value(t, dial.w, DIAL_D)
-	testing.expect_value(t, dial.x, PAD)
+	testing.expect_value(t, dial.x + dial.w, full.w - PAD)
 	testing.expect_value(t, dial.y + dial.h, full.h - PAD)
 }

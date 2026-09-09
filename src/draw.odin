@@ -17,10 +17,10 @@ PAD :: f32(16)
 COMPOSER_BG :: Color(0x66202224)
 BLINK :: f32(0.55) // caret on/off, in seconds
 // How wide the block caret is where there is no character under it to take
-// its width from, as a fraction of the type size. A box with nothing in it
-// prints what it is for, and that line has to start clear of this: it used to
-// start at the same x, so "what needs doing" read as a block and then "hat
-// needs doing".
+// its width from, as a fraction of the type size. Where a box with nothing in
+// it prints what it is for, that line has to start clear of this: it used to
+// start at the same x, so "Reply to Claude..." read as a block and then
+// "eply to Claude...".
 CARET_EMPTY :: f32(0.55)
 RESULT_BYTES :: 4000 // how much of a tool result is ever shown
 RESULT_LINES :: 40
@@ -233,9 +233,10 @@ draw_capture :: proc(app: ^App, full: Rect) {
 	_, lines := editor_window(&app.capture, COMPOSER_LINES)
 	text_h := f32(lines) * (COMPOSER_PX * 1.5)
 	text_r := Rect{box.x + COMPOSER_SIDE, box.y + COMPOSER_PAD, text_w, text_h}
-	if editor_text(&app.capture) == "" {
-		ui_text(ui, &ui.regular, "what needs doing", {placeholder_x(text_r.x), text_r.y + 2}, COMPOSER_PX, FAINT)
-	}
+	// Nothing is printed into the empty box. It used to say "what needs
+	// doing", which is a line that answers its own question once and then
+	// sits under the caret forever: the box is the only place on the grid you
+	// can type, and a caret blinking in it says that already.
 	draw_editor(app, &app.capture, text_r, &ui.regular, COMPOSER_PX, focused, COMPOSER_LINES)
 
 	// The same band along the bottom the composer has, and the same two chips
@@ -528,17 +529,12 @@ draw_composer :: proc(app: ^App, r: Rect) {
 	// The only two controls in the window: which model answers and how hard
 	// it thinks. Permissions are whatever the harness is already configured
 	// to do.
+	// The chips are the whole chip band. A running turn used to put a `stop`
+	// button in the left of it, which is a second way to say what Ctrl+C
+	// already says, sitting in the box you are typing into and only there —
+	// on the grid, where cards actually run, it was never drawn at all.
 	chip_y := box.y + box.h - COMPOSER_CHIPS / 2 - 8
 	draw_chips(app, box, chip_y)
-	if app_chat_busy(app) {
-		// While a turn is in flight the same corner says so, and stops it.
-		stop := Rect{box.x + 14, chip_y - 3, 58, 22}
-		clicked, hovered := ui_invisible_button(ui, ui_id("stop"), stop)
-		ui_rect(ui, stop, hovered ? PANEL_HI : Color(0x00000000), 6)
-		ui_rect(ui, {stop.x + 8, stop.y + 7, 8, 8}, RED, 2)
-		ui_text(ui, &ui.regular, "stop", {stop.x + 22, stop.y + 3}, 13, hovered ? TEXT : MUTED)
-		if clicked do app_interrupt(app)
-	}
 }
 
 // What the window has to say for itself, in the same corner on every page:

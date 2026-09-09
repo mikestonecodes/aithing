@@ -223,43 +223,42 @@ usage_until :: proc(resets: i64) -> string {
 // read at a glance and spaced enough that three of them are three rings rather
 // than a gradient.
 @(private = "file")
-RING_W :: f32(8)
+RING_W :: f32(7.5)
 @(private = "file")
-RING_GAP :: f32(3.5)
+RING_GAP :: f32(2.5)
 // How wide the dial is when it has the room, how small it will go before it
 // stops fitting beside the box along the bottom, and how far it stands off
 // that box and off the corner of the window.
-DIAL_D :: f32(104)
+DIAL_D :: f32(84)
 @(private = "file")
-DIAL_MIN :: f32(64)
+DIAL_MIN :: f32(56)
 @(private = "file")
 DIAL_GAP :: f32(12)
 
-// Where the dial stands, and the one place that answers it: the bottom left
+// Where the dial stands, and the one place that answers it: the bottom right
 // corner, in whatever room the box along the bottom leaves beside it.
 //
-// It was a panel in the bottom right for a long time, with the figures printed
-// down the side of it and a slab of background behind the lot. The slab was
-// there to hold the words; take the words away and there is nothing for it to
-// hold, and the rings sit on the window the way the cards do. The corner
-// swapped sides at the same time — the two chips the composer carries are in
-// the bottom right, and a thing that has to be kept off them is a thing in the
-// wrong corner.
+// It was a panel here for a long time, with the figures printed down the side
+// of it and a slab of background behind the lot. The slab was there to hold the
+// words; take the words away and there is nothing for it to hold, and the rings
+// sit on the window the way the cards do. Without the slab there is also
+// nothing to keep off the two chips the composer carries: the panel was opaque
+// and wide enough to come down over them, and a bare dial standing outside the
+// box entirely cannot.
 usage_rect :: proc(full, strip: Rect) -> Rect {
-	left := full.x + PAD
+	right := full.x + full.w - PAD
 	bottom := full.y + full.h - PAD
-	if strip.w <= 0 do return {left, bottom - DIAL_D, DIAL_D, DIAL_D}
+	if strip.w <= 0 do return {right - DIAL_D, bottom - DIAL_D, DIAL_D, DIAL_D}
 	// Beside the box while there is room for it, shrinking into what is left.
-	room := strip.x - DIAL_GAP - left
+	room := right - (strip.x + strip.w + DIAL_GAP)
 	if room >= DIAL_MIN {
 		d := min(room, DIAL_D)
-		return {left, bottom - d, d, d}
+		return {right - d, bottom - d, d, d}
 	}
 	// A narrow window is all box: it is centred and takes everything but a
-	// margin, so there is no beside to be in. The dial goes above its top left
-	// corner rather than shrinking away to nothing or sitting on what is being
-	// typed.
-	return {left, strip.y - DIAL_GAP - DIAL_D, DIAL_D, DIAL_D}
+	// margin, so there is no beside to be in. The dial goes above its top right
+	// corner rather than shrinking away to nothing or sitting on the chips.
+	return {right - DIAL_D, strip.y - DIAL_GAP - DIAL_D, DIAL_D, DIAL_D}
 }
 
 // The dial. `strip` is the box along the bottom of the window — the composer
@@ -328,7 +327,7 @@ draw_usage :: proc(app: ^App, full: Rect, strip: Rect) {
 		// disc of light behind the whole thing first, which put the brightest
 		// part in the hole in the middle: nothing is there, and the word that
 		// was came out through a red haze.
-		ui_dial(ui, centre, r + 5, RING_W + 11, sweep, color_alpha(col, (0.13 + 0.27 * used) * a), 0.11)
+		ui_dial(ui, centre, r + 4, RING_W + 9, sweep, color_alpha(col, (0.13 + 0.27 * used) * a), 0.12)
 		ui_dial(ui, centre, r, RING_W, sweep, color_alpha(col, a))
 	}
 
@@ -348,11 +347,13 @@ draw_usage :: proc(app: ^App, full: Rect, strip: Rect) {
 	ui_hover_text(ui, box, strings.to_string(line))
 }
 
-// The unspent part of a ring. Darker than the window rather than lighter, so
-// an empty allowance reads as a groove waiting to be filled and a full one as
-// something sitting in it.
+// The unspent part of a ring. Nearly black, and darker than anything else in
+// the window: a groove cut into the background for the arc to sit in. It was
+// only a shade under the panel it used to be drawn on, which on the bare window
+// read as three grey rings of its own — a dial that looked full of something
+// when it was full of nothing.
 @(private = "file")
-TRACK :: Color(0xff222525)
+TRACK :: Color(0xff141616)
 
 // Where one window's ring sits, outermost first. The order is the only thing
 // that says which ring is which, and it is the order the popover lists them
@@ -412,7 +413,9 @@ popover :: proc(app: ^App, dial: Rect, windows: []struct {
 	// Above the dial, and never off the top of the window: a dial that has had
 	// to move up out of a box filling a short window has less above it than
 	// the popover is tall.
-	box := Rect{dial.x, max(dial.y - DIAL_GAP - h, PAD), w, h}
+	// Right edge to the dial's, so a popover wider than the dial grows into the
+	// window rather than off the side of it.
+	box := Rect{dial.x + dial.w - w, max(dial.y - DIAL_GAP - h, PAD), w, h}
 	box.y += (1 - a) * 8
 
 	ui_rect(ui, {box.x + 1, box.y + 5, box.w, box.h}, color_alpha(Color(0xff000000), 0.30 * a), 12)
