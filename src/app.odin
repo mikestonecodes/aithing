@@ -108,6 +108,13 @@ App :: struct {
 	route_text: string, // the draft the manager last read: see manager.odin
 	route_off:  bool, // ctrl n said this draft is its own thread
 	pending_open:    string,
+	// The card the pointer clicked. Recorded rather than opened where it is
+	// pressed: opening a card writes app.page, and the frame that press lands
+	// in is halfway through drawing the grid — so the box along the bottom,
+	// which is only there on a grid, stopped being drawn for the rest of that
+	// one frame and came back as the composer on the next. The box you were
+	// typing into blinked out and in again every time a card was clicked.
+	pending_card:    string,
 	// Cards the x was pressed on. Dismissing one mid-frame moves every index
 	// after it in a list the grid is in the middle of walking, so the press is
 	// recorded here and acted on once the frame is over.
@@ -259,6 +266,7 @@ app_destroy :: proc(app: ^App) {
 	delete(app.route_text)
 	delete(app.cwd)
 	delete(app.pending_open)
+	delete(app.pending_card)
 	editor_destroy(&app.capture)
 	todos_save(&app.todos)
 	todos_destroy(&app.todos)
@@ -281,7 +289,12 @@ app_rescan :: proc(app: ^App) {
 // Called once a frame: takes whatever the workers have finished.
 // Applies whatever the last frame's clicks asked for.
 app_apply_clicks :: proc(app: ^App) -> bool {
-	acted := app.pending_open != "" || len(app.pending_dismiss) > 0 || len(app.pending_resolve) > 0
+	acted := app.pending_open != "" || app.pending_card != "" || len(app.pending_dismiss) > 0 || len(app.pending_resolve) > 0
+	if id := app.pending_card; id != "" {
+		app.pending_card = ""
+		app_open_todo(app, id)
+		delete(id)
+	}
 	for id in app.pending_resolve {
 		app_start_resolve(app, id)
 		delete(id)
@@ -545,6 +558,14 @@ app_sync_todos :: proc(app: ^App) {
 // that thread at the part it is about; a card nothing has started yet is
 // started, now. One path either way, whether or not anything else is in
 // flight: Enter always does the same thing and never has to be pressed twice.
+// The pointer's way in, which waits for the frame it was pressed in to
+// finish: see App.pending_card. The keyboard's Enter goes straight to
+// app_open_todo, because it is handled before the frame is drawn.
+app_click_todo :: proc(app: ^App, id: string) {
+	delete(app.pending_card)
+	app.pending_card = strings.clone(id)
+}
+
 app_open_todo :: proc(app: ^App, id: string) {
 	at := todos_find(&app.todos, id)
 	if at < 0 do return

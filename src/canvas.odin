@@ -242,7 +242,6 @@ draw_canvas :: proc(app: ^App, r: Rect) {
 	// clear whether or not anything is being typed into it.
 	bottom := capture_height(app, r.w)
 	view := Rect{r.x, r.y + GRID_TOP, r.w, r.h - GRID_TOP - bottom}
-	canvas_keep_sel_in_view(app, view)
 
 	ui_begin_scroll(ui, view, &c.scroll, content)
 	moving := make([dynamic]Placed, context.temp_allocator)
@@ -547,7 +546,7 @@ draw_card :: proc(app: ^App, card: Card, base: Rect) {
 		}
 	}
 
-	if clicked do app_open_todo(app, td.id)
+	if clicked do app_click_todo(app, td.id)
 }
 
 DOING :: f32(26) // the disc in a card's corner that says what its turn is at
@@ -655,9 +654,9 @@ draw_wrapped :: proc(ui: ^UI, font: ^Font, text: string, x, y, w, size: f32, col
 // --- the keyboard cursor ------------------------------------------------------
 
 // Reads the layout the caller has already built rather than building another
-// one: its only caller is canvas_keep_sel_in_view, three lines after the
-// layout that draws this frame, and laying the whole grid out twice to answer
-// the same question twice is half of what a frame on the grid used to cost.
+// one — every caller lays the grid out and then asks several questions of it,
+// and laying the whole grid out again per question is half of what a frame on
+// the grid used to cost.
 @(private = "file")
 sel_rect :: proc(app: ^App) -> (Rect, bool) {
 	c := &app.canvas
@@ -795,18 +794,37 @@ canvas_set_sel :: proc(app: ^App, id: string) {
 	next := strings.clone(id)
 	delete(app.canvas.sel)
 	app.canvas.sel = next
+	canvas_keep_sel_in_view(app)
 }
 
-// Scrolls just enough to keep the chosen card on screen.
+// Scrolls just enough to keep the chosen card on screen. Moving the cursor is
+// what asks for this, so it hangs off canvas_set_sel — the one place the
+// cursor is written — and off nothing else.
+//
+// It used to run from draw_canvas, every frame. The cursor is only moved by
+// the keyboard, so it sat wherever it was last left while the wheel moved the
+// grid, and the frame after the wheel took that card off the screen this
+// dragged the whole grid straight back onto it: the scroll would not go past
+// the cursor's card, and the rows below it could not be reached at all. That
+// is the "scrolling gets stuck and I cannot see the bottom ones".
 @(private = "file")
-canvas_keep_sel_in_view :: proc(app: ^App, view: Rect) {
+canvas_keep_sel_in_view :: proc(app: ^App) {
 	c := &app.canvas
+	// Before the first frame there is no view to keep anything inside of, and
+	// nothing to scroll — the cursor restored from disk is followed by the
+	// scroll restored from disk, which is the position that was saved.
+	if c.view.h <= 0 do return
+	canvas_layout(app)
 	r, ok := sel_rect(app)
 	if !ok do return
+	// The same room draw_canvas leaves: the project line above the grid and
+	// the box along the bottom are not scrolled.
+	h := c.view.h - GRID_TOP - capture_height(app, c.view.w)
+	if h <= 0 do return
 	top := r.y - SECTION_HEAD
 	bottom := r.y + r.h + CARD_GAP
 	if top < c.scroll.target do c.scroll.target = max(top, 0)
-	else if bottom - view.h > c.scroll.target do c.scroll.target = bottom - view.h
+	else if bottom - h > c.scroll.target do c.scroll.target = bottom - h
 }
 
 // Enter on the grid, with nothing typed in the box under it.
