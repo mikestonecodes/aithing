@@ -543,12 +543,11 @@ app_input :: proc(app: ^App) {
 	if len(win.input.text) > 0 {
 		typed := string(win.input.text[:])
 		// Typing on the grid writes the list: it lands in the box along the
-		// bottom. `/` over an empty box is the way into the launcher, which
-		// is where searching lives.
-		if app.page == .Grid && app.overlay == .None && typed == "/" && editor_text(&app.capture) == "" {
-			app_launcher(app, true)
-			typed = ""
-		}
+		// bottom. An empty box is the grid's, though, so the letters that
+		// walk it are taken first — and only until one of them is not a
+		// command, because by then the box has text in it and the rest of
+		// what was typed is text too.
+		for typed != "" && grid_command(app, rune(typed[0])) do typed = typed[1:]
 		if typed != "" && focused_editor(app) != nil {
 			target = focused_editor(app)
 			editor_insert(target, typed)
@@ -562,6 +561,38 @@ app_input :: proc(app: ^App) {
 	}
 
 	if search_changed do app.canvas.menu_at = 0
+}
+
+// A letter the grid answers to itself, over a box with nothing in it: hjkl
+// walks the cards, x takes one off, `/` opens the launcher. False means it is
+// not one of those and the letter is text after all.
+//
+// The rule is the box's, not a mode of its own: while there is something
+// written in it every letter is text, which is the same thing the left and
+// right arrows have always asked before moving the cursor. It is what `/`
+// already did — the one character the grid took before it took five more —
+// and the cost is the same one: a list that has to start with h, j, k, l or x
+// starts with a space instead.
+grid_command :: proc(app: ^App, c: rune) -> bool {
+	if app.page != .Grid || app.overlay != .None do return false
+	if editor_text(&app.capture) != "" do return false
+	switch c {
+	case '/':
+		app_launcher(app, true)
+	case 'h':
+		canvas_step_sel(app, -1)
+	case 'l':
+		canvas_step_sel(app, 1)
+	case 'k':
+		canvas_step_row(app, -1)
+	case 'j':
+		canvas_step_row(app, 1)
+	case 'x':
+		canvas_dismiss_sel(app)
+	case:
+		return false
+	}
+	return true
 }
 
 // The box a keystroke goes to, worked out from the page rather than
