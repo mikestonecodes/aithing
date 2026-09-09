@@ -225,13 +225,16 @@ draw_transcript :: proc(app: ^App, r: Rect) {
 
 	// The answer hangs off the gold stone, inside the scroll, so it is part of
 	// the path rather than a panel floating over it. Its height is content the
-	// scroll has to make room for.
-	ans_w := min(path_w, CONTENT_MAX)
-	ans_x := r.x + (r.w - ans_w) / 2
+	// scroll has to make room for. It is as wide as the path, not capped and
+	// centred: the pipe drops straight out of the stone, and a stone can end
+	// a row anywhere along the path, so the panel has to be under all of it.
+	// The text inside still wraps at the readable width.
+	ans_w := path_w
+	ans_x := r.x + SNAKE_PAD
 	sum := snake_summary(app)
 	ans_h := f32(0)
 	if b := chat_block(&app.chat, sum); b != nil {
-		md_layout(ui, b, ans_w - 28)
+		md_layout(ui, b, min(ans_w, CONTENT_MAX) - 28)
 		ans_h = b.height + ANSWER_GAP + 26
 	}
 
@@ -314,32 +317,21 @@ snake_open :: proc(app: ^App, view: Rect, top: f32) -> Ref {
 // The answer, in full, hanging off the gold stone at the end of the path: a
 // stub of pipe down into it and a gold edge, so it reads as the last thing on
 // the snake and not as a second view of the same thread.
-// The last length of pipe: out of the bottom of the gold stone and into the
-// top of the panel hanging off it. It used to elbow across to the panel's
-// left edge, which drew a bright gold rule the width of the window — a bigger
-// mark than either of the things it was joining. Then it was a straight drop
-// clamped into the panel, which is right until the path is wider than the
-// panel: the stone ends a row outside it and the drop came down from empty
-// space a hand's width to its left. So: straight down when the stone is over
-// the panel, and otherwise a stub down, a run across to the panel's edge, and
-// the drop in from there.
+// The last length of pipe: straight out of the bottom of the gold stone and
+// into the top of the panel hanging off it. It used to elbow across to the
+// panel's left edge, which drew a bright gold rule the width of the window —
+// a bigger mark than either of the things it was joining — and then it elbowed
+// the other way, over to a centred panel narrower than the path. Neither: the
+// panel is the width of the path now, so straight down always lands in it.
 @(private = "file")
 draw_answer_pipe :: proc(app: ^App, stone, box: Rect) {
 	ui := &app.ui
-	sx := stone.x + stone.w / 2
-	x := clamp(sx, box.x + 16, box.x + box.w - 16)
-	param := wire_param(len(app.snake), false)
-	col := color_alpha(GOLD, 0.5)
-	if box.y <= stone.y + stone.h do return
-	if x == sx {
-		r := Rect{x - WIRE / 2, stone.y + stone.h - 2, WIRE, box.y - stone.y - stone.h + 4}
-		ui_quad(ui, r, {0, 0}, {1, 1}, col, WHITE_TEX, 2, .Wire, param)
-		return
-	}
-	mid := (stone.y + stone.h + box.y) / 2
-	ui_quad(ui, {sx - WIRE / 2, stone.y + stone.h - 2, WIRE, mid - stone.y - stone.h + 2 + WIRE / 2}, {0, 0}, {1, 1}, col, WHITE_TEX, 2, .Wire, param)
-	ui_quad(ui, {min(sx, x) - WIRE / 2, mid - WIRE / 2, abs(sx - x) + WIRE, WIRE}, {0, 0}, {1, 1}, col, WHITE_TEX, 2, .Wire, param)
-	ui_quad(ui, {x - WIRE / 2, mid - WIRE / 2, WIRE, box.y - mid + WIRE / 2 + 2}, {0, 0}, {1, 1}, col, WHITE_TEX, 2, .Wire, param)
+	x := stone.x + stone.w / 2
+	r := Rect{x - WIRE / 2, stone.y + stone.h - 2, WIRE, box.y - stone.y - stone.h + 4}
+	if r.h <= 0 do return
+	// One past the last segment of the path, so the pulse carries on down
+	// into the answer in step with the run it came off rather than restarting.
+	ui_quad(ui, r, {0, 0}, {1, 1}, color_alpha(GOLD, 0.5), WHITE_TEX, 2, .Wire, wire_param(len(app.snake), false))
 }
 
 @(private = "file")
