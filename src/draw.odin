@@ -154,6 +154,9 @@ draw_app :: proc(app: ^App) {
 	// there is nothing for it to be under.
 	draw_pickers(app)
 	draw_launcher(app, full)
+	// Last of all, the ring every press leaves on the window, over whatever
+	// was pressed.
+	ui_draw_ripples(ui, 0)
 	if t > 0 && !arrived do ui_wake_in(ui, 0)
 }
 
@@ -225,7 +228,7 @@ draw_capture :: proc(app: ^App, full: Rect) {
 
 	focused := app_focus(app) == .Capture
 	ui_punch(ui, box, COMPOSER_BG, 14)
-	ui_rect(ui, box, focused ? color_alpha(ACCENT, 0.35) : color_alpha(BORDER, 0.9), 14)
+	draw_box_edge(app, box, focused, ui_id("capture-edge"))
 	if ui_hovered(ui, box) do ui.cursor_text = true
 
 	text_w := box.w - COMPOSER_SIDE * 2
@@ -329,7 +332,12 @@ launcher_hits :: proc(app: ^App) -> []Hit {
 draw_launcher :: proc(app: ^App, full: Rect) {
 	ui := &app.ui
 	c := &app.canvas
+	// The fade is one number and the movement is another: the menu comes up
+	// on a spring, so it lands a shade too big and relaxes into place, while
+	// the dark behind it only ever eases in. Sprung, the dark would flicker
+	// past full black on the overshoot.
 	t := ui_anim(ui, ui_id("launcher"), app.overlay == .Launcher ? 1 : 0, 16)
+	pop := ui_spring(ui, ui_id("launcher-pop"), app.overlay == .Launcher ? 1 : 0, 240, 13)
 	if t < 0.01 do return
 	if t < 0.99 do ui_wake_in(ui, 0)
 
@@ -338,6 +346,11 @@ draw_launcher :: proc(app: ^App, full: Rect) {
 	w := min(full.w - 120, 980)
 	x := full.x + (full.w - w) / 2
 	y := full.y + full.h * 0.14 + (1 - t) * 18
+	// Only the drawing is scaled, about the middle of the window: the rows
+	// are hit where they settle, and they settle within a quarter second.
+	sc := 0.9 + 0.1 * pop
+	ui_push_zoom(ui, sc, {full.w * (1 - sc) / 2, full.h * 0.3 * (1 - sc)})
+	defer ui_pop_zoom(ui)
 
 	// What the menu is offering, worked out once for the frame. The card
 	// behind the rows is sized from it and the rows are drawn from it, and
@@ -373,13 +386,23 @@ draw_launcher :: proc(app: ^App, full: Rect) {
 	row_h := f32(52)
 	for hit, i in hits {
 		r := Rect{x - 18, y, w + 36, row_h}
-		clicked, hovered := ui_invisible_button(ui, ui_id("launch-row", i), r)
+		rid := ui_id("launch-row", i)
+		clicked, hovered := ui_invisible_button(ui, rid, r)
 		if hovered && ui.mouse_moved do c.menu_at = i
 		on := i == c.menu_at
-		if on {
-			ui_rect(ui, r, color_alpha(PANEL_HI, 0.9 * t), 12)
-			ui_rect(ui, {r.x, r.y + 10, 3, r.h - 20}, color_alpha(ACCENT, t), 2)
+		// The chosen row's light springs up and settles, and the row swells
+		// a touch under it; the pointer arriving on a row rings out from
+		// where it landed.
+		lit := ui_spring(ui, rid, on ? 1 : 0, 300, 14)
+		if lit > 0.01 {
+			g := 4 * lit
+			ui_rect(ui, {r.x - g, r.y - g / 2, r.w + g * 2, r.h + g}, color_alpha(PANEL_HI, 0.9 * t * min(lit, 1)), 12)
+			ui_rect(ui, {r.x - g, r.y + 10, 3, r.h - 20}, color_alpha(ACCENT, t * min(lit, 1)), 2)
 		}
+		if ui_entered(ui, rid, hovered) do ui_ripple(ui, rid, ui.mouse, color_alpha(ACCENT, 0.45), r.w * 0.5)
+		ui_push_clip(ui, r)
+		ui_draw_ripples(ui, rid)
+		ui_pop_clip(ui)
 		buf: [256]u8
 		sub_w := font_width(&ui.regular, hit.sub, 16) + 30
 		name := font_ellipsize(&ui.bold, hit.name, 27, r.w - 40 - sub_w, buf[:])
@@ -413,6 +436,19 @@ launcher_confirm :: proc(app: ^App) {
 
 
 // --- composer ---------------------------------------------------------------
+
+// The edge of a box you can type in. The accent comes on with a spring when
+// the caret arrives, so it flares a shade past its colour and settles, and a
+// wide soft halo comes up under it: the box you are in is the box that is
+// lit, and it says so with a small movement rather than a switch.
+@(private = "file")
+draw_box_edge :: proc(app: ^App, box: Rect, focused: bool, id: u64) {
+	ui := &app.ui
+	on := ui_spring(ui, id, focused ? 1 : 0, 200, 11)
+	halo := clamp(on, 0, 1.4)
+	if halo > 0.01 do ui_rect(ui, {box.x - 6, box.y - 6, box.w + 12, box.h + 12}, color_alpha(ACCENT, 0.07 * halo), 20)
+	ui_rect(ui, box, color_mix(color_alpha(BORDER, 0.9), color_alpha(ACCENT, 0.35), clamp(on, 0, 1)), 14)
+}
 
 COMPOSER_PX :: f32(19)
 COMPOSER_MIN :: f32(84)
@@ -479,7 +515,7 @@ draw_composer :: proc(app: ^App, r: Rect) {
 	// box is cut out of everything drawn behind it and filled with a colour
 	// too thin to hide what the compositor blurs through the window.
 	ui_punch(ui, box, COMPOSER_BG, 14)
-	ui_rect(ui, box, focused ? color_alpha(ACCENT, 0.35) : color_alpha(BORDER, 0.9), 14)
+	draw_box_edge(app, box, focused, ui_id("composer-edge"))
 
 	if ui_hovered(ui, box) do ui.cursor_text = true
 
@@ -560,6 +596,7 @@ draw_status :: proc(app: ^App, at: Rect) {
 PICKER_OPEN :: f32(0.11)
 PICKER_ANIM :: 101 // salts on the tag, clear of anything else keyed on it
 PICKER_KNOB :: 102
+PICKER_POP :: 103
 PICKER_STEP :: f32(46) // between one stop and the next, up the track
 PICKER_END :: f32(30) // track to panel edge, top and bottom
 
@@ -653,7 +690,10 @@ draw_picker :: proc(
 	// stops are hit where they have settled, which is where they are for all
 	// but a tenth of a second.
 	e := ease_out(t)
-	s := 0.94 + 0.06 * e
+	// Up on a spring, so it lands a touch too big and gives: the panel has
+	// weight, and the chip it came out of is where the weight is anchored.
+	pop := ui_spring(ui, ui_id(tag, PICKER_POP), open ? 1 : 0, 320, 13)
+	s := 0.9 + 0.1 * pop
 	ui_push_zoom(ui, s, {(r.x + r.w) * (1 - s), (r.y + r.h) * (1 - s) + (1 - e) * 14})
 	defer ui_pop_zoom(ui)
 	a := t
@@ -669,7 +709,9 @@ draw_picker :: proc(
 	// Where the knob actually is, which is a moment behind where it belongs:
 	// the bar, the labels and the light all read off this one number, so
 	// nothing in here can be a step ahead of anything else in it.
-	pos := ui_anim(ui, drag, f32(at), 24)
+	// On a spring, so a knob thrown up three stops goes a shade past the
+	// last one and drops back onto it.
+	pos := ui_spring(ui, drag, f32(at), 380, 17)
 	knob := stop_y(foot, pos)
 	// How far it still has to go, which is how hard it is moving. The knob
 	// swells while it travels and settles when it lands — the whole reason
@@ -804,9 +846,18 @@ draw_chip :: proc(app: ^App, id: u64, right, y: f32, label: string, open: bool) 
 	// Eased rather than switched, so the chip and the popup it belongs to are
 	// one movement instead of a light going on next to one.
 	lit := ui_anim(ui, id, open ? 1 : 0, 26)
+	// And it swells under the pointer, on a spring, so it gives a little
+	// before it holds. The hit rect is `r`; only the drawing grows.
+	up := ui_spring(ui, ui_id_ptr(&app.ui, int(id)), hovered || open ? 1 : 0, 400, 12)
+	g := 2 * up
+	d := Rect{r.x - g, r.y - g, r.w + g * 2, r.h + g * 2}
 	bg := color_mix(hovered ? PANEL_HI : color_alpha(PANEL_HI, 0.5), color_mix(PANEL_HI, ACCENT, 0.55), lit)
-	ui_rect(ui, r, bg, 13)
-	ui_circle(ui, {r.x + 12, r.y + 13}, 3.5, color_mix(ACCENT, TEXT, lit))
+	ui_rect(ui, d, bg, 13 + g)
+	if ui_entered(ui, id, hovered) do ui_ripple(ui, id, ui.mouse, color_alpha(ACCENT, 0.6), r.w)
+	ui_push_clip(ui, d)
+	ui_draw_ripples(ui, id)
+	ui_pop_clip(ui)
+	ui_circle(ui, {r.x + 12, r.y + 13}, 3.5 + up, color_mix(ACCENT, TEXT, lit))
 	ui_text(ui, &ui.regular, label, {r.x + 21, y}, 14, color_mix(hovered ? TEXT : MUTED, TEXT, lit))
 	return r.x
 }

@@ -318,7 +318,9 @@ draw_usage :: proc(app: ^App, full: Rect, strip: Rect) {
 		// The slice eases round. A reading that has just landed — and the
 		// first one lands a second or so after the window opens — is worth
 		// watching arrive.
-		sweep := ui_anim(ui, ui_id("usage-ring", i), used, 9)
+		// From nought, the first time, so the first reading is seen to land.
+		ui_spring_seed(ui, ui_id("usage-ring", i), 0)
+		sweep := ui_spring(ui, ui_id("usage-ring", i), used, 40, 7)
 		col := usage_meter_color(used)
 		r := ring_r(d, i)
 		// The same slice again, wider and faint, so the arc looks lit rather
@@ -334,7 +336,13 @@ draw_usage :: proc(app: ^App, full: Rect, strip: Rect) {
 	// The words, only while the pointer is on the rings. The popover is not
 	// drawn over the dial and does not reach it, so nothing it says can hide
 	// the thing it is saying it about.
-	pop := ui_anim(ui, ui_id("usage-pop"), ui_hovered(ui, box) ? 1 : 0, 16)
+	// On a spring: the words come up with a bounce, the way the rings under
+	// them were drawn.
+	over := ui_hovered(ui, box)
+	pop := ui_spring(ui, ui_id("usage-pop"), over ? 1 : 0, 260, 13)
+	// And the dial rings out from its middle when the pointer lands on it.
+	if ui_entered(ui, ui_id("usage-pop"), over) do ui_ripple(ui, ui_id("usage-pop"), centre, color_alpha(ACCENT, 0.5), d)
+	ui_draw_ripples(ui, ui_id("usage-pop"))
 	if pop > 0.01 do popover(app, box, windows[:], pop * a)
 
 	// What Super+C takes off the dial: the whole reading on one line, whether
@@ -431,7 +439,7 @@ popover :: proc(app: ^App, dial: Rect, windows: []struct {
 
 		// The same easing the ring runs on, off the same stored value, so the
 		// figure and the slice it labels cannot say two different things.
-		shown := known ? ui_anim(ui, ui_id("usage-ring", i), used, 9) : 0
+		shown := known ? ui_spring(ui, ui_id("usage-ring", i), used, 40, 7) : 0
 		figure := known ? usage_pct(shown) : "—"
 		x := ui_text(ui, &ui.bold, figure, {at.x, at.y + 13}, 15, color_alpha(col, a))
 		if known && usage_until(n.w.resets) != "" {

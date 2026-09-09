@@ -117,8 +117,13 @@ UI :: struct {
 	// widget id. Values chase a target so nothing in the UI snaps.
 	dt:         f32,
 	time:       f32, // seconds since start, for the animated shader effects
-	anim:       map[u64]f32,
+	anim:       map[u64]Motion,
 	animating:  bool, // set while any value is still chasing its target
+	// Rings spreading out from where something was touched, each keyed to
+	// the widget that draws it (0 for the window itself). They are the one
+	// thing here with a beginning and an end rather than a target: a ripple
+	// is a moment, and it is drawn out of when it began and the clock.
+	ripples:    [dynamic]Ripple,
 	// Set when something on screen is driven by the shader clock, which only
 	// advances on a redraw. Kept separate so it can be paced more loosely.
 	time_effects: bool,
@@ -128,19 +133,127 @@ UI :: struct {
 	wake_in:      f32,
 }
 
+// Where a moving thing is, and how fast it is going. ui_anim and ui_tween
+// only ever read the position; the velocity is the spring's, and it is kept
+// beside the position rather than in a second map so that one id is one
+// moving thing wherever it is asked about.
+Motion :: struct {
+	pos, vel: f32,
+}
+
 // Eases `id`'s stored value toward `target`. `speed` is the rate the distance
 // left decays at, per second. The exponential is what keeps the motion the
 // same shape whether the frame took 4ms or 40: a plain `dt * speed` lerp
 // overshoots on a slow frame and crawls on a fast one, which is most of what
 // makes a scroll feel wrong.
 ui_anim :: proc(ui: ^UI, id: u64, target: f32, speed: f32 = 22) -> f32 {
-	current := ui.anim[id]
+	current := ui.anim[id].pos
 	t := ease_rate(ui.dt, speed)
 	next := current + (target - current) * t
 	if abs(next - target) < 0.001 do next = target
 	else do ui.animating = true
-	ui.anim[id] = next
+	ui.anim[id] = {next, 0}
 	return next
+}
+
+// A movement with weight: `id`'s value is pulled toward `target` by a spring
+// and, unless it is heavily damped, goes past it and comes back. That
+// overshoot is the whole reason it exists beside ui_anim, which only ever
+// closes in. Something that lifts under the pointer and settles back a
+// touch, a menu that lands a hair too big and relaxes, a card that gets
+// bumped and wobbles — an exponential cannot do any of it, because nothing
+// in it ever carries speed.
+//
+// `stiffness` is how hard the pull is and `damping` how fast the swing dies:
+// at damping under about 2*sqrt(stiffness) it rings. The step is fixed and
+// small so a slow frame cannot blow the integration up — a 100ms frame at a
+// stiffness of 400 with one Euler step goes to infinity, not to the target.
+//
+// An id seen for the first time starts at rest on its target: a card that
+// has just been laid out is where it is, not sliding in from zero. Use
+// ui_spring_seed to say otherwise before the first tick.
+SPRING_STEP :: f32(1.0 / 240)
+
+ui_spring :: proc(ui: ^UI, id: u64, target: f32, stiffness: f32 = 220, damping: f32 = 14) -> f32 {
+	m, known := ui.anim[id]
+	if !known do m = {target, 0}
+	left := ui.dt
+	for left > 0 {
+		h := min(left, SPRING_STEP)
+		left -= h
+		m.vel += (stiffness * (target - m.pos) - damping * m.vel) * h
+		m.pos += m.vel * h
+	}
+	if abs(m.pos - target) < 0.0005 && abs(m.vel) < 0.01 {
+		m = {target, 0}
+	} else {
+		ui.animating = true
+	}
+	ui.anim[id] = m
+	return m.pos
+}
+
+// Starts `id` somewhere other than where it is going, for the first frame
+// only: a thing that appears should be able to pop in rather than be there.
+ui_spring_seed :: proc(ui: ^UI, id: u64, at: f32) {
+	if id not_in ui.anim do ui.anim[id] = {at, 0}
+}
+
+// Shoves a spring. Where it lands is unchanged; how it gets there is not.
+ui_spring_kick :: proc(ui: ^UI, id: u64, dv: f32) {
+	if m, ok := &ui.anim[id]; ok {
+		m.vel += dv
+		ui.animating = true
+	}
+}
+
+// Whether the pointer arrived on something this frame, which is the moment
+// a ripple starts from. The answer for last frame is kept beside the widget's
+// animation, under its own salt, because there is nowhere else it could be
+// read from: hot is worked out afresh every frame and forgotten.
+ENTER_SALT :: 0x5eed
+
+ui_entered :: proc(ui: ^UI, id: u64, hovered: bool) -> bool {
+	key := id ~ ENTER_SALT
+	was := ui.anim[key].pos > 0.5
+	ui.anim[key] = {hovered ? 1 : 0, 0}
+	return hovered && !was && ui.has_mouse
+}
+
+// A ring that spreads from `at` and fades as it goes. `size` is how far it
+// gets; `key` is who draws it, so a card's ripple is clipped to the card and
+// the window's click ripple is drawn over everything last.
+Ripple :: struct {
+	key:  u64,
+	at:   [2]f32,
+	born: f32,
+	col:  Color,
+	size: f32,
+}
+
+RIPPLE_LIFE :: f32(0.75)
+
+ui_ripple :: proc(ui: ^UI, key: u64, at: [2]f32, col: Color, size: f32) {
+	append(&ui.ripples, Ripple{key, at, ui.time, col, size})
+	ui.animating = true
+}
+
+// Every live ripple with this key, as it stands right now.
+ui_draw_ripples :: proc(ui: ^UI, key: u64) {
+	for rp in ui.ripples {
+		if rp.key != key do continue
+		age := ui.time - rp.born
+		if age < 0 || age >= RIPPLE_LIFE do continue
+		t := age / RIPPLE_LIFE
+		grow := ease_out(t)
+		radius := rp.size * (0.08 + 0.92 * grow)
+		// Bright and tight at birth, wide and faint by the end: the same
+		// curve as a real ring on water, which thins as it spreads.
+		fade := (1 - t) * (1 - t)
+		thick := radius * (0.55 - 0.4 * grow)
+		ui_dial(ui, rp.at, radius, max(thick, 2), 1, color_alpha(rp.col, fade), 0.6)
+		ui.animating = true
+	}
 }
 
 // The fraction of the remaining distance to cover this frame.
@@ -158,12 +271,19 @@ ease_rate :: proc "contextless" (dt, speed: f32) -> f32 {
 // It shares ui.anim with ui_anim — one store of where every moving thing is —
 // so an id belongs to one or the other and not to both.
 ui_tween :: proc(ui: ^UI, id: u64, target: f32, seconds: f32) -> f32 {
-	current := ui.anim[id]
+	current := ui.anim[id].pos
 	step := ui.dt / max(seconds, 0.0001)
 	next := target > current ? min(current + step, target) : max(current - step, target)
 	if next != target do ui.animating = true
-	ui.anim[id] = next
+	ui.anim[id] = {next, 0}
 	return next
+}
+
+// Out fast and a little past the mark, then back: the way something that
+// was thrown lands. `over` is how far past, as a fraction.
+ease_back :: proc "contextless" (t: f32, over: f32 = 0.6) -> f32 {
+	u := t - 1
+	return 1 + u * u * ((over + 1) * u + over)
 }
 
 // Out of the gate fast and settling into place, which is how something that
@@ -247,6 +367,18 @@ ui_begin :: proc(ui: ^UI, width, height: int, input: ^Input, dt: f32 = 1.0 / 60)
 	clear(&ui.hover_text)
 	ui.hot = 0
 	ui.animating = false
+	// Spent ripples go, and one born after the clock — the clock is wound
+	// back for a screenshot — goes with them rather than waiting on a
+	// moment that has already been.
+	for i := 0; i < len(ui.ripples); i += 1 {
+		age := ui.time - ui.ripples[i].born
+		if age < 0 || age >= RIPPLE_LIFE {
+			unordered_remove(&ui.ripples, i)
+			i -= 1
+		}
+	}
+	// Every press lands somewhere, and the window says so where it landed.
+	if ui.pressed && ui.has_mouse do ui_ripple(ui, 0, ui.mouse, color_alpha(TEXT, 0.35), 36)
 	ui.time_effects = false
 	ui.wake_in = NEVER
 }
@@ -614,6 +746,7 @@ ui_end_scroll :: proc(ui: ^UI, r: Rect, s: ^Scroll) {
 
 ui_destroy :: proc(ui: ^UI) {
 	delete(ui.anim)
+	delete(ui.ripples)
 	delete(ui.verts)
 	delete(ui.indices)
 	delete(ui.cmds)

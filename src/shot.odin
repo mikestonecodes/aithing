@@ -31,6 +31,7 @@ Scene :: enum {
 	Picker, // the model picker, open off the composer's chip
 	Launcher, // the menu, with a query typed into it
 	Usage, // the pointer on the dial, so what each ring is is on screen
+	Dismiss, // a card's x just pressed: the card imploding and the wave leaving it
 }
 
 @(private = "file")
@@ -43,6 +44,7 @@ scene_names := [Scene]string {
 	.Picker   = "picker",
 	.Launcher = "launcher",
 	.Usage    = "usage",
+	.Dismiss  = "dismiss",
 }
 
 scene_parse :: proc(name: string) -> (Scene, bool) {
@@ -77,6 +79,9 @@ SHOT_SETTLE :: 240
 // is still visibly the card it grew out of, which is the part of the movement
 // worth being able to look at.
 SHOT_OPENING :: 2
+// Frames after the x is let go before the dismissal is caught: the ghost is
+// mid-implosion and the wave is about a third of the way across the grid.
+SHOT_DISMISS :: 8
 
 shot_run :: proc(path: string, scene: Scene, width, height: int) -> bool {
 	// Nothing here is allowed to read or write the real thing: a screenshot
@@ -139,10 +144,40 @@ shot_run :: proc(path: string, scene: Scene, width, height: int) -> bool {
 		ui_end(&app.ui)
 		if scene != .Opening && !app.ui.animating do break
 	}
+	// The dismissal is the one thing that cannot be built into the state,
+	// because it is a moment: the grid is settled, then the x on the running
+	// card is pressed as a pointer would press it, and the picture is taken a
+	// few frames on with the card still going and its wave still crossing
+	// the others.
+	if scene == .Dismiss {
+		card, _ := canvas_node_rect(app, "s-2")
+		app.win.input.mouse = {card.x + card.w - 14 - 14, card.y + 14 - 4 + 14}
+		app.win.input.has_mouse = true
+		ui_begin(&app.ui, width, height, &app.win.input, SHOT_DT) // arrive
+		draw_app(app)
+		ui_end(&app.ui)
+		app.win.input.down[0], app.win.input.pressed[0] = true, true
+		ui_begin(&app.ui, width, height, &app.win.input, SHOT_DT) // press
+		draw_app(app)
+		ui_end(&app.ui)
+		app.win.input.down[0], app.win.input.pressed[0], app.win.input.released[0] = false, false, true
+		ui_begin(&app.ui, width, height, &app.win.input, SHOT_DT) // let go
+		draw_app(app)
+		ui_end(&app.ui)
+		app.win.input.released[0] = false
+		app.win.input.mouse = {-1e6, -1e6}
+		_ = app_apply_clicks(app)
+		for _ in 0 ..< SHOT_DISMISS {
+			ui_begin(&app.ui, width, height, &app.win.input, SHOT_DT)
+			draw_app(app)
+			ui_end(&app.ui)
+		}
+	}
 	// The shader clock drives the running card's pulse, so the frame that is
 	// kept starts it from a known place rather than from however many frames
-	// the settling happened to take.
-	app.ui.time = 0
+	// the settling happened to take. Not for the dismissal, which is read off
+	// that same clock and would be over before it began.
+	if scene != .Dismiss do app.ui.time = 0
 	ui_begin(&app.ui, width, height, &app.win.input, SHOT_DT)
 	draw_app(app)
 	ui_end(&app.ui)
@@ -259,7 +294,7 @@ shot_build :: proc(app: ^App, scene: Scene) {
 		app.page = .Thread
 		shot_thread(app)
 		if scene == .Picker do app.overlay = .Model
-	case .Usage:
+	case .Usage, .Dismiss:
 		app.canvas.project = PROJ
 	case .Launcher:
 		app.overlay = .Launcher

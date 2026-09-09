@@ -47,12 +47,52 @@ Canvas :: struct {
 	sel:      string, // the todo id under the keyboard cursor
 	project:  string, // only this project's threads, when set
 	menu_at:  int, // which row of it is chosen
+	// Cards that were just dismissed, still on their way out. The card is
+	// gone from the list the frame after the x is pressed, so what is drawn
+	// imploding is a copy of what it looked like — and the wave its going
+	// sends across the grid is read off its age, so a second one a moment
+	// later makes a second wave rather than restarting the first.
+	ghosts:   [dynamic]Ghost,
+}
+
+Ghost :: struct {
+	r:    Rect, // content space, like a card
+	text: string, // its own copy: the todo it came from is freed
+	born: f32, // ui.time
 }
 
 canvas_destroy :: proc(c: ^Canvas) {
 	delete(c.cards)
 	delete(c.sel)
 	delete(c.project)
+	for g in c.ghosts do delete(g.text)
+	delete(c.ghosts)
+}
+
+// How long a dismissed card takes to go, and how the wave it leaves travels:
+// a ring spreading out from where it was at WAVE_SPEED, shoving every card it
+// passes away from the spot and setting it wobbling on its own springs. The
+// shove fades with distance so the far corner of a big grid stirs rather
+// than jumps.
+GHOST_LIFE :: f32(0.55)
+WAVE_SPEED :: f32(1700) // px/s
+WAVE_KICK :: f32(420) // px/s, given to a card at the spot
+WAVE_REACH :: f32(900) // px, over which the shove falls to a third
+WAVE_BULGE :: f32(9) // how hard the ring swells a card it passes
+
+// Salts on a card's id for each thing about it that moves.
+CARD_X :: 2
+CARD_Y :: 3
+CARD_SW :: 4 // width swell, hovered
+CARD_SH :: 5 // height swell, hovered — a different rate, so it wobbles
+CARD_PRESS :: 6
+HEAD_Y :: 7
+
+// The moment a card is dismissed: it is copied out to implode where it was,
+// and the wave that starts from it. Called from both places a card can be
+// dismissed from, with the card as it is laid out this frame.
+canvas_blast :: proc(app: ^App, r: Rect, text: string) {
+	append(&app.canvas.ghosts, Ghost{r, strings.clone(text), app.ui.time})
 }
 
 // --- layout ----------------------------------------------------------------
@@ -162,20 +202,104 @@ draw_canvas :: proc(app: ^App, r: Rect) {
 	canvas_keep_sel_in_view(app, view)
 
 	ui_begin_scroll(ui, view, &c.scroll, content)
+	// Where a card is drawn is where it is laid out, chased by a spring: a
+	// card whose row moved — one before it went, the window narrowed — slides
+	// there and settles rather than being there. Every card's springs are
+	// ticked, on screen or not, so one scrolled back into view is where it
+	// belongs and not sliding in from where it was last seen.
 	for card in c.cards {
-		cr := Rect{card.r.x, card.r.y - c.scroll.offset + view.y, card.r.w, card.r.h}
-		if cr.y > view.y + view.h || cr.y + cr.h < view.y do continue
 		if card.head {
+			hy := ui_id(card.name, HEAD_Y)
+			y := ui_spring(ui, hy, card.r.y, 170, 15)
+			cr := Rect{card.r.x, y - c.scroll.offset + view.y, card.r.w, card.r.h}
+			if cr.y > view.y + view.h || cr.y + cr.h < view.y do continue
 			draw_section_head(app, card, cr)
-		} else {
-			draw_card(app, card, cr)
+			continue
 		}
+		td := app.todos.list[card.todo]
+		kx, ky := ui_id(td.id, CARD_X), ui_id(td.id, CARD_Y)
+		canvas_wave(app, card.r, kx, ky, ui_id(td.id, CARD_SW), ui_id(td.id, CARD_SH))
+		x := ui_spring(ui, kx, card.r.x, 170, 13)
+		y := ui_spring(ui, ky, card.r.y, 170, 13)
+		cr := Rect{x, y - c.scroll.offset + view.y, card.r.w, card.r.h}
+		if cr.y > view.y + view.h || cr.y + cr.h < view.y do continue
+		draw_card(app, card, cr)
 	}
+	draw_ghosts(app, view)
 	ui_end_scroll(ui, view, &c.scroll)
 
 	if len(c.cards) == 0 {
 		msg := app.scanned ? "nothing here — type below to add a card, / to search" : "reading threads…"
 		ui_text_centred(ui, &ui.regular, msg, view, 18, FAINT)
+	}
+}
+
+// The shove a dismissed card's wave gives this one, on the frame the ring
+// crosses its centre: a kick to its springs, away from the spot, and a swell.
+// The ring's radius is read off the wave's age, so whether it has reached a
+// card is a question about the clock and not a flag on the card.
+@(private = "file")
+canvas_wave :: proc(app: ^App, r: Rect, kx, ky, ksw, ksh: u64) {
+	ui := &app.ui
+	centre := [2]f32{r.x + r.w / 2, r.y + r.h / 2}
+	for g in app.canvas.ghosts {
+		age := ui.time - g.born
+		if age <= 0 do continue
+		from := [2]f32{g.r.x + g.r.w / 2, g.r.y + g.r.h / 2}
+		d := centre - from
+		dist := math.sqrt(d.x * d.x + d.y * d.y)
+		if dist < 1 do continue
+		now := age * WAVE_SPEED
+		before := (age - ui.dt) * WAVE_SPEED
+		if !(before < dist && dist <= now) do continue
+		push := WAVE_KICK * math.exp(-dist / WAVE_REACH)
+		ui_spring_kick(ui, kx, d.x / dist * push)
+		ui_spring_kick(ui, ky, d.y / dist * push)
+		swell := WAVE_BULGE * math.exp(-dist / WAVE_REACH)
+		ui_spring_kick(ui, ksw, swell)
+		ui_spring_kick(ui, ksh, swell)
+	}
+}
+
+// The cards on their way out, over the grid: each pops a touch, implodes and
+// fades, and a ring runs out from it across everything else.
+@(private = "file")
+draw_ghosts :: proc(app: ^App, view: Rect) {
+	ui := &app.ui
+	c := &app.canvas
+	for i := 0; i < len(c.ghosts); i += 1 {
+		g := c.ghosts[i]
+		age := ui.time - g.born
+		if age < 0 || age >= max(GHOST_LIFE, WAVE_REACH * 2 / WAVE_SPEED) {
+			delete(g.text)
+			ordered_remove(&c.ghosts, i)
+			i -= 1
+			continue
+		}
+		ui.animating = true
+		cx := g.r.x + g.r.w / 2
+		cy := g.r.y - c.scroll.offset + view.y + g.r.h / 2
+		// The ring, wide and thin and gone by the time the wave has crossed
+		// a big window.
+		ring := age * WAVE_SPEED
+		life := WAVE_REACH * 2 / WAVE_SPEED
+		fade := clamp(1 - age / life, 0, 1)
+		ui_dial(ui, {cx, cy}, ring, max(ring * 0.16, 4), 1, color_alpha(ACCENT, 0.7 * fade * fade), 0.7)
+		if age >= GHOST_LIFE do continue
+		t := age / GHOST_LIFE
+		// Out with a flourish: it swells first and then collapses to nothing,
+		// the back-ease run in reverse.
+		sc := max(1 - ease_back(t, 1.6), 0)
+		a := 1 - t
+		w, h := g.r.w * sc, g.r.h * sc
+		r := Rect{cx - w / 2, cy - h / 2, w, h}
+		ui_rect(ui, {r.x + 1, r.y + 4, r.w, r.h}, color_alpha(Color(0xff000000), 0.3 * a), 12 * sc)
+		ui_rect(ui, r, color_alpha(PANEL_HI, a), 12 * sc)
+		ui_rect(ui, r, color_alpha(RED, 0.35 * a), 12 * sc)
+		if sc > 0.25 {
+			pad := 14 * sc
+			draw_wrapped(ui, &ui.bold, g.text, r.x + pad, r.y + pad, r.w - pad * 2, 15 * sc, color_alpha(TEXT, a), 3)
+		}
 	}
 }
 
@@ -187,7 +311,8 @@ draw_section_head :: proc(app: ^App, card: Card, r: Rect) {
 }
 
 @(private = "file")
-draw_card :: proc(app: ^App, card: Card, r: Rect) {
+draw_card :: proc(app: ^App, card: Card, base: Rect) {
+	r := base
 	ui := &app.ui
 	c := &app.canvas
 	td := app.todos.list[card.todo]
@@ -213,9 +338,32 @@ draw_card :: proc(app: ^App, card: Card, r: Rect) {
 	current := td.session != "" && app.chat.session_id == td.session
 	state := todo_display_state(app, td)
 
-	lift := ui_anim(ui, id, hovered || selected ? 1 : 0, 18)
-	if lift > 0.01 do ui_rect(ui, {r.x + 1, r.y + 4, r.w, r.h}, color_alpha(Color(0xff000000), 0.3 * lift), 12)
+	// The card under the pointer comes up to meet it, and it comes up like
+	// something with give in it: its width and height swell on two springs
+	// wound to different rates, so it wobbles for a moment before it holds,
+	// and a press squashes it down until it is let go. The layout is not
+	// touched — `base` is where it is and what it is hit against, and the
+	// text wraps to it — only the drawing swells around the centre.
+	up := hovered || selected ? f32(1) : 0
+	held := ui.active == id || ui.active == bid ? f32(1) : 0
+	lift := ui_spring(ui, id, up, 260, 14)
+	sw := ui_spring(ui, ui_id(td.id, CARD_SW), up, 330, 9)
+	sh := ui_spring(ui, ui_id(td.id, CARD_SH), up, 190, 8)
+	press := ui_spring(ui, ui_id(td.id, CARD_PRESS), held, 500, 18)
+	r.w = base.w * (1 + 0.035 * sw - 0.04 * press)
+	r.h = base.h * (1 + 0.06 * sh - 0.06 * press)
+	r.x = base.x + (base.w - r.w) / 2
+	r.y = base.y + (base.h - r.h) / 2 - 3 * lift
+	btn = {r.x + r.w - pad - 28, r.y + pad - 4, 28, 28}
+
+	if lift > 0.01 do ui_rect(ui, {r.x + 1, r.y + 4 + 4 * lift, r.w, r.h}, color_alpha(Color(0xff000000), 0.3 * lift), 12)
 	ui_rect(ui, r, color_mix(USER_BG, PANEL_HI, lift * 0.7), 12)
+	// The pointer arriving sends a ring out from where it landed, kept
+	// inside the card: the card says it felt it.
+	if ui_entered(ui, id, hovered) do ui_ripple(ui, id, ui.mouse, color_alpha(ACCENT, 0.55), max(base.w, base.h) * 0.9)
+	ui_push_clip(ui, r)
+	ui_draw_ripples(ui, id)
+	ui_pop_clip(ui)
 	if selected do ui_rect(ui, r, color_alpha(ACCENT, 0.55), 12)
 	if current do ui_rect(ui, {r.x, r.y + 12, 3, r.h - 24}, ACCENT, 2)
 	// Work that came back clean is work you are done with: it stays on the
@@ -228,7 +376,7 @@ draw_card :: proc(app: ^App, card: Card, r: Rect) {
 
 	tx := r.x + pad
 	ty := r.y + pad
-	tw := r.w - pad * 2
+	tw := base.w - pad * 2
 
 	// When it last moved, up in the corner: a card carries the work and its
 	// state, and nothing else.
@@ -311,6 +459,7 @@ draw_card :: proc(app: ^App, card: Card, r: Rect) {
 		ui_line(ui, {btn.x + 19, btn.y + 9}, {btn.x + 9, btn.y + 19}, 2, mark)
 		if bclicked {
 			app_dismiss_todo(app, td.id)
+			canvas_blast(app, card.r, td.text)
 			return
 		}
 	}
@@ -488,6 +637,7 @@ canvas_dismiss_sel :: proc(app: ^App) {
 		}
 	}
 	app_dismiss_todo(app, c.sel)
+	canvas_blast(app, c.cards[at].r, app.todos.list[c.cards[at].todo].text)
 	canvas_set_sel(app, next)
 }
 
@@ -604,7 +754,10 @@ canvas_panel :: proc(app: ^App, full: Rect) -> (r: Rect, arrived: bool, t: f32) 
 	if t <= 0 do return {}, false, t
 	from, ok := canvas_node_rect(app, app.chat.session_id)
 	if !ok do from = {full.x + full.w * 0.35, full.y + full.h * 0.4, full.w * 0.3, full.h * 0.2}
-	ease := ease_out(t)
+	// Opening lands a hair past the window and settles back — the thread
+	// comes forward with some weight behind it — while closing simply
+	// arrives, since a grid is not something that can go past its own edge.
+	ease := app.page == .Thread ? ease_back(t, 0.5) : ease_out(t)
 	r = {
 		from.x + (full.x - from.x) * ease,
 		from.y + (full.y - from.y) * ease,
