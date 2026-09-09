@@ -120,6 +120,32 @@ a_tool_opens_in_its_own_shape :: proc(t: ^testing.T) {
 	}
 }
 
+// A grep prints the line number ahead of the line, the same as a file read
+// back does. Both put the number in the panel's own column: the number is not
+// part of what was found, and left in the text it is twelve characters of the
+// same digits down the left of every line.
+@(test)
+numbered_output_puts_the_numbers_in_the_column :: proc(t: ^testing.T) {
+	app := new(App)
+	defer free(app)
+	defer delete(app.rows)
+
+	b := tool_block("Bash", `{"command": "grep -n PEEK_ src/peek.odin"}`, "30:PEEK_W :: f32(560)\n43:PEEK_SIGN :: f32(16)")
+	defer block_destroy(&b)
+	rows := rows_of(app, &b)
+	testing.expect(t, has_row(rows, .Mono, "PEEK_W :: f32(560)"), "the line came through with its number still in it")
+	for r in rows do if r.kind == .Mono && strings.has_prefix(r.text, "PEEK_SIGN") {
+		testing.expect_value(t, r.num, 43)
+	}
+
+	// And output that is not numbered keeps every character it printed: a
+	// timing line that opens with a number is not a listing.
+	plain := tool_block("Bash", `{"command": "./build.sh"}`, "12 files\nbuilt ./aithing")
+	defer block_destroy(&plain)
+	rows = rows_of(app, &plain)
+	testing.expect(t, has_row(rows, .Mono, "12 files"), "an unnumbered line lost its first word")
+}
+
 // The input arrives a few bytes at a time, so for most of a call there is no
 // object to take apart — only however much of one the model has typed. The
 // panel is asked for on every frame of that, and what it must not do is fall

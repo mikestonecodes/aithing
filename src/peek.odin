@@ -21,13 +21,21 @@ import "core:unicode/utf8"
 // numbered listing, a search is its matches, a plan is its boxes. Anything the
 // harness grew since is its input, field by field, and what came back.
 //
+// Code inside a panel is code: its lines are folded rather than cut when they
+// run past the edge, its numbers sit in a column of their own, and it is
+// coloured by what its characters are — a comment back, a string and a number
+// apart from the words. None of that knows a language; it does not have to.
+// What it is for is that a screenful of output stops reading as one grey wall,
+// which is what the output of a grep through a file of long lines was.
+//
 // The rows are derived, never stored: `peek_rows` rebuilds the list from the
 // block every time it is asked, and both the measure (how tall the panel is,
 // how far the wheel may go) and the drawing read that one list. They used to
 // count the result's lines separately, one in `peek_layout` and one in
 // `draw_peek`, which is two opinions about how tall a panel is.
 
-PEEK_W :: f32(560)
+PEEK_W :: f32(560) // the reading column: as wide as a panel of prose opens
+PEEK_CODE_W :: f32(760) // and as wide as one full of code may grow
 PEEK_MAX :: f32(470) // how tall an opened tile is allowed to get: the rest scrolls
 PEEK_LINES :: 400 // the most rows a panel will ever lay out
 PEEK_HEAD :: f32(32)
@@ -42,10 +50,13 @@ PEEK_LH :: f32(19)
 PEEK_GUT :: f32(38) // the line-number column
 PEEK_SIGN :: f32(16) // the + / - column of a diff
 DIFF_CTX :: 2 // lines either side of a change, for bearings
+CODE_FOLDS :: 3 // how many times one line of code may be folded to fit
+ROW_CONT :: -1 // `num` on the rest of a line that was folded to fit
 DIFF_MAX :: 220 // lines of one edit, before the rest is left to the file
 
 // A row of an open panel. `num` is the line's number in the file it came from,
-// which only a listing has; `col` is only ever set by the rows that carry a
+// which only a listing has, or ROW_CONT when the row is the rest of a line
+// that would not fit on one; `col` is only ever set by the rows that carry a
 // state of their own, and everything else takes its colour from its kind.
 Row :: struct {
 	kind: Row_Kind,
@@ -86,9 +97,9 @@ row_h :: proc(kind: Row_Kind) -> f32 {
 
 // --- building the rows --------------------------------------------------------
 
-// What this call turns into, in rows. `inner` is the width prose is wrapped
-// to; code is not wrapped, it is cut, because a wrapped line of code is two
-// lines that look like the file has one more line in it than it has.
+// What this call turns into, in rows. `inner` is the width the panel has for
+// text; what each kind of row does with it — how far in it starts, how much of
+// it a fold leaves — is the row's own business.
 peek_rows :: proc(app: ^App, b: ^Block, inner: f32) -> []Row {
 	rows := &app.rows
 	clear(rows)
@@ -151,22 +162,23 @@ rows_edit :: proc(app: ^App, input: json.Value, inner: f32) {
 	// Two lines of what was already there, so a change has somewhere to sit.
 	// The rest of a matching run is a count rather than a screenful of lines
 	// that did not change.
+	width := inner - PEEK_SIGN - 14
 	if head > DIFF_CTX do row_skip(app, head - DIFF_CTX)
-	for i in max(head - DIFF_CTX, 0) ..< head do row_line(app, .Same, a[i])
+	for i in max(head - DIFF_CTX, 0) ..< head do row_code(app, .Same, a[i], 0, width)
 	n := 0
 	for i in head ..< len(a) - tail {
 		if n >= DIFF_MAX do break
-		row_line(app, .Del, a[i])
+		row_code(app, .Del, a[i], 0, width)
 		n += 1
 	}
 	n = 0
 	for i in head ..< len(c) - tail {
 		if n >= DIFF_MAX do break
-		row_line(app, .Add, c[i])
+		row_code(app, .Add, c[i], 0, width)
 		n += 1
 	}
 	end := len(a) - tail
-	for i in end ..< min(end + DIFF_CTX, len(a)) do row_line(app, .Same, a[i])
+	for i in end ..< min(end + DIFF_CTX, len(a)) do row_code(app, .Same, a[i], 0, width)
 	if tail > DIFF_CTX do row_skip(app, tail - DIFF_CTX)
 }
 
@@ -185,7 +197,7 @@ rows_run :: proc(app: ^App, input: json.Value, inner: f32) {
 	row_head(app, "command")
 	for l, i in split_lines(cmd) {
 		if i >= 40 do break
-		row_line(app, .Cmd, l)
+		row_code(app, .Cmd, l, 0, inner - PEEK_SIGN - 14)
 	}
 }
 
@@ -320,22 +332,33 @@ rows_result :: proc(app: ^App, b: ^Block, inner: f32, icon: Icon) {
 		row_wrap(app, result, inner, PEEK_LINES)
 		return
 	}
+	// Whether this output is numbered is one answer for the whole of it, not
+	// one per line: the numbers get a column, and a column that some lines
+	// stood in and others did not would be a listing with a ragged edge. It
+	// is also what the lines are folded against, so the fold and the column
+	// agree about where the text starts.
+	numbered := icon != .Find && output_numbered(result)
+	width := inner - (numbered ? PEEK_GUT : 0) - 14
 	it := each_line(result)
 	for l in iter_next(&it) {
 		if len(app.rows) >= PEEK_LINES do break
-		if icon == .Read {
-			num, rest, ok := numbered_line(l)
-			if ok {
-				append(&app.rows, Row{kind = .Mono, text = rest, num = num})
-				continue
-			}
-		}
 		if icon == .Find && line_is_place(l) {
 			num, rest, ok := placed_line(l)
 			append(&app.rows, Row{kind = .Path, text = ok ? rest : l, num = ok ? num : 0})
 			continue
 		}
-		row_line(app, .Mono, l)
+		if numbered {
+			// `   126→` off a file, `1234:` off a grep: the number belongs in
+			// the column and the arrow is scaffolding. It used to be lifted
+			// out for a Read and left in the text for everything else, so the
+			// output of a grep was a wall whose left-hand twelve characters
+			// were the same digits in a different place on every line.
+			if num, rest, ok := numbered_line(l); ok {
+				row_code(app, .Mono, rest, num, width)
+				continue
+			}
+		}
+		row_code(app, .Mono, l, 0, width)
 	}
 }
 
@@ -351,6 +374,69 @@ row_head :: proc(app: ^App, label: string) {
 row_line :: proc(app: ^App, kind: Row_Kind, text: string) {
 	if len(app.rows) >= PEEK_LINES do return
 	append(&app.rows, Row{kind = kind, text = text})
+}
+
+// A line of code, as however many rows the panel is wide enough for. It used
+// to be cut at the edge with an ellipsis, which for the output of a grep — one
+// long line per match, the interesting half of it past the sixtieth character
+// — threw away the part that was being looked for. It folds instead, at a
+// space when there is one near the cut, and what is folded off carries
+// ROW_CONT rather than a number of its own, so a listing's numbers still count
+// lines of the file and not rows of the panel.
+@(private = "file")
+row_code :: proc(app: ^App, kind: Row_Kind, text: string, num: int, width: f32) {
+	rest := tabbed(text)
+	n := num
+	for _ in 0 ..< CODE_FOLDS {
+		cut := code_fit(&app.ui, rest, width)
+		if cut >= len(rest) do break
+		row_line(app, kind, rest[:cut])
+		app.rows[len(app.rows) - 1].num = n
+		rest = rest[cut:]
+		for len(rest) > 0 && rest[0] == ' ' do rest = rest[1:]
+		n = ROW_CONT
+		if len(app.rows) >= PEEK_LINES do return
+	}
+	row_line(app, kind, rest)
+	app.rows[len(app.rows) - 1].num = n
+}
+
+// How much of a line fits in `width`, in bytes. A fold lands after the last
+// space when one is close to the edge and mid-word when there is none, which
+// is what a path or a run of punctuation gets.
+@(private = "file")
+code_fit :: proc(ui: ^UI, text: string, width: f32) -> int {
+	if width < 60 do return len(text)
+	w := f32(0)
+	i, last := 0, -1
+	for i < len(text) {
+		r, size := utf8.decode_rune_in_string(text[i:])
+		if r == ' ' do last = i
+		cw := font_width(&ui.mono, text[i:i + size], PEEK_PX)
+		if w + cw > width && i > 0 {
+			return last > 0 && i - last < 28 ? last : i
+		}
+		w += cw
+		i += size
+	}
+	return len(text)
+}
+
+// Whether a block of output has its lines numbered — a file read back, or a
+// grep that was asked for line numbers. Decided off the first few lines: a
+// listing says so immediately, and a run of output that happens to have a
+// number on its ninetieth line is not a listing.
+@(private = "file")
+output_numbered :: proc(result: string) -> bool {
+	seen, hit := 0, 0
+	it := each_line(result)
+	for l in iter_next(&it) {
+		if strings.trim_space(l) == "" do continue
+		if _, _, ok := numbered_line(l); ok do hit += 1
+		seen += 1
+		if seen >= 4 do break
+	}
+	return seen > 0 && hit * 2 > seen
 }
 
 @(private = "file")
@@ -471,6 +557,12 @@ Peek :: struct {
 	box:    Rect, // the panel, on screen
 	body_h: f32, // the content under the head, before any is cut off
 	img_h:  f32,
+	// The width the rows were folded against. Carried rather than worked out
+	// again, because the panel's own width is decided from the rows and
+	// folding them a second time against that answer would fold them
+	// differently — the measure and the drawing have to be looking at the
+	// same list.
+	rows_w: f32,
 	pic:    string, // the picture it is holding, if it is holding one
 }
 
@@ -518,8 +610,30 @@ peek_layout :: proc(app: ^App, ref: Ref, view: Rect, top: f32) -> (p: Peek) {
 		md_layout(ui, b, inner)
 		p.body_h = b.height
 	case .Tool:
-		for row in peek_rows(app, b, inner - PEEK_GUT) do p.body_h += row_h(row.kind)
+		// A panel of prose is a reading column and stops there. A panel of
+		// code is not reading matter: a line of it folded is a line cut in
+		// two, and 560 pixels of mono is about sixty characters, which is
+		// half of most lines this program has ever printed. So the rows are
+		// folded against the widest a panel may be, and then the panel is
+		// made as wide as the widest row that came out — a short command's
+		// output still opens at the reading column, and a grep through a file
+		// of long lines opens wide enough to read them.
+		prose := p.tile.icon == .Web || p.tile.icon == .Agent
+		p.rows_w = (prose ? min(PEEK_W, avail) : min(PEEK_CODE_W, avail)) - 28
+		rows := peek_rows(app, b, p.rows_w)
+		for row in rows do p.body_h += row_h(row.kind)
 		if p.body_h == 0 do p.body_h = 22
+		if !prose {
+			gut := rows_gut(rows)
+			widest := f32(0)
+			for row in rows do widest = max(widest, row_width(ui, row, gut))
+			// The row's own width and a little over: a panel exactly as wide
+			// as its widest row has no slack in it, and the last word of that
+			// row came out with an ellipsis after it because the sum of the
+			// pieces landed a hair past the edge.
+			w = clamp(widest + 34, min(PEEK_W, avail), min(PEEK_CODE_W, avail))
+			inner = w - 28
+		}
 	}
 	h := PEEK_HEAD + 14 + min(p.body_h, limit)
 	p.tall = p.body_h > limit
@@ -568,7 +682,7 @@ draw_peek :: proc(app: ^App, p: Peek) {
 	// to fight the tint it was printed on.
 	ui_rect(ui, box, color_alpha(tile.col, 0.14), 10)
 
-	rows := b.kind == .Tool && p.pic == "" ? peek_rows(app, b, inner - PEEK_GUT) : nil
+	rows := b.kind == .Tool && p.pic == "" ? peek_rows(app, b, p.rows_w) : nil
 	draw_peek_head(app, p, rows)
 
 	// The text under the head scrolls, and the wheel reaches it from the
@@ -594,11 +708,7 @@ draw_peek :: proc(app: ^App, p: Peek) {
 		}
 	case .Tool:
 		ui_hover_text(ui, box, tool_hover(b))
-		// The numbers get a column of their own only when there are numbers:
-		// output that has none used to be pushed along by a gutter standing
-		// empty beside it, which reads as an indent nobody typed.
-		gut := f32(0)
-		for row in rows do if row.num > 0 && row.kind == .Mono do gut = PEEK_GUT
+		gut := rows_gut(rows)
 		for row in rows {
 			h := row_h(row.kind)
 			if iy > box.y + box.h do break
@@ -638,6 +748,10 @@ draw_peek_head :: proc(app: ^App, p: Peek, rows: []Row) {
 	right := box.x + box.w - 12
 	adds, dels := 0, 0
 	for row in rows {
+		// Lines of the file, not rows of the panel: a line too long to sit on
+		// one row is folded onto two, and counting rows made an edit that put
+		// eight lines in say it had put nine.
+		if row.num == ROW_CONT do continue
 		if row.kind == .Add do adds += 1
 		if row.kind == .Del do dels += 1
 	}
@@ -715,35 +829,37 @@ draw_row :: proc(app: ^App, row: Row, r: Rect, box: Rect, gut: f32) {
 			num := fmt.tprintf("%d", row.num)
 			ui_text(ui, mono, num, {x + gut - 8 - font_width(mono, num, PEEK_PX), r.y + 2}, PEEK_PX, color_alpha(FAINT, 0.9))
 		}
-		x += gut
-		text := font_ellipsize(mono, tabbed(row.text), PEEK_PX, box.x + box.w - 14 - x, buf[:])
-		ui_text(ui, mono, text, {x, r.y + 2}, PEEK_PX, color_mix(CODE_TEXT, MUTED, 0.3))
+		x += gut + fold_in(row)
+		draw_code(ui, row.text, x, r.y + 2, box.x + box.w - 14, color_mix(CODE_TEXT, MUTED, 0.3), MUTED, 0)
 
 	case .Cmd:
 		// A shell line, on the ground a terminal gives it, with the prompt
 		// drawn rather than typed: a `$` in the text would be a character the
 		// command does not have, and copying the panel would hand it back.
 		ui_rect(ui, {box.x + 10, r.y, box.w - 20, r.h}, color_alpha(CODE_BG, 0.5), 0)
-		ui_line(ui, {r.x + 4, r.y + 5}, {r.x + 10, r.y + r.h / 2}, 2, color_alpha(GREEN, 0.9))
-		ui_line(ui, {r.x + 10, r.y + r.h / 2}, {r.x + 4, r.y + r.h - 5}, 2, color_alpha(GREEN, 0.9))
-		x := r.x + PEEK_SIGN + 4
-		text := font_ellipsize(mono, tabbed(row.text), PEEK_PX, box.x + box.w - 14 - x, buf[:])
-		ui_text(ui, mono, text, {x, r.y + 2}, PEEK_PX, color_mix(TEXT, CODE_TEXT, 0.4))
+		if row.num != ROW_CONT {
+			ui_line(ui, {r.x + 4, r.y + 5}, {r.x + 10, r.y + r.h / 2}, 2, color_alpha(GREEN, 0.9))
+			ui_line(ui, {r.x + 10, r.y + r.h / 2}, {r.x + 4, r.y + r.h - 5}, 2, color_alpha(GREEN, 0.9))
+		}
+		x := r.x + PEEK_SIGN + 4 + fold_in(row)
+		draw_code(ui, row.text, x, r.y + 2, box.x + box.w - 14, color_mix(TEXT, CODE_TEXT, 0.4), MUTED, 0)
 
 	case .Add, .Del:
 		put := row.kind == .Add
 		tint := put ? GREEN : RED
 		ui_rect(ui, {box.x + 10, r.y, box.w - 20, r.h}, color_alpha(tint, 0.13), 0)
 		ui_rect(ui, {box.x + 10, r.y, 2, r.h}, color_alpha(tint, 0.85), 0)
-		ui_text(ui, mono, put ? "+" : "-", {r.x + 4, r.y + 2}, PEEK_PX, tint)
-		x := r.x + PEEK_SIGN
-		text := font_ellipsize(mono, tabbed(row.text), PEEK_PX, box.x + box.w - 14 - x, buf[:])
-		ui_text(ui, mono, text, {x, r.y + 2}, PEEK_PX, color_mix(TEXT, tint, 0.3))
+		if row.num != ROW_CONT do ui_text(ui, mono, put ? "+" : "-", {r.x + 4, r.y + 2}, PEEK_PX, tint)
+		x := r.x + PEEK_SIGN + fold_in(row)
+		// The colours a line is made of, pulled a third of the way towards
+		// the side of the diff it is on: a comment in a line that went in is
+		// still a comment, and the row still reads green from across the
+		// window.
+		draw_code(ui, row.text, x, r.y + 2, box.x + box.w - 14, color_mix(TEXT, tint, 0.3), tint, 0.32)
 
 	case .Same:
-		x := r.x + PEEK_SIGN
-		text := font_ellipsize(mono, tabbed(row.text), PEEK_PX, box.x + box.w - 14 - x, buf[:])
-		ui_text(ui, mono, text, {x, r.y + 2}, PEEK_PX, color_alpha(FAINT, 0.95))
+		x := r.x + PEEK_SIGN + fold_in(row)
+		draw_code(ui, row.text, x, r.y + 2, box.x + box.w - 14, color_alpha(FAINT, 0.95), FAINT, 0.5)
 
 	case .Skip:
 		// A rule with the count sitting on it, which is the whole of what a
@@ -788,6 +904,143 @@ draw_row :: proc(app: ^App, row: Row, r: Rect, box: Rect, gut: f32) {
 		dim := row.num == 2 ? color_alpha(MUTED, 0.9) : color_mix(TEXT, MUTED, 0.2)
 		ui_text(ui, &ui.regular, text, {x, r.y + 3}, PEEK_TX, dim)
 	}
+}
+
+// The numbers get a column of their own only when there are numbers: output
+// that has none used to be pushed along by a gutter standing empty beside it,
+// which reads as an indent nobody typed. One answer for the panel, read by the
+// measure and by the drawing.
+@(private = "file")
+rows_gut :: proc(rows: []Row) -> f32 {
+	for row in rows do if row.num > 0 && row.kind == .Mono do return PEEK_GUT
+	return 0
+}
+
+// How wide a row wants the panel to be: where its text starts, plus the text.
+@(private = "file")
+row_width :: proc(ui: ^UI, row: Row, gut: f32) -> f32 {
+	switch row.kind {
+	case .Head, .Gap, .Skip:
+		return 0 // a label with a rule after it fits whatever it is given
+	case .Mono:
+		return gut + fold_in(row) + font_width(&ui.mono, tabbed(row.text), PEEK_PX)
+	case .Cmd:
+		return PEEK_SIGN + 4 + fold_in(row) + font_width(&ui.mono, tabbed(row.text), PEEK_PX)
+	case .Add, .Del, .Same:
+		return PEEK_SIGN + fold_in(row) + font_width(&ui.mono, tabbed(row.text), PEEK_PX)
+	case .Path:
+		return PEEK_SIGN + font_width(&ui.mono, row.text, PEEK_PX) + 30
+	case .Note:
+		return font_width(&ui.regular, row.text, PEEK_TX)
+	case .Check:
+		return 22 + font_width(&ui.regular, row.text, PEEK_TX)
+	}
+	return 0
+}
+
+// How far in the rest of a folded line starts: enough to see that it is the
+// same line carried over, and not so far that a fold looks like an indent
+// somebody typed.
+@(private = "file")
+fold_in :: proc(row: Row) -> f32 {
+	return row.num == ROW_CONT ? 14 : 0
+}
+
+// Code, coloured by what its characters are: comments back out of the way,
+// strings and numbers apart from the words, punctuation quieter than either.
+// It is not a parser and knows no language — a run of digits is a number in
+// all of them — and it does not need to be. The point is that a panel of
+// output stops being a wall of one grey.
+//
+// `wash` is a colour every token is pulled towards and `amount` how far, which
+// is how a diff keeps its green and red while the code inside it keeps its
+// own.
+@(private = "file")
+draw_code :: proc(ui: ^UI, text: string, x, y, max_x: f32, base, wash: Color, amount: f32) {
+	line := tabbed(text)
+	pen := x
+	i := 0
+	for i < len(line) {
+		end, kind := code_token(line, i)
+		col := base
+		switch kind {
+		case .Comment:
+			col = color_alpha(FAINT, 0.95)
+		case .Str:
+			col = color_mix(TILE_READ, base, 0.3)
+		case .Num:
+			col = AMBER
+		case .Punct:
+			col = color_mix(base, MUTED, 0.55)
+		case .Plain:
+		}
+		if amount > 0 do col = color_mix(col, wash, amount)
+		run := line[i:end]
+		w := font_width(&ui.mono, run, PEEK_PX)
+		// The cut, when the rest will not fit: an ellipsis where the words
+		// stop, so a folded line that is still too long says so.
+		if pen + w > max_x {
+			buf: [256]u8
+			room := max_x - pen
+			ui_text(ui, &ui.mono, font_ellipsize(&ui.mono, run, PEEK_PX, room, buf[:]), {pen, y}, PEEK_PX, col)
+			return
+		}
+		ui_text(ui, &ui.mono, run, {pen, y}, PEEK_PX, col)
+		pen += w
+		i = end
+	}
+}
+
+Code_Tok :: enum {
+	Plain,
+	Comment,
+	Str,
+	Num,
+	Punct,
+}
+
+// One run of a line that is all the same thing, starting at `i`. A quote that
+// never closes before the end of the line is not a string — it is an
+// apostrophe in a sentence somebody printed, and taking it for a string used
+// to colour the whole of the rest of the line.
+@(private = "file")
+code_token :: proc(s: string, i: int) -> (end: int, kind: Code_Tok) {
+	ident :: proc(c: u8) -> bool {
+		return c == '_' || c >= 128 || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
+	}
+	c := s[i]
+	switch {
+	case c == '/' && i + 1 < len(s) && s[i + 1] == '/':
+		return len(s), .Comment
+	case c == '#' && (i == 0 || s[i - 1] == ' ') && i + 1 < len(s) && s[i + 1] == ' ':
+		return len(s), .Comment
+	case c == '"' || c == '`' || c == '\'':
+		j := i + 1
+		for j < len(s) {
+			if s[j] == '\\' && c != '`' {
+				j += 2
+				continue
+			}
+			if s[j] == c do return j + 1, .Str
+			j += 1
+		}
+		return i + 1, .Plain
+	case c >= '0' && c <= '9':
+		j := i
+		for j < len(s) && (ident(s[j]) || s[j] == '.') do j += 1
+		return j, .Num
+	case ident(c):
+		j := i
+		for j < len(s) && ident(s[j]) do j += 1
+		return j, .Plain
+	case c == ' ':
+		j := i
+		for j < len(s) && s[j] == ' ' do j += 1
+		return j, .Plain
+	}
+	j := i
+	for j < len(s) && !ident(s[j]) && s[j] != ' ' && s[j] != '"' && s[j] != '`' do j += 1
+	return max(j, i + 1), .Punct
 }
 
 // Tabs, as the width a listing is laid out in. The atlas has no tab in it, so
