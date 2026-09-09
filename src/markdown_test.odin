@@ -144,3 +144,129 @@ a_span_cut_across_a_wrap_keeps_its_face :: proc(t: ^testing.T) {
 		plain / 4,
 	)
 }
+
+@(private = "file")
+table_ui :: proc(ui: ^UI) {
+	g_atlas = Atlas{width = 1, height = 1, distance_range = 4, em_px = 48}
+	ui.regular = even_font(0.5)
+	ui.bold = even_font(0.5)
+	ui.mono = even_font(0.75)
+}
+
+// A table is one Line holding all of its rows, because the width of a column
+// is the widest cell in it and no single row knows that. The two things that
+// have to agree about it are the height md_layout leaves for it and the height
+// md_draw_line advances by; both ask md_table, so this checks they came back
+// with the same answer, and that the cells of a column all start at the same x
+// however long the cells above them were.
+@(test)
+a_table_has_one_answer_about_its_columns :: proc(t: ^testing.T) {
+	ui: UI
+	defer ui_destroy(&ui)
+	table_ui(&ui)
+
+	b: Block
+	defer strings.builder_destroy(&b.text)
+	strings.write_string(
+		&b.text,
+		"before\n\n| a | b |\n|---|---|\n| a much longer first cell | y |\n| x | z |\n\nafter\n",
+	)
+
+	WIDTH :: f32(600)
+	md_layout(&ui, &b, WIDTH)
+
+	tables := 0
+	table: Line
+	for l in b.lines do if l.style == .Table {
+		tables += 1
+		table = l
+	}
+	testing.expectf(t, tables == 1, "the table came out as %v lines, not one", tables)
+
+	m := md_table(&ui, table.text, WIDTH)
+	testing.expectf(t, m.ncols == 2 && m.rows == 3, "read %v columns and %v rows", m.ncols, m.rows)
+
+	// The height the block reserved is the height the draw advances by.
+	input: Input
+	ui_begin(&ui, 800, 600, &input, 1.0 / 60)
+	adv := md_draw_line(&ui, table, 0, 0, WIDTH, TEXT, FAINT)
+	// Every cell of the second column opens at the same x, whatever the cell
+	// to its left came to: that is what one shared set of widths buys.
+	starts: map[int]f32
+	defer delete(starts)
+	for v in ui.verts {
+		if v.effect != .Text do continue
+		if v.pos.x < m.width[0] do continue
+		row := int(v.pos.y / TABLE_LH)
+		if x, seen := starts[row]; !seen || v.pos.x < x do starts[row] = v.pos.x
+	}
+	ui_end(&ui)
+
+	testing.expectf(t, adv == m.height, "drew %v tall, laid out %v", adv, m.height)
+	testing.expectf(t, len(starts) == 3, "found %v rows of second-column text, not 3", len(starts))
+	want := m.width[0] + TABLE_PAD
+	for row, x in starts {
+		testing.expectf(t, abs(x - want) < 0.5, "row %v opens its second column at %v, not %v", row, x, want)
+	}
+}
+
+// A table wider than the bubble is squeezed to fit rather than run off the
+// right of it, which is the same rule every other block here is held to.
+@(test)
+a_wide_table_is_squeezed_to_the_width_it_is_given :: proc(t: ^testing.T) {
+	ui: UI
+	defer ui_destroy(&ui)
+	table_ui(&ui)
+
+	b: Block
+	defer strings.builder_destroy(&b.text)
+	strings.write_string(
+		&b.text,
+		"| one | two | three |\n|---|---|---|\n| a very long cell indeed that will not fit | another long one here | and a third of them |\n",
+	)
+
+	WIDTH :: f32(300)
+	md_layout(&ui, &b, WIDTH)
+	m := md_table(&ui, b.lines[0].text, WIDTH)
+	total: f32
+	for i in 0 ..< m.ncols do total += m.width[i]
+	testing.expectf(t, total <= WIDTH + 0.01, "the columns come to %v in a %v bubble", total, WIDTH)
+}
+
+// The rule row is what makes a table. A sentence with a pipe in it is a
+// sentence: reading it as a header would eat the rest of the paragraph into a
+// column nobody asked for.
+@(test)
+a_pipe_alone_is_not_a_table :: proc(t: ^testing.T) {
+	ui: UI
+	defer ui_destroy(&ui)
+	table_ui(&ui)
+
+	b: Block
+	defer strings.builder_destroy(&b.text)
+	strings.write_string(&b.text, "run `ls | wc -l` to count them\nand then read the number\n")
+
+	md_layout(&ui, &b, 400)
+	for l in b.lines {
+		testing.expectf(t, l.style != .Table, "%q was read as a table", l.text)
+	}
+}
+
+// The alignments in the rule row are read off it, and a right-aligned cell
+// ends where its column ends rather than starting where it starts.
+@(test)
+a_rule_row_says_how_a_column_is_aligned :: proc(t: ^testing.T) {
+	ui: UI
+	defer ui_destroy(&ui)
+	table_ui(&ui)
+
+	b: Block
+	defer strings.builder_destroy(&b.text)
+	strings.write_string(&b.text, "| l | c | r |\n|:--|:-:|--:|\n| 1 | 2 | 3 |\n")
+
+	md_layout(&ui, &b, 600)
+	m := md_table(&ui, b.lines[0].text, 600)
+	testing.expect(t, m.align[0] == .Left, "the first column is not left aligned")
+	testing.expect(t, m.align[1] == .Center, "the second column is not centred")
+	testing.expect(t, m.align[2] == .Right, "the third column is not right aligned")
+}

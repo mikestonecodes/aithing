@@ -63,6 +63,11 @@ Line_Style :: enum {
 	Code,
 	Bullet,
 	Quote,
+	// A whole GFM pipe table, rows and all, in one line: see md_table. The
+	// columns of a table are one answer for the table, not one per row, and a
+	// row that kept its own copy of them is a row that can disagree with the
+	// row above it.
+	Table,
 }
 
 Msg :: struct {

@@ -3,7 +3,7 @@ package aithing
 import "core:strings"
 
 // Just enough Markdown to make an answer readable: headings, bullets, block
-// quotes, fenced code, and inline `code` and **bold**. Wrapping happens once
+// quotes, fenced code, pipe tables, and inline `code` and **bold**. Wrapping happens once
 // per block and is cached on the block, because a long transcript re-wrapped
 // every frame is the one thing that would make this UI feel slow.
 
@@ -18,6 +18,19 @@ HEAD_LH :: f32(38)
 // drawn behind (see md_draw_line), counted by the wrap so the box lands inside
 // the width the line was fitted to and not over the edge of the bubble.
 CODE_EDGE :: f32(2)
+
+// A table is set a couple of points down from the prose around it, because a
+// table wide enough to need four columns at reading size is a table that gets
+// squeezed, and squeezed columns are worse to read than small ones.
+TABLE_PX :: f32(16.5)
+TABLE_LH :: f32(28)
+TABLE_PAD :: f32(10) // the gutter either side of a cell's text
+TABLE_GAP :: f32(6) // air above and below the whole table
+
+// More columns than this and the rest of the row is left in the last cell.
+// Nothing an agent writes has twelve columns; a line with twelve pipes in it
+// is far more likely to be a shell pipeline someone forgot to fence.
+MD_TABLE_COLS :: 12
 
 // What the pen is set in partway along a line: ** toggles the bold face and a
 // backtick toggles the mono one. Kept as a thing rather than two bools passed
@@ -96,6 +109,8 @@ line_style_font :: proc(ui: ^UI, style: Line_Style) -> (^Font, f32, f32) {
 		return &ui.bold, HEAD_PX, HEAD_LH
 	case .Bold:
 		return &ui.bold, BODY_PX, BODY_LH
+	case .Table:
+		return &ui.regular, TABLE_PX, TABLE_LH
 	case .Body, .Bullet, .Quote:
 		return &ui.regular, BODY_PX, BODY_LH
 	}
@@ -113,7 +128,15 @@ md_layout :: proc(ui: ^UI, b: ^Block, width: f32) {
 
 	in_code := false
 	it := each_line(text)
-	for line in iter_next(&it) {
+	for {
+		// `it.rest` is a suffix of `text`, so how far the walk has got is
+		// len(text) - len(it.rest) — which is how a table, whose Line is the
+		// whole run of rows at once, gets a slice of the block's own text
+		// without any of it being copied.
+		before := len(text) - len(it.rest)
+		line, more := iter_next(&it)
+		if !more do break
+
 		if strings.has_prefix(strings.trim_left_space(line), "```") {
 			in_code = !in_code
 			continue
@@ -129,6 +152,29 @@ md_layout :: proc(ui: ^UI, b: ^Block, width: f32) {
 			continue
 		}
 		indent := f32(len(line) - len(trimmed)) * 3
+
+		// A pipe table, if the line after this one is the rule row. Nothing
+		// short of the rule row makes a table: a sentence with a pipe in it is
+		// a sentence, and treating it as a header is how a paragraph loses its
+		// second half to a column nobody asked for.
+		if md_is_table_row(line) {
+			peek := it
+			rule, ok := iter_next(&peek)
+			if ok && md_is_table_rule(rule) {
+				it = peek
+				end := len(text) - len(it.rest)
+				for {
+					after := it
+					next, ok2 := iter_next(&after)
+					if !ok2 || !md_is_table_row(next) do break
+					it = after
+					end = len(text) - len(it.rest)
+				}
+				for end > before && (text[end - 1] == '\n' || text[end - 1] == '\r') do end -= 1
+				append(&b.lines, Line{text = text[before:end], style = .Table, indent = indent})
+				continue
+			}
+		}
 
 		switch {
 		case strings.has_prefix(trimmed, "#"):
@@ -146,10 +192,7 @@ md_layout :: proc(ui: ^UI, b: ^Block, width: f32) {
 	}
 
 	h: f32
-	for l in b.lines {
-		_, _, lh := line_style_font(ui, l.style)
-		h += lh
-	}
+	for l in b.lines do h += md_line_height(ui, l, width)
 	b.height = h
 }
 
@@ -259,6 +302,9 @@ decode_first :: proc(s: string) -> (rune, int) {
 // Draws one laid-out line, handling `code` and **bold** spans inline. Returns
 // the line's height so the caller can advance.
 md_draw_line :: proc(ui: ^UI, l: Line, x, y, width: f32, col: Color, dim: Color) -> f32 {
+	// A table is the whole of its Line and lays itself out from its own text.
+	if l.style == .Table do return md_draw_table(ui, l, x, y, width, col)
+
 	font, px, lh := line_style_font(ui, l.style)
 	pen := x + l.indent
 
@@ -285,16 +331,37 @@ md_draw_line :: proc(ui: ^UI, l: Line, x, y, width: f32, col: Color, dim: Color)
 		text = text[min(marker_len, len(text)):]
 	}
 
-	// Inline spans: ** toggles bold, ` toggles mono. The markers themselves are
-	// not drawn, which is why wrapping measured them — it only ever leaves the
-	// line shorter than it planned for.
-	// Not `false, false`: a line opens in whatever face the wrap left open at
+	// Not `Span_Pen{}`: a line opens in whatever face the wrap left open at
 	// the cut above it, which is the whole of what Line.pen is for.
-	bold := l.pen.bold
-	code := l.pen.code
+	md_draw_spans(ui, text, pen, y, font, px, col, l.pen)
+	return lh
+}
+
+// Draws a run of text with its inline spans — ** toggles bold, ` toggles mono
+// — and answers how far the pen moved. The markers themselves are not drawn,
+// which is why wrapping measures them with the same walk (span_step): the wrap
+// and the draw agreeing about what a line comes to is the only reason text
+// stays inside its bubble.
+//
+// A table cell draws through here too, which is why this is a proc of its own
+// and not the tail of md_draw_line: a cell is a run of markdown that is not a
+// line, and the alternative was a second span walk that would have drifted
+// from this one the first time either was touched.
+md_draw_spans :: proc(
+	ui: ^UI,
+	text: string,
+	x, y: f32,
+	base: ^Font,
+	px: f32,
+	col: Color,
+	start_pen := Span_Pen{},
+) -> f32 {
+	pen := x
+	bold := start_pen.bold
+	code := start_pen.code
 	seg_start := 0
 	i := 0
-	flush :: proc(ui: ^UI, s: string, pen: ^f32, y: f32, bold, code: bool, col, dim: Color, base: ^Font, px: f32) {
+	flush :: proc(ui: ^UI, s: string, pen: ^f32, y: f32, bold, code: bool, col: Color, base: ^Font, px: f32) {
 		if s == "" do return
 		f := base
 		c := col
@@ -315,14 +382,14 @@ md_draw_line :: proc(ui: ^UI, l: Line, x, y, width: f32, col: Color, dim: Color)
 
 	for i < len(text) {
 		if text[i] == '`' {
-			flush(ui, text[seg_start:i], &pen, y, bold, code, col, dim, font, px)
+			flush(ui, text[seg_start:i], &pen, y, bold, code, col, base, px)
 			code = !code
 			i += 1
 			seg_start = i
 			continue
 		}
 		if i + 1 < len(text) && text[i] == '*' && text[i + 1] == '*' {
-			flush(ui, text[seg_start:i], &pen, y, bold, code, col, dim, font, px)
+			flush(ui, text[seg_start:i], &pen, y, bold, code, col, base, px)
 			bold = !bold
 			i += 2
 			seg_start = i
@@ -330,7 +397,213 @@ md_draw_line :: proc(ui: ^UI, l: Line, x, y, width: f32, col: Color, dim: Color)
 		}
 		i += 1
 	}
-	flush(ui, text[seg_start:], &pen, y, bold, code, col, dim, font, px)
+	flush(ui, text[seg_start:], &pen, y, bold, code, col, base, px)
+	return pen - x
+}
+
+
+// ---------------------------------------------------------------- tables ---
+//
+// A GFM pipe table is laid out as a single Line whose text is the whole table,
+// rule row and all, sliced straight out of the block. It is one Line and not
+// one per row because a table's column widths are one answer for the table:
+// the width of the second column is the widest second cell in it, which no
+// single row knows. A row that carried its own copy of the widths would be a
+// second opinion about where the column starts, and the row that got it wrong
+// is the one drawn a pixel out of line with the row above.
+//
+// So nothing about the shape is written down. md_table works it out from the
+// text every time it is asked, and both the height (md_line_height) and the
+// drawing (md_draw_table) ask it, so the space a table is given and the space
+// it fills cannot disagree. It costs a measure of every cell per frame, which
+// for the handful of rows a table has is nothing beside the wrap it replaces.
+
+Table_Align :: enum {
+	Left,
+	Center,
+	Right,
+}
+
+Table :: struct {
+	ncols:  int,
+	rows:   int, // rows that get drawn: the rule row is not one of them
+	width:  [MD_TABLE_COLS]f32,
+	align:  [MD_TABLE_COLS]Table_Align,
+	height: f32,
+}
+
+// The cells of one row. The outer pipes are optional in GFM and both forms
+// turn up, so a leading and a trailing one are dropped rather than counted as
+// empty cells. A pipe inside a `code` span is text: `a | b` in a cell is one
+// cell, and splitting on it blindly is how a table of shell snippets comes out
+// with a ragged extra column.
+md_table_cells :: proc(row: string, out: ^[MD_TABLE_COLS]string) -> int {
+	s := strings.trim_space(row)
+	if strings.has_prefix(s, "|") do s = s[1:]
+	if strings.has_suffix(s, "|") do s = s[:len(s) - 1]
+
+	n := 0
+	start := 0
+	code := false
+	for i in 0 ..< len(s) {
+		if s[i] == '`' do code = !code
+		if s[i] == '|' && !code && n < MD_TABLE_COLS - 1 {
+			out[n] = strings.trim_space(s[start:i])
+			n += 1
+			start = i + 1
+		}
+	}
+	out[n] = strings.trim_space(s[start:])
+	return n + 1
+}
+
+// Any line with a pipe in it can be a row; what makes it a table is the rule
+// row under the header, which is the only part of the syntax that cannot be
+// anything else.
+md_is_table_row :: proc(line: string) -> bool {
+	t := strings.trim_space(line)
+	if t == "" do return false
+	if strings.has_prefix(t, "```") do return false
+	return strings.index_byte(t, '|') >= 0
+}
+
+// `|---|:--:|---:|`. The pipe is required: a bare `---` is a horizontal rule
+// and a `- foo` list marker is not a rule row either.
+md_is_table_rule :: proc(line: string) -> bool {
+	if strings.index_byte(line, '|') < 0 do return false
+	cells: [MD_TABLE_COLS]string
+	n := md_table_cells(line, &cells)
+	for i in 0 ..< n {
+		c := cells[i]
+		dashes := 0
+		for j in 0 ..< len(c) {
+			switch c[j] {
+			case '-':
+				dashes += 1
+			case ':':
+			case:
+				return false
+			}
+		}
+		if dashes == 0 do return false
+	}
+	return n > 0
+}
+
+// Everything about how the table sits on screen, worked out from the table.
+// Columns are as wide as their widest cell and no wider; a table that comes to
+// more than the width it is given has every column scaled to fit, because a
+// column dropped off the right edge is a column the reader never learns is
+// there.
+md_table :: proc(ui: ^UI, text: string, width: f32) -> (t: Table) {
+	cells: [MD_TABLE_COLS]string
+	head := true
+	it := each_line(text)
+	for row in iter_next(&it) {
+		if strings.trim_space(row) == "" do continue
+		if md_is_table_rule(row) {
+			n := md_table_cells(row, &cells)
+			for i in 0 ..< n {
+				c := cells[i]
+				left := strings.has_prefix(c, ":")
+				right := strings.has_suffix(c, ":")
+				t.align[i] = left && right ? .Center : right ? .Right : .Left
+			}
+			continue
+		}
+		// The header is set in the bold face and is measured in it: measuring
+		// it in the body face is the same mistake the wrap made about inline
+		// code, one face deciding how wide another one draws.
+		font := head ? &ui.bold : &ui.regular
+		n := md_table_cells(row, &cells)
+		for i in 0 ..< n {
+			w := md_line_width(ui, cells[i], font, TABLE_PX) + 2 * TABLE_PAD
+			t.width[i] = max(t.width[i], w)
+		}
+		t.ncols = max(t.ncols, n)
+		t.rows += 1
+		head = false
+	}
+
+	sum: f32
+	for i in 0 ..< t.ncols do sum += t.width[i]
+	if sum > width && width > 0 {
+		k := width / sum
+		for i in 0 ..< t.ncols do t.width[i] *= k
+	}
+	t.height = 2 * TABLE_GAP + f32(t.rows) * TABLE_LH
+	return
+}
+
+// How tall a laid-out line is. Every style but .Table answers with its line
+// height; a table answers with its own, which is the number of rows it has.
+md_line_height :: proc(ui: ^UI, l: Line, width: f32) -> f32 {
+	if l.style == .Table do return md_table(ui, l.text, width - l.indent).height
+	_, _, lh := line_style_font(ui, l.style)
 	return lh
 }
 
+md_draw_table :: proc(ui: ^UI, l: Line, x, y, width: f32, col: Color) -> f32 {
+	t := md_table(ui, l.text, width - l.indent)
+	left := x + l.indent
+	total: f32
+	for i in 0 ..< t.ncols do total += t.width[i]
+
+	cells: [MD_TABLE_COLS]string
+	ry := y + TABLE_GAP
+	r := 0
+	it := each_line(l.text)
+	for row in iter_next(&it) {
+		if strings.trim_space(row) == "" do continue
+		if md_is_table_rule(row) do continue
+		head := r == 0
+		font := head ? &ui.bold : &ui.regular
+		n := md_table_cells(row, &cells)
+
+		// A rule under the header and nothing else. Lines between the body
+		// rows were tried and are not there any more: at an alpha low enough
+		// not to fence the table in they were invisible against the bubble,
+		// and at one high enough to see they were the loudest thing in it.
+		if head do ui_rect(ui, {left, ry + TABLE_LH - 1, total, 1}, BORDER)
+
+		cx := left
+		for i in 0 ..< t.ncols {
+			cw := t.width[i]
+			if i < n && cells[i] != "" {
+				avail := cw - 2 * TABLE_PAD
+				tw := md_line_width(ui, cells[i], font, TABLE_PX)
+				off: f32
+				switch t.align[i] {
+				case .Left:
+				case .Center:
+					off = (avail - tw) / 2
+				case .Right:
+					off = avail - tw
+				}
+				// A cell too long for its column is cut off at the column,
+				// not run into the one beside it: the scissor is what keeps a
+				// squeezed table readable rather than overlapping.
+				ui_push_clip(ui, {cx, ry, cw, TABLE_LH})
+				md_draw_spans(
+					ui,
+					cells[i],
+					cx + TABLE_PAD + max(off, 0),
+					// High enough in the row that the box behind an inline
+					// code span clears the bottom of it: the box hangs seven
+					// pixels below the size it is set at, and the scissor
+					// would cut its rounded corners off.
+					ry + (TABLE_LH - TABLE_PX) * 0.5 - 2,
+					font,
+					TABLE_PX,
+					col,
+					Span_Pen{},
+				)
+				ui_pop_clip(ui)
+			}
+			cx += cw
+		}
+		ry += TABLE_LH
+		r += 1
+	}
+	return t.height
+}

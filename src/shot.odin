@@ -465,7 +465,7 @@ shot_thread :: proc(app: ^App) {
 		app,
 		.Assistant,
 		.Text,
-		"About half a millisecond at 1200 sessions and 400 cards, and frames are only drawn on input or animation — so a cache here would be a second copy of the grid bought with nothing.",
+		"About half a millisecond at 1200 sessions and 400 cards, and frames are only drawn on input or animation — so a cache here would be a second copy of the grid bought with nothing.\n\n| what | before | after |\n|:--|--:|--:|\n| `canvas_layout` | 41.2 ms | 0.38 ms |\n| the sweep, per session | one `mkdir` | none |\n| **search, lowercased** | 4 copies a session | none |\n\nThe table is in the scene because a pipe table is only worth what it looks like, and this is the only way to look at one without a compositor.",
 	)
 }
 
