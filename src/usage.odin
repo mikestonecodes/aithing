@@ -209,17 +209,47 @@ usage_until :: proc(resets: i64) -> string {
 	return fmt.tprintf("%dd %dh", days, hours)
 }
 
+// The panel, in the parts it is made of, because the two widths it can be are
+// both sums of them and were both written out as numbers once. `usage_rect`
+// and `chips_right` work off these, so a ring getting thicker cannot leave the
+// panel a pixel too narrow for its own dial.
+@(private = "file")
+USAGE_PAD :: f32(14)
+// One ring per window, thick enough to read at a glance and spaced enough that
+// three of them are three rings rather than a gradient.
+@(private = "file")
+RING_W :: f32(8)
+@(private = "file")
+RING_GAP :: f32(3.5)
+// Wide enough that three rings and the hole in the middle both survive: the
+// rings ate the hole at ten thick, and a hole too small for "83%" is a dial
+// with nowhere to put the one figure it has to show when the names are gone.
+@(private = "file")
+DIAL_D :: f32(104)
+// The room the three names need beside the dial, and the gap they stand off
+// it. Under this there is not enough for "fable" and a figure, and a column of
+// clipped words is worse than no column: the dial still says how much is gone,
+// and the hover line still says which ring is which.
+@(private = "file")
+NAMES_W :: f32(56)
+@(private = "file")
+NAMES_GAP :: f32(14)
+// One name and its figure, stacked. Three of these are taller than the dial
+// is, which is why they are centred on it rather than laid out inside it.
+@(private = "file")
+NAME_H :: f32(36)
+
 USAGE_W :: f32(214)
 USAGE_H :: f32(150)
-// Narrow enough to keep three rows readable, and no narrower: the panel gives
-// up width to the box along the bottom rather than jumping above it — it used
-// to move up there, which put the one thing that never changes in a place that
-// changed every time the box grew a line.
-USAGE_MIN :: f32(150)
+// The dial and its margins, and nothing else: what the panel shrinks to. The
+// panel gives up width to the box along the bottom rather than jumping above
+// it — it used to move up there, which put the one thing that never changes in
+// a place that changed every time the box grew a line. What it gives up first
+// is the names, because the dial is the part that can be read at a glance.
+USAGE_MIN :: USAGE_PAD * 2 + DIAL_D
+// The width it takes to keep them.
 @(private = "file")
-USAGE_PAD :: f32(16)
-@(private = "file")
-ROW_H :: f32(42)
+USAGE_NAMED :: USAGE_MIN + NAMES_GAP + NAMES_W
 
 // Where the corner stands, and the one place that answers it: the bottom
 // right, in whatever room the box along the bottom leaves beside it. The box
@@ -232,11 +262,24 @@ usage_rect :: proc(full, strip: Rect) -> Rect {
 		room := full.x + full.w - PAD - (strip.x + strip.w + 12)
 		w = clamp(room, USAGE_MIN, USAGE_W)
 	}
-	return {full.x + full.w - PAD - w, full.y + full.h - PAD - USAGE_H, w, USAGE_H}
+	// Once there is not room for the names the panel is the dial and nothing
+	// else, square: a wide panel with a small dial floating in the middle of
+	// it is a panel mostly made of nothing, and the width it stops asking for
+	// is width the chips underneath it get back.
+	if w < USAGE_NAMED do w = USAGE_MIN
+	h := w < USAGE_NAMED ? USAGE_MIN : USAGE_H
+	return {full.x + full.w - PAD - w, full.y + full.h - PAD - h, w, h}
 }
 
 // The corner. `strip` is the box along the bottom of the window — the composer
 // or the capture box — and the panel squeezes to sit beside it.
+//
+// Three windows, three rings of one dial, outermost first. It was three rows
+// of "41%" for a while, which is the same three numbers and reads as a table:
+// you have to take all three in and compare them before you know whether you
+// are near anything. A ring says that in its shape — how much of the way round
+// it has gone — before a digit is read, and three concentric ones say which is
+// furthest along without any of them being read at all.
 draw_usage :: proc(app: ^App, full: Rect, strip: Rect) {
 	ui := &app.ui
 
@@ -250,28 +293,104 @@ draw_usage :: proc(app: ^App, full: Rect, strip: Rect) {
 	ui_rect(ui, {box.x + 1, box.y + 5, box.w, box.h}, color_alpha(Color(0xff000000), 0.30 * a), 14)
 	ui_rect(ui, box, color_alpha(PANEL, 0.97 * a), 14)
 
-	row(app, box, 0, "session", "session", app.usage.limits.session, a)
-	row(app, box, 1, "week", "week", app.usage.limits.week, a)
-	// Squeezed hard enough there is no room for both words, and "fable w..."
-	// is not a name — the week is the only Fable window there is, so the row
-	// drops the word rather than the letters.
-	row(app, box, 2, "fable week", "fable", app.usage.limits.fable, a)
+	// The names sit beside the dial when there is room for them, and the dial
+	// takes the middle of the panel when there is not. One question — how wide
+	// is the panel — with one answer, so the dial cannot end up centred in a
+	// panel that is also drawing a column.
+	d := min(min(box.h, box.w) - USAGE_PAD * 2, DIAL_D)
+	named := box.w >= USAGE_NAMED
+	cx := named ? box.x + USAGE_PAD + d / 2 : box.x + box.w / 2
+	centre := [2]f32{cx, box.y + box.h / 2}
+
+	// The three of them, in the order the rings are drawn in and the order the
+	// names are listed in, because those two orders being the same is the only
+	// thing that says which ring is which. They were three fields read out
+	// separately in three places — the rings, the column and the line under
+	// the pointer — which is three chances to put them in a different order.
+	windows := [3]struct {
+		long, short: string,
+		w:           Allowance,
+	} {
+		{"session", "session", app.usage.limits.session},
+		{"week", "week", app.usage.limits.week},
+		{"fable week", "fable", app.usage.limits.fable},
+	}
+	worst: f32
+	for n in windows do worst = max(worst, window_used(n.w))
+
+	// Tracks first, then every slice over them, so a ring's halo spills across
+	// its neighbours' grooves rather than being cut off at them.
+	for i in 0 ..< len(windows) {
+		ui_dial(ui, centre, ring_r(d, i), RING_W, 1, color_alpha(TRACK, 0.95 * a))
+	}
+	for n, i in windows {
+		// A window nobody has read yet is not a window with nothing used in
+		// it. `resets` is the one variable that answers it: the harness sends
+		// a reset time with every reading, so a zero there means nothing has
+		// reported one, and the ring is left as bare track rather than drawn
+		// as a confident nought.
+		if n.w.resets == 0 do continue
+		used := window_used(n.w)
+		// The slice eases round. A reading that has just landed — and the
+		// first one lands a second or so after the window opens — is worth
+		// watching arrive.
+		sweep := ui_anim(ui, ui_id("usage-ring", i), used, 9)
+		col := usage_meter_color(used)
+		r := ring_r(d, i)
+		// The same slice again, wider and faint, so the arc looks lit rather
+		// than painted on — and the brighter it is the fuller the window, so
+		// the dial glows harder the closer it is to the end of one. It was a
+		// disc of light behind the whole thing first, which put the brightest
+		// part in the hole in the middle: nothing is there, and the word that
+		// is came out through a red haze.
+		ui_dial(ui, centre, r + 5, RING_W + 11, sweep, color_alpha(col, (0.13 + 0.27 * used) * a), 0.11)
+		ui_dial(ui, centre, r, RING_W, sweep, color_alpha(col, a))
+	}
+
+	// What is in the middle of the dial depends on whether the names got
+	// drawn, because it is answering whatever they are not: with the column
+	// beside it the rings are already labelled and the hole says what the
+	// whole panel measures, and without it the hole is the only place a figure
+	// can go, so it takes the window that is furthest along.
+	hole := Rect{centre.x - 20, centre.y - 11, 40, 22}
+	if named {
+		ui_text_centred(ui, &ui.regular, "used", hole, 11, color_alpha(FAINT, a))
+	} else {
+		ui_text_centred(ui, &ui.bold, usage_pct(worst), hole, 17, color_alpha(usage_meter_color(worst), a))
+	}
+
+	if named {
+		lx := box.x + USAGE_PAD + d + NAMES_GAP
+		room := box.x + box.w - USAGE_PAD - lx
+		top := centre.y - NAME_H * 1.5 - 1
+		for n, i in windows {
+			name(app, {lx, top + f32(i) * NAME_H, room, 0}, i, n.long, n.short, n.w, a)
+		}
+	}
 
 	// Read off the panel rather than printed on it, which is where the reset
-	// times went: the rows say the number and nothing else.
-	ui_hover_text(
-		ui,
-		box,
-		fmt.tprintf(
-			"session %s used%s · week %s used%s · fable week %s used%s",
-			usage_pct(window_used(app.usage.limits.session)),
-			until_say(app.usage.limits.session.resets),
-			usage_pct(window_used(app.usage.limits.week)),
-			until_say(app.usage.limits.week.resets),
-			usage_pct(window_used(app.usage.limits.fable)),
-			until_say(app.usage.limits.fable.resets),
-		),
-	)
+	// times went: the dial says how much, the column says of what, and the
+	// minute it comes back is a question you have to ask.
+	line := strings.builder_make(context.temp_allocator)
+	for n, i in windows {
+		if i > 0 do strings.write_string(&line, " · ")
+		fmt.sbprintf(&line, "%s %s used%s", n.long, usage_pct(window_used(n.w)), until_say(n.w.resets))
+	}
+	ui_hover_text(ui, box, strings.to_string(line))
+}
+
+// The unspent part of a ring. Darker than the panel rather than lighter, so an
+// empty allowance reads as a groove waiting to be filled and a full one as
+// something sitting in it.
+@(private = "file")
+TRACK :: Color(0xff222525)
+
+// Where one window's ring sits, outermost first. The order is the only thing
+// that says which ring is which, and it is the order the names are listed in
+// beside them.
+@(private = "file")
+ring_r :: proc(d: f32, i: int) -> f32 {
+	return d / 2 - f32(i) * (RING_W + RING_GAP)
 }
 
 @(private = "file")
@@ -280,36 +399,29 @@ until_say :: proc(resets: i64) -> string {
 	return left == "" ? "" : fmt.tprintf(" (%s left)", left)
 }
 
-// One window: what it is called, and how much of it is gone. The figure is
-// what `/usage` would say about it and nothing else — this window worked its
-// own numbers out for a while, and they disagreed with the account.
+// One ring's name and its figure, beside the dial and in the ring's own
+// colour, ordered outermost at the top — which is the only thing that says
+// which ring is which. The figure is what `/usage` would say about it and
+// nothing else: this window worked its own numbers out for a while, and they
+// disagreed with the account.
 @(private = "file")
-row :: proc(app: ^App, box: Rect, at: int, name, short: string, w: Allowance, a: f32) {
+name :: proc(app: ^App, at: Rect, i: int, long, short: string, w: Allowance, a: f32) {
 	ui := &app.ui
-	top := box.y + 14 + f32(at) * ROW_H
-
-	// A window nobody has read yet is not a window with nothing used in it.
-	// `resets` is the one variable that answers it: the harness sends a reset
-	// time with every reading, so a zero there means nothing has reported one
-	// and the row says so rather than printing a confident nought.
 	used := window_used(w)
 	known := w.resets != 0
-
-	// The figure eases into place. A reading that has just landed — and the
-	// first one lands a second or so after the window opens — is worth
-	// watching arrive.
-	shown := known ? ui_anim(ui, ui_id("usage-row", at), used, 9) : 0
-	pct := known ? usage_pct(shown) : "—"
 	col := known ? usage_meter_color(used) : FAINT
-	pw := font_width(&ui.bold, pct, 30)
-	ui_text(ui, &ui.bold, pct, {box.x + box.w - USAGE_PAD - pw, top}, 30, color_alpha(col, a))
 
 	// The short name when the long one will not fit whole: a panel squeezed in
 	// beside the capture box has room for "fable" and not for "fable week",
 	// and "fable w..." is not the name of anything.
-	room := box.w - USAGE_PAD * 2 - pw - 10
 	buf, alt: [32]u8
-	label := font_ellipsize(&ui.regular, name, 12.5, room, buf[:])
-	if label != name do label = font_ellipsize(&ui.regular, short, 12.5, room, alt[:])
-	ui_text(ui, &ui.regular, label, {box.x + USAGE_PAD, top + 11}, 12.5, color_alpha(FAINT, a))
+	label := font_ellipsize(&ui.regular, long, 11, at.w - 11, buf[:])
+	if label != long do label = font_ellipsize(&ui.regular, short, 11, at.w - 11, alt[:])
+	ui_circle(ui, {at.x + 3.5, at.y + 7}, 3.5, color_alpha(col, a))
+	ui_text(ui, &ui.regular, label, {at.x + 12, at.y}, 11, color_alpha(FAINT, a))
+
+	// The same easing the ring runs on, off the same stored value, so the
+	// figure and the slice it labels cannot say two different things.
+	shown := known ? ui_anim(ui, ui_id("usage-ring", i), used, 9) : 0
+	ui_text(ui, &ui.bold, known ? usage_pct(shown) : "—", {at.x, at.y + 13}, 17, color_alpha(col, a))
 }

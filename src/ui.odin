@@ -40,6 +40,7 @@ Effect :: enum u32 {
 	Punch = 5, // replaces what is under it: see ui_punch
 	Pop   = 6, // a transcript tile: lit from inside, rim brightening on hover
 	Wire  = 7, // the snake's thread, with a pulse travelling along it
+	Dial  = 8, // a ring with a slice of it filled: see ui_dial
 }
 
 Vertex :: struct {
@@ -369,6 +370,30 @@ ui_rect :: proc(ui: ^UI, r: Rect, col: Color, radius: f32 = NO_ROUND) {
 
 ui_circle :: proc(ui: ^UI, centre: [2]f32, radius: f32, col: Color) {
 	ui_rect(ui, {centre.x - radius, centre.y - radius, radius * 2, radius * 2}, col, radius)
+}
+
+// A ring with the first `sweep` of it filled, clockwise from twelve o'clock,
+// with both ends rounded. One quad: the shape is cut out of it in the fragment
+// shader, so a dial costs the same as a rectangle however round it looks. The
+// thickness rides in the texture coordinate because the vertex has no other
+// spare field and the white texture is one pixel, so it does not care what uv
+// it is sampled at.
+// `soft` fades the edge out over that fraction of the radius instead of over
+// one pixel, which is how a slice is drawn as the light coming off itself.
+ui_dial :: proc(ui: ^UI, centre: [2]f32, radius, thickness, sweep: f32, col: Color, soft: f32 = 0) {
+	if radius <= 0 || thickness <= 0 do return
+	t := clamp(thickness / radius, 0, 1)
+	ui_quad(
+		ui,
+		{centre.x - radius, centre.y - radius, radius * 2, radius * 2},
+		{t, soft},
+		{t, soft},
+		col,
+		WHITE_TEX,
+		NO_ROUND,
+		.Dial,
+		clamp(sweep, 0, 1),
+	)
 }
 
 ui_image :: proc(ui: ^UI, r: Rect, tex: u32, radius: f32 = NO_ROUND, tint: Color = 0xffffffff) {
