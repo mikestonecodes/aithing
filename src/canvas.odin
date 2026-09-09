@@ -478,7 +478,9 @@ canvas_filter_project :: proc(app: ^App, cwd: string) {
 // full size at the end of it and the transcript goes in on time. It used to
 // be an exponential easing called "arrived" at 98.5%, which took the better
 // part of half a second to reach and spent most of it drawing an empty box.
-CANVAS_OPEN :: f32(0.19)
+// Thirteen frames: enough to see the thread grow out of the card it came
+// from, which is the whole of what the movement is for.
+CANVAS_OPEN :: f32(0.22)
 
 // The panel a card zooms open into: from its place in the grid to the whole
 // window, and back. Returns the rect the transcript should use, and whether it

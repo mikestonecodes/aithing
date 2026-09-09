@@ -36,7 +36,17 @@ draw_app :: proc(app: ^App) {
 	if !arrived {
 		canvas_mouse := ui.mouse
 		if app.page == .Thread || t > 0.02 do ui.mouse = {-1e6, -1e6}
+		// And it gives way: the grid settles back a few per cent as the
+		// thread comes forward, so the two are at different depths rather
+		// than one flat thing sliding over another. It cannot be clicked
+		// while it is moving, which is the only reason it is allowed to be
+		// somewhere other than where it was laid out.
+		if t > 0 {
+			back := 1 - 0.05 * ease_out(t)
+			ui_push_zoom(ui, back, {full.w * (1 - back) / 2, full.h * (1 - back) / 2})
+		}
 		draw_canvas(app, full)
+		if t > 0 do ui_pop_zoom(ui)
 		ui.mouse = canvas_mouse
 	}
 
@@ -45,58 +55,76 @@ draw_app :: proc(app: ^App) {
 	// in it reaches on a window too narrow to have room to its right.
 	strip := Rect{}
 
-	// The panel: a growing box, then the real thing once it has arrived. The
-	// box and its shadow only exist while it is growing — they are what makes
-	// a card look like it is lifting off the grid, and by the time it has
-	// arrived there is no grid left to lift off.
-	if arrived {
-		composer_h := composer_height(app, panel.w)
-		draw_transcript(app, {panel.x, panel.y, panel.w, panel.h - composer_h})
-		draw_composer(app, {panel.x, panel.y + panel.h - composer_h, panel.w, composer_h})
-		cw := composer_width(panel.w)
-		strip = {panel.x + (panel.w - cw) / 2, panel.y + panel.h - composer_h, cw, composer_h}
-		if app.overlay == .Model {
+	// The thread. One path whether it is arriving or arrived, because it is
+	// laid out at the size it will end up at either way: while the panel is
+	// still growing it is the same picture, with the panel as the hole you
+	// see it through. The panel opens over the thread rather than the thread
+	// appearing once the panel stops.
+	//
+	// It used to be two paths — an empty box with the thread's name in the
+	// corner of it, and then the real thing dropped in at the end. The name
+	// tracked the corner of a box crossing the screen, so it read as a line
+	// of text flying to the top left and vanishing, and the transcript
+	// arrived out of nowhere behind it.
+	//
+	// Laying it out at the final width is also what makes this cheap: the
+	// message heights are keyed on that width (see draw_transcript), so a
+	// panel that measured the transcript at its own changing width would
+	// re-measure the whole thread every frame of the movement.
+	if t > 0 {
+		ease := ease_out(t)
+		if !arrived {
+			// The lift: a shadow under the panel while it is still a tile on
+			// the grid, and the panel itself replacing what is under it
+			// rather than being blended over it. A sheet at the window's own
+			// alpha left the grid showing through the growing thread, and the
+			// frame the grid stopped being drawn on, everything under it went
+			// at once — a flash at the end of every open. A punch is exactly
+			// the pixels the arrived thread has, so the last frame of the
+			// movement and the first frame of the thread are the same
+			// picture. It starts the colour of the card it grew out of and
+			// its corners round off over the same stretch.
+			ui_rect(ui, {panel.x + 3, panel.y + 10, panel.w, panel.h}, color_alpha(Color(0xff000000), 0.5 * (1 - ease)), 12 * (1 - ease))
+			ui_punch(ui, panel, color_mix(PANEL_HI, BG, ease), 12 * (1 - ease))
+			ui_push_clip(ui, panel)
+			// The thread itself, shrunk into the panel: the whole window's
+			// worth of it drawn at a fraction of its size, growing as the
+			// panel grows. The scale comes from the width alone — a card is a
+			// different shape from a window, and a thread squashed to a
+			// card's proportions is a thread with the type stretched — so the
+			// bottom of it falls outside the panel and arrives as the panel
+			// reaches it.
+			ui_push_zoom(ui, panel.w / full.w, {panel.x, panel.y})
+		}
+		composer_h := composer_height(app, full.w)
+		// Nothing inside is touchable until it has arrived: a click that lands
+		// on a composer still on its way is a click nobody aimed, and while
+		// the zoom is on it is not where it was laid out anyway.
+		panel_mouse := ui.mouse
+		if !arrived do ui.mouse = {-1e6, -1e6}
+		draw_transcript(app, {full.x, full.y, full.w, full.h - composer_h})
+		draw_composer(app, {full.x, full.y + full.h - composer_h, full.w, composer_h})
+		ui.mouse = panel_mouse
+		cw := composer_width(full.w)
+		strip = {full.x + (full.w - cw) / 2, full.y + full.h - composer_h, cw, composer_h}
+		if !arrived {
+			ui_pop_zoom(ui)
+			ui_pop_clip(ui)
+		}
+		// The pickers open off the composer's own chips, which nothing can
+		// reach until the thread has arrived.
+		if arrived && app.overlay == .Model {
 			if m, picked := draw_picker(app, app.model_chip, slice.enumerated_array(&model_label), int(app.model), "model"); picked {
 				app.model = Model(m)
 				model_save(app.model)
 			}
 		}
-		if app.overlay == .Effort {
+		if arrived && app.overlay == .Effort {
 			if e, picked := draw_picker(app, app.effort_chip, slice.enumerated_array(&effort_label), int(app.effort), "effort"); picked {
 				app.effort = Effort(e)
 				effort_save(app.effort)
 			}
 		}
-	} else if t > 0 {
-		// The card on its way to being the page. Three things make it read as
-		// the card lifting rather than as a box appearing over the grid.
-		//
-		// It replaces what is under it instead of being blended over it. A
-		// sheet at the window's own alpha left the grid showing through the
-		// growing thread, and the frame the grid stopped being drawn on
-		// everything under it vanished at once — a flash at the end of every
-		// open. A punch is exactly the pixels the arrived thread has, so the
-		// last frame of the movement and the first frame of the thread are
-		// the same picture.
-		//
-		// It starts the colour of the card it came from and ends the colour
-		// of the page, and its corners round off over the same stretch: the
-		// card is a rounded tile and the page is the window.
-		//
-		// And it carries the card's own line, in the card's type at the card's
-		// place in it, fading as the panel outgrows it — the one piece of the
-		// card that is also the first thing the thread says.
-		ease := ease_out(t)
-		ui_rect(ui, {panel.x + 2, panel.y + 8, panel.w, panel.h}, color_alpha(Color(0xff000000), 0.45 * (1 - ease)), 12 * (1 - ease))
-		ui_punch(ui, panel, color_mix(PANEL_HI, BG, ease), 12 * (1 - ease))
-		ui_text(
-			ui,
-			&ui.bold,
-			app_chat_title(app),
-			{panel.x + 14 + 6 * ease, panel.y + 14 + 2 * ease},
-			15 + ease,
-			color_alpha(TEXT, 1 - ease * ease),
-		)
 	} else {
 		draw_project_head(app, full)
 		if app_capture_open(app) {
