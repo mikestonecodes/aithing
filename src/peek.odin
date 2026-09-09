@@ -51,6 +51,7 @@ PEEK_GUT :: f32(38) // the line-number column
 PEEK_SIGN :: f32(16) // the + / - column of a diff
 DIFF_CTX :: 2 // lines either side of a change, for bearings
 CODE_FOLDS :: 3 // how many times one line of code may be folded to fit
+CODE_STEP :: 2 // characters a fold indents by, per bracket it is inside
 ROW_CONT :: -1 // `num` on the rest of a line that was folded to fit
 DIFF_MAX :: 220 // lines of one edit, before the rest is left to the file
 
@@ -62,6 +63,10 @@ Row :: struct {
 	kind: Row_Kind,
 	text: string,
 	num:  int,
+	// How far in this row starts, in characters: what the line it was folded
+	// off was indented by, plus the brackets it is still inside. Nought on a
+	// row that is a whole line of the file.
+	ind:  int,
 	col:  Color,
 }
 
@@ -385,20 +390,37 @@ row_line :: proc(app: ^App, kind: Row_Kind, text: string) {
 // lines of the file and not rows of the panel.
 @(private = "file")
 row_code :: proc(app: ^App, kind: Row_Kind, text: string, num: int, width: f32) {
+	ui := &app.ui
 	rest := tabbed(text)
-	n := num
+	// What the line itself was indented by, so the parts of it that come
+	// after the fold line up under it rather than under the panel's edge.
+	lead := 0
+	for lead < len(rest) && rest[lead] == ' ' do lead += 1
+	n, ind, depth := num, 0, 0
 	for _ in 0 ..< CODE_FOLDS {
-		cut := code_fit(&app.ui, rest, width)
+		cut := code_fit(ui, rest, width - char_w(ui) * f32(ind))
 		if cut >= len(rest) do break
-		row_line(app, kind, rest[:cut])
-		app.rows[len(app.rows) - 1].num = n
+		emit_code(app, kind, rest[:cut], n, ind)
+		depth = code_depth(rest[:cut], depth)
 		rest = rest[cut:]
 		for len(rest) > 0 && rest[0] == ' ' do rest = rest[1:]
-		n = ROW_CONT
+		n, ind = ROW_CONT, lead + CODE_STEP * depth
 		if len(app.rows) >= PEEK_LINES do return
 	}
-	row_line(app, kind, rest)
-	app.rows[len(app.rows) - 1].num = n
+	emit_code(app, kind, rest, n, ind)
+}
+
+@(private = "file")
+emit_code :: proc(app: ^App, kind: Row_Kind, text: string, num, ind: int) {
+	row_line(app, kind, text)
+	if len(app.rows) == 0 do return
+	r := &app.rows[len(app.rows) - 1]
+	r.num, r.ind = num, ind
+}
+
+@(private = "file")
+char_w :: proc(ui: ^UI) -> f32 {
+	return font_width(&ui.mono, " ", PEEK_PX)
 }
 
 // How much of a line fits in `width`, in bytes. A fold lands after the last
@@ -408,18 +430,64 @@ row_code :: proc(app: ^App, kind: Row_Kind, text: string, num: int, width: f32) 
 code_fit :: proc(ui: ^UI, text: string, width: f32) -> int {
 	if width < 60 do return len(text)
 	w := f32(0)
-	i, last := 0, -1
+	i, joint, gap := 0, -1, -1
 	for i < len(text) {
-		r, size := utf8.decode_rune_in_string(text[i:])
-		if r == ' ' do last = i
-		cw := font_width(&ui.mono, text[i:i + size], PEEK_PX)
-		if w + cw > width && i > 0 {
-			return last > 0 && i - last < 28 ? last : i
+		end, kind := code_token(text, i)
+		tw := font_width(&ui.mono, text[i:end], PEEK_PX)
+		if w + tw > width && i > 0 {
+			if joint > 0 do return joint
+			if gap > 0 do return gap
+			return i
 		}
-		w += cw
-		i += size
+		// Where the code would come apart if it had been written over several
+		// lines: after a brace, a semicolon, a comma, a pipe. Cutting there
+		// and indenting what follows is the whole of the formatting this
+		// does — it reads a dense one-liner back as the lines somebody would
+		// have typed, without knowing one language from another, and without
+		// touching a line that fits.
+		if kind == .Punct && i > 0 && is_joint(text[i:end]) do joint = end
+		if kind == .Plain && text[i] == ' ' do gap = end
+		w += tw
+		i = end
 	}
 	return len(text)
+}
+
+@(private = "file")
+is_joint :: proc(run: string) -> bool {
+	for i in 0 ..< len(run) {
+		switch run[i] {
+		case '{', '}', ';', ',', '|', '&', '(':
+			return true
+		}
+	}
+	return false
+}
+
+// How deep in brackets a piece of a line leaves off, so what follows it is
+// indented by what it is inside. Read off the same token walk the colouring
+// uses, so a brace in a string or behind a comment is not counted — which is
+// what made the first go at this indent a shell line by the `{` in an awk
+// program it was passing along.
+@(private = "file")
+code_depth :: proc(text: string, from: int) -> int {
+	depth := from
+	i := 0
+	for i < len(text) {
+		end, kind := code_token(text, i)
+		if kind == .Punct {
+			for c in text[i:end] {
+				switch c {
+				case '{', '(', '[':
+					depth += 1
+				case '}', ')', ']':
+					depth -= 1
+				}
+			}
+		}
+		i = end
+	}
+	return max(depth, 0)
 }
 
 // Whether a block of output has its lines numbered — a file read back, or a
@@ -829,7 +897,7 @@ draw_row :: proc(app: ^App, row: Row, r: Rect, box: Rect, gut: f32) {
 			num := fmt.tprintf("%d", row.num)
 			ui_text(ui, mono, num, {x + gut - 8 - font_width(mono, num, PEEK_PX), r.y + 2}, PEEK_PX, color_alpha(FAINT, 0.9))
 		}
-		x += gut + fold_in(row)
+		x += gut + fold_in(ui, row)
 		draw_code(ui, row.text, x, r.y + 2, box.x + box.w - 14, color_mix(CODE_TEXT, MUTED, 0.3), MUTED, 0)
 
 	case .Cmd:
@@ -841,7 +909,7 @@ draw_row :: proc(app: ^App, row: Row, r: Rect, box: Rect, gut: f32) {
 			ui_line(ui, {r.x + 4, r.y + 5}, {r.x + 10, r.y + r.h / 2}, 2, color_alpha(GREEN, 0.9))
 			ui_line(ui, {r.x + 10, r.y + r.h / 2}, {r.x + 4, r.y + r.h - 5}, 2, color_alpha(GREEN, 0.9))
 		}
-		x := r.x + PEEK_SIGN + 4 + fold_in(row)
+		x := r.x + PEEK_SIGN + 4 + fold_in(ui, row)
 		draw_code(ui, row.text, x, r.y + 2, box.x + box.w - 14, color_mix(TEXT, CODE_TEXT, 0.4), MUTED, 0)
 
 	case .Add, .Del:
@@ -850,7 +918,7 @@ draw_row :: proc(app: ^App, row: Row, r: Rect, box: Rect, gut: f32) {
 		ui_rect(ui, {box.x + 10, r.y, box.w - 20, r.h}, color_alpha(tint, 0.13), 0)
 		ui_rect(ui, {box.x + 10, r.y, 2, r.h}, color_alpha(tint, 0.85), 0)
 		if row.num != ROW_CONT do ui_text(ui, mono, put ? "+" : "-", {r.x + 4, r.y + 2}, PEEK_PX, tint)
-		x := r.x + PEEK_SIGN + fold_in(row)
+		x := r.x + PEEK_SIGN + fold_in(ui, row)
 		// The colours a line is made of, pulled a third of the way towards
 		// the side of the diff it is on: a comment in a line that went in is
 		// still a comment, and the row still reads green from across the
@@ -858,7 +926,7 @@ draw_row :: proc(app: ^App, row: Row, r: Rect, box: Rect, gut: f32) {
 		draw_code(ui, row.text, x, r.y + 2, box.x + box.w - 14, color_mix(TEXT, tint, 0.3), tint, 0.32)
 
 	case .Same:
-		x := r.x + PEEK_SIGN + fold_in(row)
+		x := r.x + PEEK_SIGN + fold_in(ui, row)
 		draw_code(ui, row.text, x, r.y + 2, box.x + box.w - 14, color_alpha(FAINT, 0.95), FAINT, 0.5)
 
 	case .Skip:
@@ -923,11 +991,11 @@ row_width :: proc(ui: ^UI, row: Row, gut: f32) -> f32 {
 	case .Head, .Gap, .Skip:
 		return 0 // a label with a rule after it fits whatever it is given
 	case .Mono:
-		return gut + fold_in(row) + font_width(&ui.mono, tabbed(row.text), PEEK_PX)
+		return gut + fold_in(ui, row) + font_width(&ui.mono, tabbed(row.text), PEEK_PX)
 	case .Cmd:
-		return PEEK_SIGN + 4 + fold_in(row) + font_width(&ui.mono, tabbed(row.text), PEEK_PX)
+		return PEEK_SIGN + 4 + fold_in(ui, row) + font_width(&ui.mono, tabbed(row.text), PEEK_PX)
 	case .Add, .Del, .Same:
-		return PEEK_SIGN + fold_in(row) + font_width(&ui.mono, tabbed(row.text), PEEK_PX)
+		return PEEK_SIGN + fold_in(ui, row) + font_width(&ui.mono, tabbed(row.text), PEEK_PX)
 	case .Path:
 		return PEEK_SIGN + font_width(&ui.mono, row.text, PEEK_PX) + 30
 	case .Note:
@@ -942,8 +1010,9 @@ row_width :: proc(ui: ^UI, row: Row, gut: f32) -> f32 {
 // same line carried over, and not so far that a fold looks like an indent
 // somebody typed.
 @(private = "file")
-fold_in :: proc(row: Row) -> f32 {
-	return row.num == ROW_CONT ? 14 : 0
+fold_in :: proc(ui: ^UI, row: Row) -> f32 {
+	if row.num != ROW_CONT do return 0
+	return 14 + char_w(ui) * f32(row.ind)
 }
 
 // Code, coloured by what its characters are: comments back out of the way,
