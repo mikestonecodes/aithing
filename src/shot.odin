@@ -30,6 +30,7 @@ Scene :: enum {
 	Peek, // the same thread with the pointer resting on a tile of its path
 	Picker, // the model picker, open off the composer's chip
 	Launcher, // the menu, with a query typed into it
+	Usage, // the pointer on the dial, so what each ring is is on screen
 }
 
 @(private = "file")
@@ -41,6 +42,7 @@ scene_names := [Scene]string {
 	.Peek     = "peek",
 	.Picker   = "picker",
 	.Launcher = "launcher",
+	.Usage    = "usage",
 }
 
 scene_parse :: proc(name: string) -> (Scene, bool) {
@@ -110,6 +112,19 @@ shot_run :: proc(path: string, scene: Scene, width, height: int) -> bool {
 	// on the first row — the one with an argument and something back to show.
 	if scene == .Peek {
 		app.win.input.mouse = {349, 39}
+		app.win.input.has_mouse = true
+	}
+
+	// The dial says everything it says in three arcs; what each arc is only
+	// comes up under the pointer, so the only way to look at that is to put
+	// the pointer on it. The middle of the rings, worked out rather than
+	// written down, so the spot follows the dial if it ever moves.
+	if scene == .Usage {
+		// Asked with no box beside it, which at this size is the same answer:
+		// the dial only moves once the box along the bottom is wide enough to
+		// crowd it, and a shot is 1180 across.
+		dial := usage_rect({0, 0, f32(width), f32(height)}, {})
+		app.win.input.mouse = {dial.x + dial.w / 2, dial.y + dial.h / 2}
 		app.win.input.has_mouse = true
 	}
 
@@ -244,6 +259,8 @@ shot_build :: proc(app: ^App, scene: Scene) {
 		app.page = .Thread
 		shot_thread(app)
 		if scene == .Picker do app.overlay = .Model
+	case .Usage:
+		app.canvas.project = PROJ
 	case .Launcher:
 		app.overlay = .Launcher
 		editor_set_text(&app.search, "grid")
