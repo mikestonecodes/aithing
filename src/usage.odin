@@ -397,9 +397,9 @@ until_say :: proc(resets: i64) -> string {
 }
 
 @(private = "file")
-POP_PAD :: f32(11)
+POP_PAD :: f32(14)
 @(private = "file")
-POP_ROW :: f32(30)
+POP_ROW :: f32(38)
 
 // What each ring is and how long it has left, standing above the dial while
 // the pointer is on it. One row per ring, top to bottom as the rings go
@@ -424,12 +424,12 @@ popover :: proc(app: ^App, dial: Rect, windows: []struct {
 	// The name column is as wide as the longest name, measured: a width
 	// written here had "fable week" running into its own bar.
 	name_w := f32(0)
-	for n in windows do name_w = max(name_w, font_width(&ui.regular, n.long, 11))
-	NAME_W := name_w + 12
-	BAR_W :: f32(64)
-	fig_w := font_width(&ui.bold, "100%", 13)
-	w := POP_PAD * 2 + NAME_W + BAR_W + 12 + fig_w
-	h := POP_PAD * 2 + POP_ROW * f32(len(windows)) - 6
+	for n in windows do name_w = max(name_w, font_width(&ui.regular, n.long, 12.5))
+	NAME_W := name_w + 14
+	BAR_W :: f32(84)
+	fig_w := font_width(&ui.bold, "100%", 15)
+	w := POP_PAD * 2 + NAME_W + BAR_W + 14 + fig_w
+	h := POP_PAD * 2 + POP_ROW * f32(len(windows)) - 8
 
 	// Above the dial, and never off the top of the window: a dial that has had
 	// to move up out of a box filling a short window has less above it than
@@ -456,19 +456,22 @@ popover :: proc(app: ^App, dial: Rect, windows: []struct {
 		used, known := window_used(n.w), n.w.resets != 0
 		col := known ? usage_meter_color(used) : FAINT
 
-		ui_text(ui, &ui.regular, n.long, {at.x, at.y}, 11, color_alpha(TEXT, 0.85 * fade))
+		ui_text(ui, &ui.regular, n.long, {at.x, at.y}, 12.5, color_alpha(TEXT, 0.85 * fade))
 		if known && usage_until(n.w.resets) != "" {
-			ui_text(ui, &ui.regular, until_left(n.w.resets), {at.x, at.y + 12}, 9.5, color_alpha(FAINT, fade))
+			// Sixteen below the name, not twelve: at 12.5 the name's
+			// descenders came down onto the "2h 40m left" under it, and two
+			// lines that touch read as one.
+			ui_text(ui, &ui.regular, until_left(n.w.resets), {at.x, at.y + 16}, 10.5, color_alpha(FAINT, fade))
 		}
 
 		// The same easing the ring runs on, off the same stored value, so the
 		// figure and the bar it labels cannot say two different things.
 		shown := known ? ui_spring(ui, ui_id("usage-ring", i), used, 40, 7) : 0
-		bar := Rect{at.x + NAME_W, at.y + 5, BAR_W, 5}
+		bar := Rect{at.x + NAME_W, at.y + 5, BAR_W, 6}
 		ui_rect(ui, bar, color_alpha(TRACK, fade), 2.5)
 		if shown > 0 do ui_rect(ui, {bar.x, bar.y, max(bar.w * clamp(shown, 0, 1), 5), bar.h}, color_alpha(col, fade), 2.5)
 		figure := known ? usage_pct(shown) : "—"
-		fw := font_width(&ui.bold, figure, 13)
-		ui_text(ui, &ui.bold, figure, {box.x + box.w - POP_PAD - fw, at.y - 1}, 13, color_alpha(col, fade))
+		fw := font_width(&ui.bold, figure, 15)
+		ui_text(ui, &ui.bold, figure, {box.x + box.w - POP_PAD - fw, at.y - 2}, 15, color_alpha(col, fade))
 	}
 }

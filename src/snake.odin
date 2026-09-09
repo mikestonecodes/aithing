@@ -34,8 +34,8 @@ TILE_ROUND :: f32(4)
 WIRE :: f32(8) // the pipe between tiles
 SNAKE_PAD :: f32(26)
 PEEK_W :: f32(520)
-PEEK_MAX :: f32(360) // how tall an opened tile is allowed to get
-PEEK_LINES :: 18 // of a tool result
+PEEK_MAX :: f32(470) // how tall an opened tile is allowed to get: the rest scrolls
+PEEK_LINES :: 400 // of a tool result, the most the panel will ever lay out
 PEEK_HEAD :: f32(30)
 ANSWER_GAP :: f32(26) // between the gold stone and the answer hanging off it
 
@@ -241,23 +241,35 @@ draw_transcript :: proc(app: ^App, r: Rect) {
 		app.transcript.target = max(total - r.h, 0)
 		app.transcript.offset = app.transcript.target
 	}
+
+	// What is open: whatever the pointer is on, else whatever was pressed to
+	// stay open, else nothing — the answer is not in this, because it is not a
+	// panel that opens, it is a piece of the path that is always there. It is
+	// worked out before the path scrolls, because the wheel has to be handed
+	// to one of them: turned over an open panel, or over the stone holding it
+	// open, it moves the panel's text and not the path underneath. The path
+	// is asked with the wheel taken away, and given it back after.
+	top := r.y + PAD - app.transcript.offset
+	open := snake_open(app, r, top)
+	peek: Peek
+	if ref_valid(open) do peek = peek_layout(app, open, r, top)
+	taken := peek.ok && peek.tall && (ui_hovered(ui, peek.stone) || ui_hovered(ui, peek.box))
+	wheel, wheel_px := ui.scroll, ui.scroll_px
+	if taken do ui.scroll, ui.scroll_px = 0, 0
 	before := app.transcript.target
 	ui_begin_scroll(ui, r, &app.transcript, total)
+	ui.scroll, ui.scroll_px = wheel, wheel_px
 	if app.transcript.target != before {
 		app.stick = app.transcript.target >= max(total - r.h, 0) - 4
 	}
 
-	top := r.y + PAD - app.transcript.offset
+	top = r.y + PAD - app.transcript.offset
 	draw_pipes(app, top, r)
 
-	// What is open: whatever the pointer is on, else whatever was pressed to
-	// stay open, else nothing — the answer is not in this, because it is not a
-	// panel that opens, it is a piece of the path that is always there.
-	open := NO_REF
 	for tile in app.snake {
 		sr := Rect{tile.r.x, tile.r.y + top, tile.r.w, tile.r.h}
 		if sr.y > r.y + r.h || sr.y + sr.h < r.y do continue
-		if draw_tile(app, tile, sr) && !tile.answer do open = tile.ref
+		draw_tile(app, tile, sr, tile.ref == open && !tile.answer)
 	}
 
 	// A turn in flight says so on the path itself — the stone it is working
@@ -279,7 +291,24 @@ draw_transcript :: proc(app: ^App, r: Rect) {
 
 	// Outside the scroll's clip, so a tile on the last row can still open
 	// upward over the rest of the path rather than being cut off by it.
-	if ref_valid(open) do draw_peek(app, open, r, top)
+	if peek.ok do draw_peek(app, peek_layout(app, open, r, top))
+}
+
+// Which stone is open this frame: the one under the pointer, else the one
+// pressed to stay open. One answer, so one panel — there is no list of open
+// stones to get two entries in.
+@(private = "file")
+snake_open :: proc(app: ^App, view: Rect, top: f32) -> Ref {
+	ui := &app.ui
+	for t in app.snake {
+		if t.answer do continue
+		sr := rect_intersect({t.r.x, t.r.y + top, t.r.w, t.r.h}, view)
+		b := chat_block(&app.chat, t.ref)
+		if b == nil do continue
+		if ui_hovered(ui, sr) || ui.active == ui_id_ptr(b) do return t.ref
+	}
+	if chat_block(&app.chat, app.pinned) != nil do return app.pinned
+	return NO_REF
 }
 
 // The answer, in full, hanging off the gold stone at the end of the path: a
@@ -384,30 +413,38 @@ wire_param :: proc(at: int, back: bool) -> f32 {
 	return back ? -p : p
 }
 
-// One stone. Returns whether it is the one that is open — under the pointer,
-// or pressed to keep it open once the pointer has gone.
+// One stone. `open` is whether it is the one whose panel is up — under the
+// pointer, or pressed to keep it open once the pointer has gone.
 @(private = "file")
-draw_tile :: proc(app: ^App, t: Tile, r: Rect) -> bool {
+draw_tile :: proc(app: ^App, t: Tile, r: Rect, open: bool) {
 	ui := &app.ui
 	b := chat_block(&app.chat, t.ref)
-	if b == nil do return false
+	if b == nil do return
 	id := ui_id_ptr(b)
 
 	clicked, hovered := ui_invisible_button(ui, id, r)
-	if clicked do b.expanded = !b.expanded
-	open := hovered || b.expanded
+	// A press pins it, a second press lets it go, and pinning one lets go of
+	// whichever was pinned before: one stone stays open, never two.
+	if clicked do app.pinned = app.pinned == t.ref ? NO_REF : t.ref
+	pinned := app.pinned == t.ref
 
-	// Two movements, and they are both the tile's own: it arrives by growing
-	// into place, and it lifts under the pointer. Both ease off one stored
-	// number each, so a tile that arrives while another is up leaves it alone.
-	// On springs, so a stone lands with a bounce and lifts with one, and the
-	// panel it opens (see draw_peek) grows out of it on the third: it is
-	// ticked here, by the stone, so the panel's own spring is wound back
-	// down while the panel is shut and can pop again next time.
+	// It arrives by growing into place, and it comes up under the pointer the
+	// way a card on the grid does: its width and height swell on two springs
+	// wound to different rates, so it wobbles for a moment before it holds, a
+	// press squashes it down until it is let go, and it lifts off a shadow.
+	// It used to scale on the one spring the panel grows on, which is a stone
+	// that inflates evenly and stops — the cards have give in them and the
+	// stones sat beside them looking stiff. That spring is still ticked here,
+	// by the stone, so the panel's own spring is wound back down while the
+	// panel is shut and can pop again next time.
 	ui_spring_seed(ui, id + 1, 0)
 	born := ui_spring(ui, id + 1, 1, 160, 9)
-	pop := ui_spring(ui, id + 2, open ? 1 : 0, 380, 12)
-	_ = ui_spring(ui, id + 3, open ? 1 : 0, 300, 13)
+	up := open ? f32(1) : 0
+	pop := ui_spring(ui, id + 2, up, 380, 12)
+	_ = ui_spring(ui, id + 3, up, 300, 13)
+	sw := ui_spring(ui, id + 5, up, 330, 9)
+	sh := ui_spring(ui, id + 6, up, 190, 8)
+	press := ui_spring(ui, id + 7, ui.active == id ? f32(1) : 0, 500, 18)
 	if ui_entered(ui, id, hovered) do ui_ripple(ui, id + 4, {r.x + r.w / 2, r.y + r.h / 2}, TOUCH, r.w * 1.6)
 	ui_draw_ripples(ui, id + 4)
 	// A stone that is working breathes, and the sheen the shader crosses a
@@ -420,9 +457,12 @@ draw_tile :: proc(app: ^App, t: Tile, r: Rect) -> bool {
 
 	// A subagent's own work is the same stone one step in, so a nested run
 	// reads as nested without a second layout to place it.
-	scale := (0.86 + 0.14 * born + 0.09 * pop + 0.05 * live) * (t.depth > 0 ? 0.76 : 1)
-	cx, cy := r.x + r.w / 2, r.y + r.h / 2
-	rr := Rect{cx - r.w * scale / 2, cy - r.h * scale / 2, r.w * scale, r.h * scale}
+	nest := t.depth > 0 ? f32(0.76) : 1
+	scale_w := (0.86 + 0.14 * born + 0.12 * sw - 0.05 * press + 0.05 * live) * nest
+	scale_h := (0.86 + 0.14 * born + 0.18 * sh - 0.08 * press + 0.05 * live) * nest
+	cx, cy := r.x + r.w / 2, r.y + r.h / 2 - 2 * pop
+	rr := Rect{cx - r.w * scale_w / 2, cy - r.h * scale_h / 2, r.w * scale_w, r.h * scale_h}
+	if pop > 0.01 do ui_rect(ui, {rr.x + 1, rr.y + 3 + 3 * pop, rr.w, rr.h}, color_alpha(Color(0xff000000), 0.3 * pop), TILE_ROUND)
 
 	// A halo, only while it is up: the glow is static in the shader, so
 	// leaving one behind costs nothing to hold on screen but says the wrong
@@ -448,21 +488,23 @@ draw_tile :: proc(app: ^App, t: Tile, r: Rect) -> bool {
 		ui_image(ui, rr, app_preview(app, b.image).tex, TILE_ROUND)
 		ui_quad(ui, rr, {0, 0}, {1, 1}, color_alpha(t.col, 0.1 + 0.45 * pop), WHITE_TEX, TILE_ROUND, .Pop, lift)
 		ui_hover_text(ui, rr, t.name)
-		return open
+		return
 	}
 
 	base := color_mix(PANEL, t.col, 0.16 + 0.2 * pop + 0.12 * live)
 	if t.answer do base = color_mix(PANEL, GOLD, 0.3 + 0.25 * pop)
 	if t.user do base = color_mix(USER_BG, ACCENT, 0.14 + 0.24 * pop)
 	ui_quad(ui, rr, {0, 0}, {1, 1}, color_alpha(base, born), WHITE_TEX, TILE_ROUND, .Pop, lift)
-	draw_icon(ui, t.icon, rr, color_alpha(t.col, (0.85 + 0.15 * pop) * born), base)
-	// Pressed open stays open: a dot in the corner says which ones you left
+	// The mark takes its size from the stone's width alone, so a stone
+	// wobbling taller than it is wide does not stretch the mark with it.
+	mark := Rect{cx - rr.w / 2, cy - rr.w / 2, rr.w, rr.w}
+	draw_icon(ui, t.icon, mark, color_alpha(t.col, (0.85 + 0.15 * pop) * born), base)
+	// Pressed open stays open: a dot in the corner says which one you left
 	// that way, because otherwise a panel with no pointer near it looks stuck.
-	if b.expanded do ui_circle(ui, {rr.x + rr.w - 6, rr.y + 6}, 3, t.col)
+	if pinned do ui_circle(ui, {rr.x + rr.w - 6, rr.y + 6}, 3, t.col)
 	// What a copy with nothing selected takes: the block itself, not the mark
 	// that stands for it.
 	ui_hover_text(ui, rr, t.kind == .Tool ? tool_hover(b) : block_text(b))
-	return open
 }
 
 // --- the marks ----------------------------------------------------------------
@@ -565,18 +607,26 @@ tool_hover :: proc(b: ^Block) -> string {
 
 // --- what the pointer opens ---------------------------------------------------
 
-// What a stone is holding, at reading size: the paragraph, the picture, the
-// tool's arguments and what it gave back. It opens beside the tile and is
-// drawn last, over everything, so it is never the thing that gets cut off.
+// Where a stone's panel goes and how much it is holding: the one set of
+// numbers the wheel, the frame and the text inside it all read.
+Peek :: struct {
+	ok:     bool,
+	tall:   bool, // more than fits: the wheel has something to do
+	tile:   Tile,
+	stone:  Rect, // the stone, on screen
+	box:    Rect, // the panel, on screen
+	body_h: f32, // the content under the head, before any is cut off
+	img_h:  f32,
+}
+
 @(private = "file")
-draw_peek :: proc(app: ^App, ref: Ref, view: Rect, top: f32) {
+peek_layout :: proc(app: ^App, ref: Ref, view: Rect, top: f32) -> (p: Peek) {
 	ui := &app.ui
 	b := chat_block(&app.chat, ref)
 	if b == nil do return
-	tile: Tile
 	found := false
 	for t in app.snake do if t.ref == ref {
-		tile = t
+		p.tile = t
 		found = true
 		break
 	}
@@ -584,41 +634,59 @@ draw_peek :: proc(app: ^App, ref: Ref, view: Rect, top: f32) {
 
 	w := min(PEEK_W, view.w - PAD * 2)
 	inner := w - 28
-	body := strings.trim_space(block_text(b))
 
 	// How tall it wants to be, which is the one number the frame and its
-	// contents have to agree on.
-	h := PEEK_HEAD + 14
-	img_h := f32(0)
+	// contents have to agree on. What does not fit under PEEK_MAX is not
+	// thrown away any more: it scrolls, so a long result is read by turning
+	// the wheel over the stone rather than opening the transcript elsewhere.
 	switch b.kind {
 	case .Image:
 		img := app_preview(app, b.image)
 		aspect := img.width > 0 && img.height > 0 ? f32(img.height) / f32(img.width) : 0.62
-		img_h = min(inner * aspect, PEEK_MAX)
-		h += img_h
+		p.img_h = min(inner * aspect, PEEK_MAX)
+		p.body_h = p.img_h
 	case .Text, .Error:
 		md_layout(ui, b, inner)
-		h += min(b.height, PEEK_MAX)
+		p.body_h = b.height
 	case .Tool:
-		if b.arg != "" do h += 22
+		if b.arg != "" do p.body_h += 22
 		lines := 0
-		it := each_line(strings.trim_space(strings.to_string(b.result)))
+		result := strings.trim_space(strings.to_string(b.result))
+		if len(result) > RESULT_BYTES do result = result[:RESULT_BYTES]
+		it := each_line(result)
 		for _ in iter_next(&it) {
 			lines += 1
 			if lines >= PEEK_LINES do break
 		}
-		if lines == 0 do h += 22
-		h += f32(lines) * CODE_LH + (lines > 0 ? 10 : 0)
+		if lines == 0 do p.body_h += 22
+		p.body_h += f32(lines) * CODE_LH + (lines > 0 ? 10 : 0)
 	}
-	h = min(h, PEEK_MAX + PEEK_HEAD + 24)
+	h := PEEK_HEAD + 14 + min(p.body_h, PEEK_MAX)
+	p.tall = p.body_h > PEEK_MAX
 
-	tr := Rect{tile.r.x, tile.r.y + top, tile.r.w, tile.r.h}
-	x := clamp(tr.x + tr.w / 2 - w / 2, view.x + PAD, view.x + view.w - PAD - w)
+	p.stone = Rect{p.tile.r.x, p.tile.r.y + top, p.tile.r.w, p.tile.r.h}
+	x := clamp(p.stone.x + p.stone.w / 2 - w / 2, view.x + PAD, view.x + view.w - PAD - w)
 	// Below the stone if there is room for it there, above it if there is not.
-	y := tr.y + tr.h + 12
-	if y + h > view.y + view.h - 8 do y = tr.y - h - 12
+	y := p.stone.y + p.stone.h + 12
+	if y + h > view.y + view.h - 8 do y = p.stone.y - h - 12
 	y = clamp(y, view.y + 6, max(view.y + view.h - h - 6, view.y + 6))
-	box := Rect{x, y, w, h}
+	p.box = Rect{x, y, w, h}
+	p.ok = true
+	return
+}
+
+// What a stone is holding, at reading size: the paragraph, the picture, the
+// tool's arguments and what it gave back. It opens beside the tile and is
+// drawn last, over everything, so it is never the thing that gets cut off.
+@(private = "file")
+draw_peek :: proc(app: ^App, p: Peek) {
+	ui := &app.ui
+	b := chat_block(&app.chat, p.tile.ref)
+	if b == nil do return
+	tile := p.tile
+	box := p.box
+	inner := box.w - 28
+	body := strings.trim_space(block_text(b))
 
 	// It grows out of the stone it belongs to, on the spring the stone
 	// ticks for it, and lands a shade too big. Only the drawing scales; the
@@ -628,7 +696,7 @@ draw_peek :: proc(app: ^App, ref: Ref, view: Rect, top: f32) {
 	zoomed := ui.zoom == 1
 	if zoomed {
 		sc := 0.82 + 0.18 * grow
-		ax, ay := tr.x + tr.w / 2, tr.y + tr.h / 2
+		ax, ay := p.stone.x + p.stone.w / 2, p.stone.y + p.stone.h / 2
 		ui_push_zoom(ui, sc, {ax * (1 - sc), ay * (1 - sc)})
 	}
 	defer if zoomed do ui_pop_zoom(ui)
@@ -645,12 +713,19 @@ draw_peek :: proc(app: ^App, ref: Ref, view: Rect, top: f32) {
 	draw_icon(ui, tile.icon, {box.x + 8, box.y + 5, 20, 20}, tile.col, COMPOSER_BG)
 	ui_text(ui, &ui.mono, tile.name, {box.x + 34, box.y + 8}, 12.5, tile.col)
 
-	ui_push_clip(ui, box)
-	iy := box.y + PEEK_HEAD
+	// The text under the head scrolls, and the wheel reaches it from the
+	// stone as well as from the panel, because the pointer resting on the
+	// stone is what has the panel open. A panel for a different stone starts
+	// at the top: the scroll is one number, and it belongs to whichever
+	// panel is up, so the change of owner is what resets it.
+	body_box := Rect{box.x, box.y + PEEK_HEAD, box.w, box.h - PEEK_HEAD - 8}
+	if ui_changed(ui, ui_id("peek-of"), f32(ui_id_ptr(b) & 0xffff)) do app.peek = {}
+	ui_begin_scroll(ui, body_box, &app.peek, p.body_h + 8, p.stone)
+	iy := body_box.y - app.peek.offset
 	ix := box.x + 14
 	switch b.kind {
 	case .Image:
-		ui_image(ui, {ix, iy, inner, img_h}, app_preview(app, b.image).tex, 6)
+		ui_image(ui, {ix, iy, inner, p.img_h}, app_preview(app, b.image).tex, 6)
 	case .Text, .Error:
 		ui_hover_text(ui, box, body)
 		col := b.kind == .Error ? RED : TEXT
@@ -677,14 +752,24 @@ draw_peek :: proc(app: ^App, ref: Ref, view: Rect, top: f32) {
 			drawn := 0
 			it := each_line(shown)
 			for l in iter_next(&it) {
-				if drawn >= PEEK_LINES do break
-				lbuf: [512]u8
-				text := font_ellipsize(&ui.mono, l, CODE_PX, inner, lbuf[:])
-				ui_text(ui, &ui.mono, text, {ix, iy}, CODE_PX, color_mix(CODE_TEXT, MUTED, 0.3))
+				if drawn >= PEEK_LINES || iy > box.y + box.h do break
+				if iy + CODE_LH >= body_box.y {
+					lbuf: [512]u8
+					text := font_ellipsize(&ui.mono, l, CODE_PX, inner, lbuf[:])
+					ui_text(ui, &ui.mono, text, {ix, iy}, CODE_PX, color_mix(CODE_TEXT, MUTED, 0.3))
+				}
 				iy += CODE_LH
 				drawn += 1
 			}
 		}
 	}
-	ui_pop_clip(ui)
+	ui_end_scroll(ui, body_box, &app.peek)
+	// A shade over whichever edge has more past it, so a panel that has been
+	// cut off does not read as the end of what it holds.
+	if p.tall && app.peek.offset > 1 {
+		ui_rect(ui, {box.x, body_box.y, box.w, 18}, color_alpha(COMPOSER_BG, 0.5), 0)
+	}
+	if p.tall && app.peek.offset < app.peek.content - body_box.h - 1 {
+		ui_rect(ui, {box.x, box.y + box.h - 26, box.w, 18}, color_alpha(COMPOSER_BG, 0.5), 0)
+	}
 }

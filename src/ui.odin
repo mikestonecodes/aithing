@@ -752,11 +752,15 @@ SCROLL_STOP :: f32(20) // below this it has stopped, in pixels a second
 
 // Scrolls with the wheel and clamps to content. Draw items at
 // `r.y - scroll.offset + i * row_height`, clipped to `r`.
-ui_begin_scroll :: proc(ui: ^UI, r: Rect, s: ^Scroll, content_height: f32) {
+//
+// `also` is a second place the wheel is listened for, for a panel that opens
+// off something else: the stone's peek scrolls while the pointer is still on
+// the stone, which is where it has to be for the peek to be open at all.
+ui_begin_scroll :: proc(ui: ^UI, r: Rect, s: ^Scroll, content_height: f32, also := Rect{}) {
 	s.content = content_height
 	s.view_height = r.h
 	limit := max(content_height - r.h, 0)
-	hovered := ui_hovered(ui, r)
+	hovered := ui_hovered(ui, r) || ui_hovered(ui, also)
 
 	// A press puts a stop to a glide, the way a finger on a spinning record
 	// does.
