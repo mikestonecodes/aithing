@@ -1240,9 +1240,27 @@ app_land_worktree :: proc(app: ^App, t: ^Turn) {
 // cards that need it.
 app_land_finished :: proc(app: ^App) {
 	for todo in app.todos.list {
-		if todo.state != .Done do continue
 		if todo.cwd == "" do continue
-		app_land_card(app, todo.cwd, todo.id)
+		if todo.state == .Done {
+			app_land_card(app, todo.cwd, todo.id)
+			continue
+		}
+		// A card that says `needs you` about work that is already in the
+		// project is a card asking about nothing, and it is the person who
+		// ends up doing the tidying — which is the opposite of the point.
+		// Three of them sat like that at once: their work was in, their
+		// branches were gone, and the only thing left saying otherwise was a
+		// state written down at the end of a turn that has long since stopped
+		// being true.
+		//
+		// Never `Failed`, which is a verdict about the work and not about
+		// where it went, and never a card that has not run: a card with no
+		// thread behind it has no branch for the same reason a card that
+		// landed has none, and only the thread tells them apart.
+		if todo.state != .Asked && todo.state != .Open do continue
+		if todo.session == "" do continue
+		if !worktree_settled(todo.cwd, todo.id) do continue
+		todo_set_state(&app.todos, todo.id, .Merged)
 	}
 }
 

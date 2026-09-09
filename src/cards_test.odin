@@ -1267,13 +1267,19 @@ a_finished_card_gives_its_tree_back :: proc(t: ^testing.T) {
 	testing.expect(t, worktree_merging(two_tree), "the merge was thrown away")
 	testing.expect(t, os.exists(two_tree), "the tree to resolve it in was taken away")
 	testing.expect(t, has_branch(t, repo, two), "the branch with the work on it went")
-	// Exactly one go. A tree still mid-merge is one something has already
-	// tried, so asking again says so rather than starting the merge over —
-	// which is what keeps a card that cannot be landed from going round for
-	// ever.
+	// Asked again, it says the same thing and offers the same conflict — and
+	// the offer is the point. One go was the old policy, and what it bought
+	// was a card sitting on `needs you` for ever over a merge the thing that
+	// wrote both sides could have finished. The merge is not started over
+	// either: the tree is still mid-merge and the markers are still where the
+	// last attempt left them, so an agent put back in there carries on rather
+	// than beginning again. What keeps it from going round inside one session
+	// is app_resolving; what starts a new go is a landing, and landings
+	// happen when a turn ends or when the window opens.
 	retry, twice := worktree_land(repo, two, "say goodbye")
 	testing.expect_value(t, retry, "the merge was left unresolved")
-	testing.expect(t, !twice, "it offered the same conflict a second time")
+	testing.expect(t, twice, "the conflict was not offered to anyone a second time")
+	testing.expect(t, worktree_merging(two_tree), "the merge was started over")
 	// And the project is exactly where the first card left it: a failed
 	// landing touches nothing.
 	f, _ := os.read_entire_file_from_path(join(repo, "f"), context.temp_allocator)
@@ -1380,6 +1386,63 @@ a_finished_card_lands_even_with_no_tree_left :: proc(t: ^testing.T) {
 	// a card that fails, it is a card with nothing to do.
 	app_land_finished(app)
 	testing.expect(t, os.exists(join(repo, "landed")), "landing it twice undid it")
+}
+
+// A card that says `needs you` about work that is already in the project is a
+// card asking about nothing. Three of them stood like that at once — merged,
+// branches gone, still amber on the grid — and every one of them was a job
+// left to a person that the window could have answered from git.
+@(test)
+a_card_stops_asking_once_there_is_nothing_left_to_land :: proc(t: ^testing.T) {
+	scratch_dir(t)
+	scratch_cache()
+	repo := "/tmp/aithing-test-settled"
+	if !testing.expect(t, run(t, "rm", "-rf", repo), "could not clear the scratch dir") do return
+	os.make_directory_all(repo)
+	made :=
+		run(t, "git", "-C", repo, "init", "-q") &&
+		run(t, "git", "-C", repo, "config", "user.email", "test@example.com") &&
+		run(t, "git", "-C", repo, "config", "user.name", "test") &&
+		os.write_entire_file(join(repo, "f"), "a") == nil &&
+		run(t, "git", "-C", repo, "add", "f") &&
+		run(t, "git", "-C", repo, "commit", "-qm", "one")
+	if !testing.expect(t, made, "git is needed for this one") do return
+
+	app := scratch_app()
+	defer scratch_free(app)
+
+	// Its work went in and its branch went with it, and all that is left of
+	// it is a state written down at the end of a turn.
+	asked := todos_add(&app.todos, "already in", "s-settled", repo)
+	todo_set_state(&app.todos, asked, .Asked)
+	testing.expect(t, worktree_settled(repo, asked), "a card with no branch has nothing left")
+	app_land_finished(app)
+	testing.expect_value(t, app.todos.list[todos_find(&app.todos, asked)].state, Todo_State.Merged)
+
+	// Still on a branch of its own, and still the person's to answer.
+	held := todos_add(&app.todos, "not in yet", "s-held", repo)
+	tree, _ := worktree_for(repo, held, context.temp_allocator)
+	_ = os.write_entire_file(join(tree, "held"), "y")
+	run(t, "git", "-C", tree, "add", "held")
+	run(t, "git", "-C", tree, "commit", "-qm", "work")
+	todo_set_state(&app.todos, held, .Asked)
+	testing.expect(t, !worktree_settled(repo, held), "a branch with commits of its own is not settled")
+	app_land_finished(app)
+	testing.expect_value(t, app.todos.list[todos_find(&app.todos, held)].state, Todo_State.Asked)
+
+	// A verdict about the work is not a verdict about where it went: failed
+	// stays failed however little is left on its branch.
+	broke := todos_add(&app.todos, "went wrong", "s-broke", repo)
+	todo_set_state(&app.todos, broke, .Failed)
+	app_land_finished(app)
+	testing.expect_value(t, app.todos.list[todos_find(&app.todos, broke)].state, Todo_State.Failed)
+
+	// And a card nothing has ever run is waiting, not finished. It has no
+	// branch for the same reason a landed card has none, and only the thread
+	// behind it tells the two apart.
+	fresh := todos_add(&app.todos, "never started", "", repo)
+	app_land_finished(app)
+	testing.expect_value(t, app.todos.list[todos_find(&app.todos, fresh)].state, Todo_State.Open)
 }
 
 // --- and out ------------------------------------------------------------------

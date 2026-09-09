@@ -137,7 +137,14 @@ worktree_land :: proc(project, id, subject: string) -> (why: string, conflicted:
 	// over, is the whole of what stops a card that cannot be landed going
 	// round for ever — and it needs nothing written down, because a tree with
 	// MERGE_HEAD in it is the record.
-	if worktree_merging(path) do return "the merge was left unresolved", false
+	// Conflicted, not merely refused. This used to stop here for good — one
+	// go at resolving and then the card stood there saying `needs you` for
+	// ever, which is a card asking a person to do the one job the thing that
+	// wrote both sides is best placed to finish. Saying it conflicts puts an
+	// agent back in the tree on the next launch instead. It cannot spin: the
+	// only thing that starts one is a landing, and a landing runs when a turn
+	// ends or when the window opens.
+	if worktree_merging(path) do return "the merge was left unresolved", true
 
 	// Whatever the agent left lying about. A card is one piece of work and
 	// this is the end of it, so there is nothing to be gained by asking which
@@ -278,6 +285,25 @@ worktree_head :: proc(path: string) -> (branch: string, ok: bool) {
 	if !out_ok do return "", false
 	name := strings.trim_space(out)
 	return name, name != ""
+}
+
+// Whether a card has anything left to give the project. False while its branch
+// carries commits the project's branch has not got; true when the branch is
+// already in, or is gone.
+//
+// A branch only ever goes two ways: `worktree_release` deletes it with `-d`,
+// which git refuses unless it is merged, or somebody deletes it by hand. Both
+// mean there is nothing left of that card to land — which is what makes this a
+// question git can answer, and why a card can stop asking about it.
+worktree_settled :: proc(project, id: string) -> bool {
+	if project == "" || id == "" do return true
+	branch := worktree_branch(id)
+	if !worktree_has_branch(project, branch) do return true
+	base, has_base := worktree_head(project)
+	if !has_base do return false
+	if base == branch do return true
+	ahead, _ := git(project, {"merge-base", "--is-ancestor", branch, base})
+	return ahead
 }
 
 // Where the work goes once it has landed. Landing used to end at the merge
