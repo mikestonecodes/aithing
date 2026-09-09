@@ -262,7 +262,7 @@ canvas_wave :: proc(app: ^App, r: Rect, kx, ky, ksw, ksh: u64) {
 }
 
 // The cards on their way out, over the grid: each pops a touch, implodes and
-// fades, and a ring runs out from it across everything else.
+// fades, and an unseen wave runs out from it shoving everything else.
 @(private = "file")
 draw_ghosts :: proc(app: ^App, view: Rect) {
 	ui := &app.ui
@@ -279,12 +279,11 @@ draw_ghosts :: proc(app: ^App, view: Rect) {
 		ui.animating = true
 		cx := g.r.x + g.r.w / 2
 		cy := g.r.y - c.scroll.offset + view.y + g.r.h / 2
-		// The ring, wide and thin and gone by the time the wave has crossed
-		// a big window.
-		ring := age * WAVE_SPEED
-		life := WAVE_REACH * 2 / WAVE_SPEED
-		fade := clamp(1 - age / life, 0, 1)
-		ui_dial(ui, {cx, cy}, ring, max(ring * 0.16, 4), 1, color_alpha(ACCENT, 0.7 * fade * fade), 0.7)
+		// The ring the wave used to draw is gone: a circle the width of the
+		// window swelling out of a deleted card read as an error, not as
+		// motion. The wave itself stays — it is what shoves the other cards
+		// — it just travels unseen now, which is why the ghost is still kept
+		// alive past GHOST_LIFE for as long as the wave takes to cross.
 		if age >= GHOST_LIFE do continue
 		t := age / GHOST_LIFE
 		// Out with a flourish: it swells first and then collapses to nothing,
