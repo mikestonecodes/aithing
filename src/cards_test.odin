@@ -1632,6 +1632,56 @@ a_finished_card_lands_even_with_no_tree_left :: proc(t: ^testing.T) {
 	testing.expect(t, os.exists(join(repo, "landed")), "landing it twice undid it")
 }
 
+// A card that says `merged` over a branch that has moved on since. The state
+// is written by the landing that worked, and it was true when it was written —
+// a thread worked in again afterwards puts commits on the branch that no
+// landing has ever seen, and a window that went away before that turn could
+// end left nothing that would come back for them. Three cards stood like that
+// at once, `merged` on the grid over branches eight commits ahead of their
+// project, and the launch after read `merged` and skipped them.
+@(test)
+a_merged_card_lands_what_its_branch_gained_after :: proc(t: ^testing.T) {
+	scratch_dir(t)
+	scratch_cache()
+	repo := "/tmp/aithing-test-remerge"
+	if !testing.expect(t, run(t, "rm", "-rf", repo), "could not clear the scratch dir") do return
+	os.make_directory_all(repo)
+	made :=
+		run(t, "git", "-C", repo, "init", "-q") &&
+		run(t, "git", "-C", repo, "config", "user.email", "test@example.com") &&
+		run(t, "git", "-C", repo, "config", "user.name", "test") &&
+		os.write_entire_file(join(repo, "f"), "a") == nil &&
+		run(t, "git", "-C", repo, "add", "f") &&
+		run(t, "git", "-C", repo, "commit", "-qm", "one")
+	if !testing.expect(t, made, "git is needed for this one") do return
+
+	app := scratch_app()
+	defer scratch_free(app)
+
+	id := todos_add(&app.todos, "in two goes", "s-remerge", repo)
+	tree, _ := worktree_for(repo, id, context.temp_allocator)
+	_ = os.write_entire_file(join(tree, "first"), "y")
+	run(t, "git", "-C", tree, "add", "first")
+	run(t, "git", "-C", tree, "commit", "-qm", "the first half")
+	todo_set_state(&app.todos, id, .Done)
+	app_land_finished(app)
+	testing.expect(t, os.exists(join(repo, "first")), "the first half never landed")
+	testing.expect_value(t, app.todos.list[todos_find(&app.todos, id)].state, Todo_State.Merged)
+
+	// The thread worked in again: the tree comes back on the card's own
+	// branch, and what it commits there is work the landing never saw.
+	again, _ := worktree_for(repo, id, context.temp_allocator)
+	_ = os.write_entire_file(join(again, "second"), "y")
+	run(t, "git", "-C", again, "add", "second")
+	run(t, "git", "-C", again, "commit", "-qm", "the second half")
+	testing.expect(t, !worktree_settled(repo, id), "a branch with commits of its own is not settled")
+	testing.expect_value(t, app.todos.list[todos_find(&app.todos, id)].state, Todo_State.Merged)
+
+	app_land_finished(app)
+	testing.expect(t, os.exists(join(repo, "second")), "a merged card's later work never reached the project")
+	testing.expect_value(t, app.todos.list[todos_find(&app.todos, id)].state, Todo_State.Merged)
+}
+
 // A card that says `needs you` about work that is already in the project is a
 // card asking about nothing. Three of them stood like that at once — merged,
 // branches gone, still amber on the grid — and every one of them was a job

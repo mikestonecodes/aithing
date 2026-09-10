@@ -1497,7 +1497,14 @@ app_land_worktree :: proc(app: ^App, t: ^Turn) {
 app_land_finished :: proc(app: ^App) {
 	for todo in app.todos.list {
 		if todo.cwd == "" do continue
-		if todo.state == .Done {
+		// `Merged` is asked of git here as well, rather than taken at its
+		// word. It is written when a landing works, and that landing told the
+		// truth about the commits that existed when it ran — a card whose
+		// thread was worked in again afterwards carries commits no landing has
+		// ever seen, and when the window went away before that turn could end
+		// there was nothing left to come back to them. Three cards sat saying
+		// `merged` over branches eight commits ahead of their project.
+		if todo.state == .Done || (todo.state == .Merged && !worktree_settled(todo.cwd, todo.id)) {
 			app_land_card(app, todo.cwd, todo.id)
 			continue
 		}
