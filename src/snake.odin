@@ -267,14 +267,26 @@ draw_transcript :: proc(app: ^App, r: Rect) {
 	// the path rather than a panel floating over it. Its height is content the
 	// scroll has to make room for.
 	//
-	// It is capped at the readable width and centred. Running it the full
-	// width of the path was tried, so that the pipe could always drop straight
-	// down into it: on a wide window that is a gold slab across the whole
-	// window with its text wrapping a third of the way along it, and a panel
-	// far wider than the words in it does not read as the words. The panel is
-	// the size of its text, and the pipe elbows when it has to.
+	// It is capped at the readable width and hung under the gold stone, not
+	// centred in the window: where the panel sits is one answer read off where
+	// the stone ended up, so the pipe into it is a straight drop every time.
+	// Centring it meant the drop was straight only when the path happened to
+	// end near the middle of the window — the same panel elbowed or dropped
+	// depending on how many stones the turn had, which reads as a bug in the
+	// pipe. Running the panel the full width of the path was tried first for
+	// the same reason and taken back out: on a wide window that is a gold slab
+	// across the whole window with its text wrapping a third of the way along
+	// it, and a panel far wider than the words in it does not read as the
+	// words.
 	ans_w := min(path_w, CONTENT_MAX)
 	ans_x := r.x + (r.w - ans_w) / 2
+	for t in app.snake do if t.answer {
+		ans_x = clamp(
+			t.r.x + t.r.w / 2 - ans_w / 2,
+			r.x + SNAKE_PAD,
+			r.x + SNAKE_PAD + path_w - ans_w,
+		)
+	}
 	sum := snake_summary(app)
 	ans_h := f32(0)
 	if b := chat_block(&app.chat, sum); b != nil {
@@ -368,34 +380,21 @@ snake_open :: proc(app: ^App, view: Rect, top: f32) -> Ref {
 // The answer, in full, hanging off the gold stone at the end of the path: a
 // stub of pipe down into it and a gold edge, so it reads as the last thing on
 // the snake and not as a second view of the same thread.
-// The last length of pipe: out of the bottom of the gold stone and into the
-// top of the panel hanging off it. It used to elbow across to the panel's
-// left edge, which drew a bright gold rule the width of the window — a bigger
-// mark than either of the things it was joining. Then it was a straight drop
-// clamped into the panel, which is right until the path is wider than the
-// panel: the stone ends a row outside it and the drop came down from empty
-// space a hand's width to its left. So: straight down when the stone is over
-// the panel, and otherwise a stub down, a run across to the panel's edge, and
-// the drop in from there. Widening the panel to the whole path so that the
-// drop is always straight was tried after that and taken back out: it fixes
-// the pipe by making the answer a slab the width of the window.
+// The last length of pipe: out of the bottom of the gold stone and straight
+// down into the top of the panel hanging off it. It used to elbow across when
+// the stone sat outside the panel — a stub down, a run sideways and a second
+// drop — which put two right-angle corners of butted-together quads on the
+// brightest pipe on screen, each with a notch where the two ends met. The
+// elbow is gone rather than mitred, because the panel is now placed under the
+// stone (see draw_transcript): there is nothing left to reach across to.
 @(private = "file")
 draw_answer_pipe :: proc(app: ^App, stone, box: Rect) {
 	ui := &app.ui
-	sx := stone.x + stone.w / 2
-	x := clamp(sx, box.x + 16, box.x + box.w - 16)
-	param := wire_param(len(app.snake), false)
-	col := color_alpha(GOLD, 0.5)
 	if box.y <= stone.y + stone.h do return
-	if x == sx {
-		r := Rect{x - WIRE / 2, stone.y + stone.h - 2, WIRE, box.y - stone.y - stone.h + 4}
-		ui_quad(ui, r, {0, 0}, {1, 1}, col, WHITE_TEX, 2, .Wire, param)
-		return
-	}
-	mid := (stone.y + stone.h + box.y) / 2
-	ui_quad(ui, {sx - WIRE / 2, stone.y + stone.h - 2, WIRE, mid - stone.y - stone.h + 2 + WIRE / 2}, {0, 0}, {1, 1}, col, WHITE_TEX, 2, .Wire, param)
-	ui_quad(ui, {min(sx, x) - WIRE / 2, mid - WIRE / 2, abs(sx - x) + WIRE, WIRE}, {0, 0}, {1, 1}, col, WHITE_TEX, 2, .Wire, param)
-	ui_quad(ui, {x - WIRE / 2, mid - WIRE / 2, WIRE, box.y - mid + WIRE / 2 + 2}, {0, 0}, {1, 1}, col, WHITE_TEX, 2, .Wire, param)
+	x := stone.x + stone.w / 2
+	r := Rect{x - WIRE / 2, stone.y + stone.h - 2, WIRE, box.y - stone.y - stone.h + 4}
+	col := color_alpha(GOLD, 0.5)
+	ui_quad(ui, r, {0, 0}, {1, 1}, col, WHITE_TEX, 2, .Wire, wire_param(len(app.snake), false))
 }
 
 @(private = "file")
