@@ -302,8 +302,65 @@ worktree_settled :: proc(project, id: string) -> bool {
 	base, has_base := worktree_head(project)
 	if !has_base do return false
 	if base == branch do return true
-	ahead, _ := git(project, {"merge-base", "--is-ancestor", branch, base})
-	return ahead
+	if ahead, _ := git(project, {"merge-base", "--is-ancestor", branch, base}); ahead do return true
+	// And the branch as everyone else has it. The landing pushes, so the
+	// project's branch is the one on the remote every bit as much as the one
+	// in the checkout — and an agent that merges and pushes on its own
+	// account, which the instructions these projects carry tell it to do,
+	// leaves exactly this shape behind: the work on `origin/main`, the card's
+	// branch inside it, and the checkout's own ref nine commits short. Asking
+	// the local ref alone said `needs you` about work whose own thread had
+	// just finished saying it was merged and pushed.
+	//
+	// The remote-tracking ref, not the remote: nothing here goes near the
+	// network. It is the right ref to read because it is the one the landing
+	// writes to, and it is current for the case that matters because the push
+	// that moved it came out of a worktree of this same repository. A project
+	// with nowhere to push, or a remote that has never heard of the branch,
+	// makes this fail — the same answer as the work not being in.
+	remote, has_remote := worktree_remote(project)
+	if !has_remote do return false
+	out_there, _ := git(
+		project,
+		{"merge-base", "--is-ancestor", branch, fmt.tprintf("refs/remotes/%s/%s", remote, base)},
+	)
+	return out_there
+}
+
+// Where a landing sends what it merged. The first one git lists: a repository
+// with two of them is rare, and there is no better answer to pick between them
+// than the one it would have picked anyway.
+@(private = "file")
+worktree_remote :: proc(project: string) -> (name: string, ok: bool) {
+	listed, remotes := git_out(project, {"remote"})
+	if !listed do return "", false
+	names := strings.fields(remotes, context.temp_allocator)
+	if len(names) == 0 do return "", false
+	return names[0], true
+}
+
+// The checkout's own ref brought up to work that is already in, which is the
+// difference between a card that says merged and a `git log` that agrees with
+// it. Only ever a fast-forward of a branch that has everything the project
+// has, so there is nothing to merge and nothing that can conflict; git itself
+// refuses one that would write over a file somebody has open. False means the
+// ref did not move, and every caller does the same thing about that, which is
+// nothing.
+//
+// Not worktree_fast_forward, which puts uncommitted work in the project aside
+// to get the merge in. That is a trade worth making for a card that finished;
+// this runs for cards that have not, and taking somebody's changes off their
+// tree to tidy up a ref is not.
+worktree_catch_up :: proc(project, id: string) -> bool {
+	if project == "" || id == "" do return false
+	branch := worktree_branch(id)
+	if !worktree_has_branch(project, branch) do return false
+	base, has_base := worktree_head(project)
+	if !has_base || base == branch do return false
+	if ahead, _ := git(project, {"merge-base", "--is-ancestor", branch, base}); ahead do return false
+	if behind, _ := git(project, {"merge-base", "--is-ancestor", base, branch}); !behind do return false
+	ok, _ := git(project, {"merge", "--ff-only", branch})
+	return ok
 }
 
 // Where the work goes once it has landed. Landing used to end at the merge
@@ -318,13 +375,11 @@ worktree_settled :: proc(project, id: string) -> bool {
 // own sentence about why, which is the only thing worth saying about a push
 // that was refused.
 worktree_push :: proc(project: string) -> (why: string) {
-	ok, remotes := git_out(project, {"remote"})
-	if !ok do return ""
-	names := strings.fields(remotes, context.temp_allocator)
-	if len(names) == 0 do return ""
+	remote, has_remote := worktree_remote(project)
+	if !has_remote do return ""
 	branch, on_one := worktree_head(project)
 	if !on_one do return ""
-	if pushed, msg := git(project, {"push", names[0], branch}); !pushed {
+	if pushed, msg := git(project, {"push", remote, branch}); !pushed {
 		return one_line(msg != "" ? msg : "the push was refused", 160)
 	}
 	return ""

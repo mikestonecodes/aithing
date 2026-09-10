@@ -1452,6 +1452,17 @@ app_turn_ended :: proc(app: ^App, t: ^Turn, state: Todo_State) {
 	// And the work goes back into the project it came from, now, on the frame
 	// the card said it was finished — see app_land_worktree.
 	app_land_worktree(app, t)
+	// And for a card the landing is not the business of — one that asked
+	// something, one a person typed into — where its work got to is still a
+	// question, and this is the only frame anything is going to ask it on.
+	// A turn a person typed carries no card, so the thread says which.
+	if t.todo != "" {
+		app_settle_card(app, t.todo)
+	} else if t.session != "" {
+		for todo in app.todos.list do if todo.session == t.session {
+			app_settle_card(app, todo.id)
+		}
+	}
 }
 
 // A finished card's work, put back into its project, and then its checkout
@@ -1508,23 +1519,43 @@ app_land_finished :: proc(app: ^App) {
 			app_land_card(app, todo.cwd, todo.id)
 			continue
 		}
-		// A card that says `needs you` about work that is already in the
-		// project is a card asking about nothing, and it is the person who
-		// ends up doing the tidying — which is the opposite of the point.
-		// Three of them sat like that at once: their work was in, their
-		// branches were gone, and the only thing left saying otherwise was a
-		// state written down at the end of a turn that has long since stopped
-		// being true.
-		//
-		// Never `Failed`, which is a verdict about the work and not about
-		// where it went, and never a card that has not run: a card with no
-		// thread behind it has no branch for the same reason a card that
-		// landed has none, and only the thread tells them apart.
-		if todo.state != .Asked && todo.state != .Open do continue
-		if todo.session == "" do continue
-		if !worktree_settled(todo.cwd, todo.id) do continue
-		todo_set_state(&app.todos, todo.id, .Merged)
+		app_settle_card(app, todo.id)
 	}
+}
+
+// A card that says `needs you` about work that is already in the project is a
+// card asking about nothing, and it is the person who ends up doing the
+// tidying — which is the opposite of the point. Three of them sat like that at
+// once: their work was in, their branches were gone, and the only thing left
+// saying otherwise was a state written down at the end of a turn that had long
+// since stopped being true.
+//
+// Asked per card, and asked again the moment a turn ends, because it only used
+// to be asked on the way up. A landing runs on a card that is done, so a card
+// that ended by asking something — or a message typed into its thread, which
+// is never given a verdict to say — kept whatever the last turn wrote about
+// where its work was for the rest of the run. One stood on `needs you` while
+// the thread underneath it said, in as many words, that it had merged and
+// pushed; answering it changed nothing, because nothing was listening.
+//
+// Never `Failed`, which is a verdict about the work and not about where it
+// went, and never a card that has not run: a card with no thread behind it has
+// no branch for the same reason a card that landed has none, and only the
+// thread tells them apart.
+@(private = "file")
+app_settle_card :: proc(app: ^App, id: string) {
+	at := todos_find(&app.todos, id)
+	if at < 0 do return
+	td := app.todos.list[at]
+	if td.cwd == "" || td.session == "" do return
+	if td.state != .Asked && td.state != .Open do return
+	if !worktree_settled(td.cwd, td.id) do return
+	// And the checkout caught up to it, when that is a fast-forward and
+	// nothing else. A card saying merged over a `git log` that does not show
+	// the work is the same lie in a smaller place.
+	if worktree_catch_up(td.cwd, td.id) do build_start(app, td.cwd)
+	todo_set_state(&app.todos, id, .Merged)
+	todos_save(&app.todos)
 }
 
 @(private = "file")

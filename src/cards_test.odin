@@ -1739,6 +1739,74 @@ a_card_stops_asking_once_there_is_nothing_left_to_land :: proc(t: ^testing.T) {
 	testing.expect_value(t, app.todos.list[todos_find(&app.todos, fresh)].state, Todo_State.Open)
 }
 
+// Work an agent merged and pushed on its own account. The project's own
+// instructions tell it to, and what it leaves behind is the card's branch
+// inside `origin/main` with the checkout's ref still short of it — which every
+// question this used to ask answered as `not in yet`. One card stood on `needs
+// you` over a thread whose last message said, in as many words, that it had
+// merged and pushed, and answering it changed nothing because the state was
+// only ever asked of git on the way up.
+@(test)
+a_card_is_merged_once_its_branch_is_on_the_remote :: proc(t: ^testing.T) {
+	scratch_dir(t)
+	scratch_cache()
+	remote := "/tmp/aithing-test-ahead.git"
+	repo := "/tmp/aithing-test-ahead"
+	if !testing.expect(t, run(t, "rm", "-rf", remote, repo), "could not clear the scratch dirs") do return
+	os.make_directory_all(remote)
+	os.make_directory_all(repo)
+	made :=
+		run(t, "git", "-C", remote, "init", "-q", "--bare") &&
+		run(t, "git", "-C", repo, "init", "-q") &&
+		// Named, because the branch a bare `git init` makes is whatever this
+		// machine is configured for and the push below has to name it.
+		run(t, "git", "-C", repo, "symbolic-ref", "HEAD", "refs/heads/main") &&
+		run(t, "git", "-C", repo, "config", "user.email", "test@example.com") &&
+		run(t, "git", "-C", repo, "config", "user.name", "test") &&
+		os.write_entire_file(join(repo, "f"), "a") == nil &&
+		run(t, "git", "-C", repo, "add", "f") &&
+		run(t, "git", "-C", repo, "commit", "-qm", "one") &&
+		run(t, "git", "-C", repo, "remote", "add", "origin", remote) &&
+		worktree_push(repo) == ""
+	if !testing.expect(t, made, "git is needed for this one") do return
+
+	app := scratch_app()
+	defer scratch_free(app)
+
+	// A branch on the remote and nowhere else, which is what an agent that
+	// ran the four steps itself leaves behind.
+	sent := todos_add(&app.todos, "merged it itself", "s-ahead", repo)
+	tree, _ := worktree_for(repo, sent, context.temp_allocator)
+	_ = os.write_entire_file(join(tree, "sent"), "y")
+	run(t, "git", "-C", tree, "add", "sent")
+	run(t, "git", "-C", tree, "commit", "-qm", "the work")
+	run(t, "git", "-C", tree, "push", "-q", "origin", "HEAD:main")
+	todo_set_state(&app.todos, sent, .Asked)
+	testing.expect(t, !os.exists(join(repo, "sent")), "the checkout has it already")
+
+	testing.expect(t, worktree_settled(repo, sent), "work on the remote is still work that is in")
+	app_land_finished(app)
+	testing.expect_value(t, app.todos.list[todos_find(&app.todos, sent)].state, Todo_State.Merged)
+	// And the checkout says the same thing git does: a card reading merged
+	// over a `git log` without the work in it is the same lie in a smaller
+	// place, and the ref only ever moves by fast-forward.
+	testing.expect(t, os.exists(join(repo, "sent")), "the checkout never caught up")
+
+	// A branch nobody has seen but this machine is still the person's to
+	// answer: the remote is where the landing sends work, so a branch that
+	// never got there is a branch whose work is not in.
+	held := todos_add(&app.todos, "not sent anywhere", "s-ahead-held", repo)
+	held_tree, _ := worktree_for(repo, held, context.temp_allocator)
+	_ = os.write_entire_file(join(held_tree, "held"), "y")
+	run(t, "git", "-C", held_tree, "add", "held")
+	run(t, "git", "-C", held_tree, "commit", "-qm", "kept back")
+	todo_set_state(&app.todos, held, .Asked)
+	testing.expect(t, !worktree_settled(repo, held), "a branch nothing has seen is not in")
+	app_land_finished(app)
+	testing.expect_value(t, app.todos.list[todos_find(&app.todos, held)].state, Todo_State.Asked)
+	testing.expect(t, !os.exists(join(repo, "held")), "it went in anyway")
+}
+
 // --- and out ------------------------------------------------------------------
 
 // Landing used to end at the merge, which is a branch on one machine. This is
