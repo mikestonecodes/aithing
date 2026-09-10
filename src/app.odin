@@ -789,7 +789,8 @@ app_drop_todo :: proc(app: ^App, id: string) {
 // Everything typed into the box under the grid: a card for each of the things
 // said in it, and a thread each.
 //
-// Where one item stops and the next begins is a `*` and nothing else, so a
+// Where one item stops and the next begins is a `*` or a `;;;` and nothing
+// else, so a
 // job written out at length is one card. Each part is its own conversation,
 // so a card can be opened, stopped and dismissed without dragging the ones
 // typed beside it along: they used to share one thread, and sharing it was

@@ -367,31 +367,52 @@ todo_matches :: proc(td: Todo, query: string) -> bool {
 
 // --- typing a list ----------------------------------------------------------
 
-// What was typed, cut into parts: a `*` is where one part ends and the next
-// begins, and nothing else is. One part is one card and one conversation.
+// What was typed, cut into parts: a `*` or a `;;;` is where one part ends and
+// the next begins, and nothing else is. One part is one card and one
+// conversation.
 //
 // The cut used to be read out of the writing — a line, a bullet, a number, a
 // full stop — and that got the ordinary case backwards. A job described in
 // two sentences, or in a paragraph with a line break in it, came back as four
 // cards and four threads, and there was no way to say the sentence belonged
 // with the one before it: the box looked like it had misheard every time
-// anyone wrote more than a few words. So the cut is a character nobody types
-// by accident, and everything else stays in the part it was written in.
+// anyone wrote more than a few words. So the cut is something nobody types by
+// accident, and everything else stays in the part it was written in.
 //
-// The spaces and newlines around a `*` are only there to break the text up on
+// There are two of them because one character to reach for is not always the
+// one to hand: `;;;` is three taps of a key that is already under a finger,
+// where a `*` is a shifted reach. They cut the same, and text that wants a
+// literal star in it still cannot have one either way.
+//
+// The spaces and newlines around a cut are only there to break the text up on
 // screen, so they come off and nothing has to be typed a particular way.
 todos_split :: proc(text: string, allocator := context.temp_allocator) -> []string {
 	out := make([dynamic]string, allocator)
 	rest := text
 	for {
-		cut := strings.index_byte(rest, '*')
+		cut, width := todos_cut(rest)
 		if cut < 0 do break
 		piece := strings.trim_space(rest[:cut])
 		if piece != "" do append(&out, piece)
-		rest = rest[cut + 1:]
+		rest = rest[cut + width:]
 	}
 	if last := strings.trim_space(rest); last != "" do append(&out, last)
 	return out[:]
+}
+
+// Where the first cut in `rest` is and how many bytes of it to step over, or
+// -1 if there is none. A run of more than three semicolons is one cut, not a
+// cut and a stray semicolon starting the next part.
+todos_cut :: proc(rest: string) -> (at: int, width: int) {
+	star := strings.index_byte(rest, '*')
+	semi := strings.index(rest, ";;;")
+	if semi >= 0 && (star < 0 || semi < star) {
+		width = 3
+		for semi + width < len(rest) && rest[semi + width] == ';' do width += 1
+		return semi, width
+	}
+	if star >= 0 do return star, 1
+	return -1, 0
 }
 
 // --- how it reads -----------------------------------------------------------

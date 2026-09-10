@@ -4,8 +4,8 @@ import "core:os"
 import "core:testing"
 
 // What a typed list cuts into: the split is what the grid is made of, and it
-// is made on the spot with nothing asked of a model. A `*` is the whole of
-// the rule.
+// is made on the spot with nothing asked of a model. A `*` or a `;;;` is the
+// whole of the rule.
 
 @(test)
 split_on_stars :: proc(t: ^testing.T) {
@@ -44,6 +44,34 @@ split_keeps_one :: proc(t: ^testing.T) {
 	parts := todos_split("  bump to 1.2 everywhere  ")
 	testing.expect_value(t, len(parts), 1)
 	testing.expect_value(t, parts[0], "bump to 1.2 everywhere")
+}
+
+// `;;;` cuts the same as a star, on a line of its own or mid-sentence, and
+// the two can be mixed in one thing typed.
+@(test)
+split_on_semicolons :: proc(t: ^testing.T) {
+	parts := todos_split("fix the caret\n;;;\nrebake the atlas * ship it")
+	testing.expect_value(t, len(parts), 3)
+	testing.expect_value(t, parts[0], "fix the caret")
+	testing.expect_value(t, parts[1], "rebake the atlas")
+	testing.expect_value(t, parts[2], "ship it")
+}
+
+// A leaning-on-the-key run of semicolons is one cut, not a cut with a
+// semicolon left over to open the next card.
+@(test)
+split_eats_the_whole_run :: proc(t: ^testing.T) {
+	parts := todos_split("fix the caret ;;;;;; ship it")
+	testing.expect_value(t, len(parts), 2)
+	testing.expect_value(t, parts[1], "ship it")
+}
+
+// Two semicolons are not three: a wink stays in the text it was typed in.
+@(test)
+split_leaves_two_semicolons_alone :: proc(t: ^testing.T) {
+	parts := todos_split("fix the caret ;; ship it")
+	testing.expect_value(t, len(parts), 1)
+	testing.expect_value(t, parts[0], "fix the caret ;; ship it")
 }
 
 // A star with nothing on one side of it is not an empty card.
