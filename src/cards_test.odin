@@ -2205,3 +2205,37 @@ a_thread_with_no_file_yet_keeps_the_click :: proc(t: ^testing.T) {
 	testing.expect_value(t, app.pending_open, "sess-nofile")
 	testing.expect(t, app.rescan)
 }
+
+// Two projects whose paths end in the same word each get their own header,
+// and each header sits on its own row. The spring that carries a header to
+// its row was keyed on the name shown on it, so Source/toomanymachines and
+// Videos/toomanymachines drove one spring between them: every frame asked it
+// for two rows at once, it never settled, and both headers were drawn
+// somewhere in the middle, across the cards of the section above.
+@(test)
+two_projects_named_alike_get_a_header_each :: proc(t: ^testing.T) {
+	scratch_dir(t)
+	app := scratch_app()
+	defer scratch_free(app)
+	app.canvas.view = Rect{0, 0, 1180, 800}
+	app.ui.dt = 1.0 / 60
+
+	todos_add(&app.todos, "a card", "", "/tmp/source/twin")
+	todos_add(&app.todos, "another", "", "/tmp/videos/twin")
+
+	canvas_layout(app)
+	rows := make(map[string]f32, context.temp_allocator)
+	for card in app.canvas.cards do if card.head do rows[card.cwd] = card.r.y
+	testing.expect_value(t, len(rows), 2)
+
+	// A second of frames, the ones draw_canvas runs, and then every header is
+	// where the layout put it.
+	for _ in 0 ..< 60 {
+		for card in app.canvas.cards do if card.head {
+			ui_spring(&app.ui, ui_id(card.cwd, HEAD_Y), card.r.y, 170, 22)
+		}
+	}
+	for card in app.canvas.cards do if card.head {
+		testing.expect_value(t, ui_spring(&app.ui, ui_id(card.cwd, HEAD_Y), card.r.y, 170, 22), card.r.y)
+	}
+}

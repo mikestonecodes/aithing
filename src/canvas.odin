@@ -45,7 +45,13 @@ Card :: struct {
 	todo:  int, // index into app.todos.list
 	r:     Rect, // in content space: add the scroll offset to place it
 	head:  bool, // a section header rather than a card
-	name:  string, // the project, on a header
+	cwd:   string, // the project a header names, whole — the label is read off
+	// it with filepath.base. It used to hold the base name alone, and the
+	// spring that carries a header to its row is keyed on it: two projects
+	// with the same last component — Source/toomanymachines and
+	// Videos/toomanymachines — shared the key, so each frame asked one spring
+	// for two rows and both headers drew somewhere between them, across the
+	// cards.
 }
 
 Canvas :: struct {
@@ -182,7 +188,7 @@ grid_layout :: proc(app: ^App, r: Rect) -> f32 {
 			cwd = td.cwd
 			col = 0
 			if sections > 1 {
-				append(&c.cards, Card{head = true, name = filepath.base(cwd), r = {GRID_PAD, y, inner, SECTION_HEAD}})
+				append(&c.cards, Card{head = true, cwd = cwd, r = {GRID_PAD, y, inner, SECTION_HEAD}})
 				y += SECTION_HEAD
 			}
 		}
@@ -263,7 +269,7 @@ draw_canvas :: proc(app: ^App, r: Rect) {
 	// displacement and a return either way.
 	for card in c.cards {
 		if card.head {
-			hy := ui_id(card.name, HEAD_Y)
+			hy := ui_id(card.cwd, HEAD_Y)
 			y := ui_spring(ui, hy, card.r.y, 170, 22)
 			cr := Rect{card.r.x, y - c.scroll.offset + view.y, card.r.w, card.r.h}
 			if cr.y > view.y + view.h || cr.y + cr.h < view.y do continue
@@ -375,7 +381,7 @@ draw_ghosts :: proc(app: ^App, view: Rect) {
 @(private = "file")
 draw_section_head :: proc(app: ^App, card: Card, r: Rect) {
 	ui := &app.ui
-	ui_text(ui, &ui.bold, card.name, {r.x, r.y + 14}, 22, TEXT)
+	ui_text(ui, &ui.bold, filepath.base(card.cwd), {r.x, r.y + 14}, 22, TEXT)
 	ui_rect(ui, {r.x, r.y + r.h - 9, r.w, 1}, color_alpha(BORDER, 0.7))
 }
 
