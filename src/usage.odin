@@ -183,20 +183,27 @@ probe_pump :: proc(app: ^App) -> bool {
 
 // --- what is on screen --------------------------------------------------------
 
-// How much of an allowance is gone, in the colour that says so: the ramp runs
-// from spent-nothing to spent-it-all, and a figure that is only ever one
-// colour is a figure nobody reads twice.
+// How much of an allowance is gone, in the colour that says so. Most of the
+// range is not a colour at all: an allowance with half of it left is not news,
+// and a dial that is lit and warm all day to say nothing is wrong is a thing
+// the eye has to check and discard on every frame.
 //
-// The knee is at three fifths and the green half is squared, because the ramp
-// used to be straight from nothing to half and a week 18% spent came out
-// visibly gold — a third of the way to the warning colour for a window with
-// four fifths of it left. A figure only earns a colour once there is something
-// to say, so the low end stays green and the last two fifths carry the change.
+// So the meter is the same muted grey as the rest of the furniture until it
+// is near the knee, gold from there, and red the rest of the way. It was
+// green at the bottom and ran to gold across the whole of the low half, which
+// squared the curve to hold the warmth back — and a week 41% spent still came
+// out visibly tan, a warning colour for a window with three fifths of it
+// left. Squaring a ramp that should not have been running yet only delays it.
+//
+// The turn is a tenth wide rather than a step at the knee, because the rings
+// ease as the reading lands and a colour that changed between two frames of
+// that would flash on its way past.
 USAGE_KNEE :: f32(0.6)
+USAGE_WARM :: f32(0.5) // where grey starts turning, so the knee is gold on the nose
 usage_meter_color :: proc(used: f32) -> Color {
+	if used < USAGE_WARM do return MUTED
 	if used < USAGE_KNEE {
-		t := used / USAGE_KNEE
-		return color_mix(GREEN, ACCENT, t * t)
+		return color_mix(MUTED, ACCENT, (used - USAGE_WARM) / (USAGE_KNEE - USAGE_WARM))
 	}
 	return color_mix(ACCENT, RED, min((used - USAGE_KNEE) / (1 - USAGE_KNEE), 1))
 }
