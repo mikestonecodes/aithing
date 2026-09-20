@@ -428,7 +428,7 @@ turns_pump :: proc(app: ^App) -> bool {
 		// Into the transcript if this is the thread on screen, the same as
 		// the message would have been had it gone out when it was typed.
 		if !turn_start(app, q.cwd, q.project, q.session, q.prompt, "", q.session == app.chat.session_id) {
-			app_status(app, "could not start claude")
+			app_status(app, "could not start claude", .Fail)
 		}
 		queued_destroy(q)
 		ordered_remove(&app.queued, i)

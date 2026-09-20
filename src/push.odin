@@ -91,7 +91,7 @@ push_poll :: proc(app: ^App) -> bool {
 	g_push.again = ""
 	sync.mutex_unlock(&g_push.mu)
 	if !ready do return false
-	if why != "" do app_status(app, why)
+	if why != "" do app_status(app, why, .Warn)
 	// A landing that arrived mid-push gets its own, now that the wire is free.
 	if again != "" {
 		defer delete(again)

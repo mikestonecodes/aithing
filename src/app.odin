@@ -12,27 +12,31 @@ import "core:time"
 
 // Colours are packed the way the shader reads them: 0xAABBGGRR.
 //
-// Three tiers, in the proportions a screen should show them: the cool slate
+// Three tiers, in the proportions a screen should show them: the plain grey
 // neutrals are most of every frame, the text ramp and the muted tile family
-// are the next third, and one warm accent is the last tenth. The palette
-// before this had a warm brown base under cool blue tiles, and the accent was
-// a coral one step away from the red that means failed — so a running card
-// and a failed one wore the same colour, and a thread of tools was a rainbow
-// of eight hues at full strength with nothing left over to mean "look here".
-// The gold that marks the answer stone is the same accent now, not a second
-// warm colour beside it.
-BG :: Color(0xc824201e)
-PANEL :: Color(0xff312c29)
-PANEL_HI :: Color(0xff3d3733)
-BORDER :: Color(0xff47403c)
-TEXT :: Color(0xfff0ece8)
-MUTED :: Color(0xffaaa098)
-FAINT :: Color(0xff746b64)
+// are the next third, and one warm accent is the last tenth. The accent used
+// to be a coral one step away from the red that means failed — so a running
+// card and a failed one wore the same colour, and a thread of tools was a
+// rainbow of eight hues at full strength with nothing left over to mean "look
+// here". The gold that marks the answer stone is the same accent, not a
+// second warm colour beside it.
+//
+// The neutrals are grey and nothing else. For one commit they were pushed
+// toward blue to read as slate under the gold, and the whole window went
+// cold; the byte order here is ABGR, so a base that looks warm in the source
+// is a blue one on screen, which is how it happened.
+BG :: Color(0xc8242626)
+PANEL :: Color(0xff2c2f30)
+PANEL_HI :: Color(0xff34383a)
+BORDER :: Color(0xff373b3d)
+TEXT :: Color(0xffe9f0f2)
+MUTED :: Color(0xff8c959a)
+FAINT :: Color(0xff62686d)
 ACCENT :: Color(0xff40acec)
 ACCENT_DIM :: Color(0x8040acec)
-USER_BG :: Color(0xff39332f)
-CODE_BG :: Color(0xff1b1816)
-CODE_TEXT :: Color(0xffe0cebe)
+USER_BG :: Color(0xff303436)
+CODE_BG :: Color(0xff18191a)
+CODE_TEXT :: Color(0xffa0c4e8)
 GREEN :: Color(0xff7cb074)
 RED :: Color(0xff5c60e0)
 // Activity, not alarm: a running card is cool, so the warm accent is left to
@@ -186,6 +190,7 @@ App :: struct {
 	peek_raw:  bool,
 
 	status:    string,
+	status_tone: Status_Tone,
 	model:     Model,
 	model_chip: Rect, // where it opens from
 	effort:    Effort,
@@ -702,7 +707,7 @@ app_start_todo :: proc(app: ^App, id: string) {
 		// with the reason on it, and Enter asks again.
 		app_note(app, id, "could not start claude")
 		app_todo_finished(app, id, .Failed)
-		app_status(app, "could not start claude")
+		app_status(app, "could not start claude", .Fail)
 		return
 	}
 	// Nothing to write down: the turn now in flight is what says this card is
@@ -1093,9 +1098,20 @@ app_open :: proc(app: ^App, index: int) {
 	load_start_group(&app.load, s^, members[:])
 }
 
-app_status :: proc(app: ^App, msg: string) {
+// How loud the status line is drawn. Most of what it says — copied, attached,
+// loading, stopped — is a receipt for something you just did, and drawn in
+// full it was one more thing to read on every frame. Only something that
+// went wrong wants to be seen from across the room.
+Status_Tone :: enum u8 {
+	Note,
+	Warn,
+	Fail,
+}
+
+app_status :: proc(app: ^App, msg: string, tone := Status_Tone.Note) {
 	delete(app.status)
 	app.status = strings.clone(msg)
+	app.status_tone = tone
 }
 
 // --- sending ----------------------------------------------------------------
@@ -1162,7 +1178,7 @@ app_submit :: proc(app: ^App, text, prompt: string) -> bool {
 	if app_session_busy(app, session) || unnamed != nil {
 		turn_queue(app, session, unnamed, cwd, app_project(app), prompt)
 	} else if !turn_start(app, cwd, app_project(app), session, prompt, "", true) {
-		app_status(app, "could not start claude")
+		app_status(app, "could not start claude", .Fail)
 		return false
 	}
 	// Work asked for in a thread with no card is work with nowhere to show.
@@ -1436,7 +1452,7 @@ app_turn_failed :: proc(app: ^App, t: ^Turn, text: string) {
 		return
 	}
 	app_note(app, t.todo, text)
-	app_status(app, text != "" ? text : "a turn failed")
+	app_status(app, text != "" ? text : "a turn failed", .Fail)
 	app_turn_ended(app, t, .Failed)
 }
 

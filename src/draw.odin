@@ -15,7 +15,7 @@ import "core:unicode/utf8"
 PAD :: f32(16)
 // The composer's own ground: dark enough to read white text on, thin enough
 // that the desktop behind the window still shows through it.
-COMPOSER_BG :: Color(0x66221e1c)
+COMPOSER_BG :: Color(0x66202224)
 BLINK :: f32(0.55) // caret on/off, in seconds
 // How wide the block caret is where there is no character under it to take
 // its width from, as a fraction of the type size.
@@ -735,7 +735,15 @@ draw_status :: proc(app: ^App, at: Rect) {
 	in_ := ui_spring(ui, sid, 1, 220, 13)
 	buf: [128]u8
 	msg := font_ellipsize(&ui.regular, app.status, 13, at.w, buf[:])
-	ui_text(ui, &ui.regular, msg, {at.x, at.y + (1 - in_) * 10}, 13, color_alpha(FAINT, clamp(in_, 0, 1)))
+	col := color_alpha(FAINT, 0.6)
+	switch app.status_tone {
+	case .Note:
+	case .Warn:
+		col = ACCENT
+	case .Fail:
+		col = RED
+	}
+	ui_text(ui, &ui.regular, msg, {at.x, at.y + (1 - in_) * 10}, 13, color_alpha(col, clamp(in_, 0, 1)))
 }
 
 // How long the picker takes to arrive, and how far it starts from where it

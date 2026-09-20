@@ -69,7 +69,7 @@ update_poll :: proc(app: ^App) -> bool {
 
 	if !running && update_due(checked, time.now()) do update_start()
 	if !ready || ok do return false
-	app_status(app, "claude update failed; see last-update.log")
+	app_status(app, "claude update failed; see last-update.log", .Fail)
 	return true
 }
 

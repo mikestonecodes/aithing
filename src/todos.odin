@@ -440,11 +440,16 @@ todo_state_color :: proc(state: Todo_State) -> Color {
 	case .Running:
 		return BLUE
 	case .Merged:
-		return GREEN
+		// Landed, and nothing about it wants a person: the green is left
+		// as a tint on grey so a row of merged cards is a quiet row. At
+		// full strength every finished card shone as hard as a card that
+		// had stopped to ask, and the eye went to the one thing that was
+		// over.
+		return color_mix(GREEN, FAINT, 0.7)
 	case .Done:
-		// Finished, but still on a branch of its own — the same green with
-		// the confidence taken out of it, because the work is not where
-		// anyone else can see it yet.
+		// Finished, but still on a branch of its own — greener than merged
+		// because the work is not where anyone else can see it yet, and
+		// someone still has to move it.
 		return color_mix(GREEN, MUTED, 0.5)
 	case .Failed:
 		return RED

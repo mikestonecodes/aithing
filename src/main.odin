@@ -746,7 +746,7 @@ app_paste_image :: proc(app: ^App, target: ^Editor, data: []byte, mime: string) 
 		return true
 	}
 	if len(app.attach) == cap(app.attach) {
-		app_status(app, "that is as many attachments as one message takes")
+		app_status(app, "that is as many attachments as one message takes", .Warn)
 		return true
 	}
 	a, made := attachment_make(&app.gpu, data, mime)

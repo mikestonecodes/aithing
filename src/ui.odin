@@ -255,7 +255,7 @@ RIPPLE_LIFE :: f32(0.75)
 // itself on every card the pointer passed over. What is wanted is the card
 // catching the light for a moment, so the colour is down to a breath and
 // the ring below is drawn thin inside a wide fade.
-TOUCH :: Color(0x16f0ece8)
+TOUCH :: Color(0x16e9f0f2)
 
 ui_ripple :: proc(ui: ^UI, key: u64, at: [2]f32, col: Color, size: f32) {
 	append(&ui.ripples, Ripple{key, at, ui.time, col, size})

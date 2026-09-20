@@ -170,7 +170,7 @@ build_poll :: proc(app: ^App) -> bool {
 	// Only a build that worked counts: one that failed has to be tried again
 	// on the next landing, even if nothing changed in between.
 	if ok do g_build.built = g_build.pending
-	if !ok do app_status(app, "build failed; see last-build.log")
+	if !ok do app_status(app, "build failed; see last-build.log", .Fail)
 	return true
 }
 
