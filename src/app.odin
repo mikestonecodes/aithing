@@ -11,21 +11,33 @@ import "core:time"
 // it every frame — except the transcript itself, which grows as events arrive.
 
 // Colours are packed the way the shader reads them: 0xAABBGGRR.
-BG :: Color(0xc8242626)
-PANEL :: Color(0xff2c2f30)
-PANEL_HI :: Color(0xff34383a)
-BORDER :: Color(0xff373b3d)
-TEXT :: Color(0xffe9f0f2)
-MUTED :: Color(0xff8c959a)
-FAINT :: Color(0xff62686d)
-ACCENT :: Color(0xff5777d9)
-ACCENT_DIM :: Color(0x805777d9)
-USER_BG :: Color(0xff303436)
-CODE_BG :: Color(0xff18191a)
-CODE_TEXT :: Color(0xffa0c4e8)
-GREEN :: Color(0xff69b07f)
-RED :: Color(0xff5a6ce0)
-AMBER :: Color(0xff5ac0e0)
+//
+// Three tiers, in the proportions a screen should show them: the cool slate
+// neutrals are most of every frame, the text ramp and the muted tile family
+// are the next third, and one warm accent is the last tenth. The palette
+// before this had a warm brown base under cool blue tiles, and the accent was
+// a coral one step away from the red that means failed — so a running card
+// and a failed one wore the same colour, and a thread of tools was a rainbow
+// of eight hues at full strength with nothing left over to mean "look here".
+// The gold that marks the answer stone is the same accent now, not a second
+// warm colour beside it.
+BG :: Color(0xc824201e)
+PANEL :: Color(0xff312c29)
+PANEL_HI :: Color(0xff3d3733)
+BORDER :: Color(0xff47403c)
+TEXT :: Color(0xfff0ece8)
+MUTED :: Color(0xffaaa098)
+FAINT :: Color(0xff746b64)
+ACCENT :: Color(0xff40acec)
+ACCENT_DIM :: Color(0x8040acec)
+USER_BG :: Color(0xff39332f)
+CODE_BG :: Color(0xff1b1816)
+CODE_TEXT :: Color(0xffe0cebe)
+GREEN :: Color(0xff7cb074)
+RED :: Color(0xff5c60e0)
+// Activity, not alarm: a running card is cool, so the warm accent is left to
+// mean the one thing that wants a person — a card that stopped to ask.
+BLUE :: Color(0xffd69e6e)
 
 CONTENT_MAX :: f32(880)
 

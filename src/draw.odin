@@ -15,7 +15,7 @@ import "core:unicode/utf8"
 PAD :: f32(16)
 // The composer's own ground: dark enough to read white text on, thin enough
 // that the desktop behind the window still shows through it.
-COMPOSER_BG :: Color(0x66202224)
+COMPOSER_BG :: Color(0x66221e1c)
 BLINK :: f32(0.55) // caret on/off, in seconds
 // How wide the block caret is where there is no character under it to take
 // its width from, as a fraction of the type size.
@@ -490,7 +490,7 @@ draw_box_edge :: proc(app: ^App, box: Rect, focused: bool, id: u64) {
 	on := ui_spring(ui, id, focused ? 1 : 0, 200, 11)
 	halo := clamp(on, 0, 1.4)
 	if halo > 0.01 do ui_rect(ui, {box.x - 6, box.y - 6, box.w + 12, box.h + 12}, color_alpha(ACCENT, 0.07 * halo), 20)
-	ui_rect(ui, box, color_mix(color_alpha(BORDER, 0.9), color_alpha(ACCENT, 0.35), clamp(on, 0, 1)), 14)
+	ui_rect(ui, box, color_mix(color_alpha(BORDER, 0.9), color_alpha(ACCENT, 0.12), clamp(on, 0, 1)), 14)
 }
 
 COMPOSER_PX :: f32(19)

@@ -384,7 +384,7 @@ rows_plan :: proc(app: ^App, input: json.Value, inner: f32) {
 		case "completed":
 			col, doing = GREEN, 2
 		case "in_progress":
-			col, doing = AMBER, 1
+			col, doing = ACCENT, 1
 		}
 		append(&app.rows, Row{kind = .Check, text = text, col = col, num = doing})
 	}
@@ -1189,7 +1189,7 @@ draw_code :: proc(ui: ^UI, text: string, x, y, max_x: f32, base, wash: Color, am
 		case .Str:
 			col = color_mix(TILE_READ, base, 0.3)
 		case .Num:
-			col = AMBER
+			col = color_mix(ACCENT, base, 0.35)
 		case .Punct:
 			col = color_mix(base, MUTED, 0.55)
 		case .Plain:

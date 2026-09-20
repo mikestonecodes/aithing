@@ -561,7 +561,7 @@ draw_card :: proc(app: ^App, card: Card, base: Rect) {
 		// on — which is exactly how it read. A card that stopped to ask
 		// something is the same: the question is the whole of what it wants.
 		note := app.notes[td.id]
-		note_col := state == .Failed ? RED : AMBER
+		note_col := state == .Failed ? RED : ACCENT
 		if note != "" && room > 40 {
 			buf: [192]u8
 			note = font_ellipsize(&ui.regular, note, 11.5, room, buf[:])

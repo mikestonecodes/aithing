@@ -372,7 +372,7 @@ draw_usage :: proc(app: ^App, full: Rect, strip: Rect) {
 // read as three grey rings of its own — a dial that looked full of something
 // when it was full of nothing.
 @(private = "file")
-TRACK :: Color(0xff141616)
+TRACK :: Color(0xff191614)
 
 // Where one window's ring sits, outermost first. The order is the only thing
 // that says which ring is which, and it is the order the popover lists them

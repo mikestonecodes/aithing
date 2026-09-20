@@ -76,7 +76,7 @@ scene_list :: proc(allocator := context.temp_allocator) -> string {
 // whatever is behind it — and a screenshot has nothing behind it. The same
 // colour, opaque, so the file is the picture rather than a picture of the
 // alpha channel.
-SHOT_BG :: Color(0xff242626)
+SHOT_BG :: Color(0xff24201e)
 
 // Frames spent letting the animations settle before the picture is taken.
 // Everything here eases toward a target and snaps once it is within a

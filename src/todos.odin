@@ -438,7 +438,7 @@ todo_state_label :: proc(state: Todo_State) -> string {
 todo_state_color :: proc(state: Todo_State) -> Color {
 	switch state {
 	case .Running:
-		return ACCENT
+		return BLUE
 	case .Merged:
 		return GREEN
 	case .Done:
@@ -449,7 +449,7 @@ todo_state_color :: proc(state: Todo_State) -> Color {
 	case .Failed:
 		return RED
 	case .Asked:
-		return AMBER
+		return ACCENT
 	case .Open:
 		return MUTED
 	}

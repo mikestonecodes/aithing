@@ -8,7 +8,7 @@ import "core:strings"
 // Every block of the chat is one tile, every tile is the same square, and the
 // squares run left to right until the row ends, turn, and run back. What a
 // turn did is one shape you take in at a glance: a row of blue is a turn that
-// read, a run of orange is a turn that changed things.
+// read, a run of rose is a turn that changed things.
 //
 // A tile carries a mark, not a sentence. The first go at this put the tool's
 // name and a line of its argument in every box, which meant every box was a
@@ -36,15 +36,20 @@ SNAKE_PAD :: f32(26)
 ANSWER_GAP :: f32(26) // between the gold stone and the answer hanging off it
 
 // The tile colours, in the shader's own 0xAABBGGRR. Each family of tools has
-// one, so a turn reads as a pattern before a single word of it is read.
-TILE_READ :: Color(0xffe8c49a)
-TILE_EDIT :: Color(0xff6ac0ea)
-TILE_RUN :: Color(0xff79c08a)
-TILE_FIND :: Color(0xffe092a8)
-TILE_WEB :: Color(0xffc8bc78)
-TILE_ANY :: Color(0xffa8a29c) // whatever the harness grew since this was written
-TILE_SAID :: Color(0xff9aa8ac)
-GOLD :: Color(0xff5ac8f0)
+// one, so a turn reads as a pattern before a single word of it is read — but
+// all of them are dusty, a third of the way to grey, because they are the
+// texture of a thread and not its point. At full strength the path was eight
+// hues shouting at once and the gold stone at the end was one more of them.
+TILE_READ :: Color(0xffcca486)
+TILE_EDIT :: Color(0xff7e88cc)
+TILE_RUN :: Color(0xff8aac80)
+TILE_FIND :: Color(0xffc892a0)
+TILE_WEB :: Color(0xffb4ac70)
+TILE_ANY :: Color(0xffa29892) // whatever the harness grew since this was written
+TILE_SAID :: Color(0xffb2aaa4)
+// The answer stone is the accent, not a gold of its own: what you said and
+// what came back are the two ends of the path, and one warm colour marks both.
+GOLD :: ACCENT
 
 // The mark on the stone. Drawn from rectangles and circles rather than from a
 // glyph: the font is a distance field of one alphabet, and a tool icon set is
