@@ -267,7 +267,7 @@ draw_capture :: proc(app: ^App, full: Rect) {
 	// like a letter, in the box you are already typing in.
 	inner_y := box.y + COMPOSER_PAD
 
-	text_w := composer_text_width(app, box.w)
+	text_w := box.w - COMPOSER_SIDE * 2
 	editor_layout_lines(ui, &app.capture, text_w, &ui.regular, COMPOSER_PX)
 	_, lines := editor_window(&app.capture, COMPOSER_LINES)
 	text_h := f32(lines) * (COMPOSER_PX * 1.5)
@@ -505,9 +505,10 @@ COMPOSER_LINES :: 8 // how tall the box grows before it starts scrolling
 COMPOSER_PAD :: f32(8) // inside the box, above the text and below it
 COMPOSER_SIDE :: f32(4) // the text inset from the left end of the line
 COMPOSER_ABOVE :: f32(6) // air between whatever is above and the box
-// Below the box, and what sits in it: the context readout, the way a form
-// field in a browser keeps its helper text under the field rather than in it.
-COMPOSER_BELOW :: f32(28)
+// Below the line, and what sits there: the two chips at the right and the
+// context readout at the left, the way a form field keeps its helper text
+// under the field rather than in it.
+COMPOSER_BELOW :: f32(40)
 COMPOSER_THUMB :: f32(72)
 
 // The box is exactly as tall as what goes in it, and this is the one place
@@ -518,24 +519,13 @@ COMPOSER_THUMB :: f32(72)
 // is no swap at all.
 strip_box_height :: proc(app: ^App, e: ^Editor, width: f32) -> f32 {
 	ui := &app.ui
-	editor_layout_lines(ui, e, composer_text_width(app, composer_width(width)), &ui.regular, COMPOSER_PX)
+	editor_layout_lines(ui, e, composer_width(width) - COMPOSER_SIDE * 2, &ui.regular, COMPOSER_PX)
 	_, lines := editor_window(e, COMPOSER_LINES)
 	return COMPOSER_PAD * 2 + f32(lines) * (COMPOSER_PX * 1.5)
 }
 
-// How wide the words in a box may run: up to the chips, which sit inside it
-// at the right-hand end the way a browser's box keeps its buttons at the end
-// of the line you type on. Worked out from the labels on the chips every time
-// it is asked, so the wrap and the chips cannot disagree about where the
-// chips are.
-composer_text_width :: proc(app: ^App, box_w: f32) -> f32 {
-	ui := &app.ui
-	chips := chip_width(ui, model_label[app.model]) + 8 + chip_width(ui, effort_label[app.effort])
-	return box_w - COMPOSER_SIDE - chips - 12
-}
-
-// The room the whole strip takes: the box, the air above it and the room
-// below it for the readout.
+// The room the whole strip takes: the box, the air above it and the row
+// under its line.
 strip_height :: proc(box_h: f32) -> f32 {
 	return box_h + COMPOSER_ABOVE + COMPOSER_BELOW
 }
@@ -608,7 +598,7 @@ draw_composer :: proc(app: ^App, r: Rect) {
 
 	// The text starts under the top padding and the box grows downward with it,
 	// so the first line never moves as you type and the chip row stays clear.
-	text_w := composer_text_width(app, box.w)
+	text_w := box.w - COMPOSER_SIDE * 2
 	editor_layout_lines(ui, &app.editor, text_w, &ui.regular, COMPOSER_PX)
 	_, lines := editor_window(&app.editor, COMPOSER_LINES)
 	text_h := f32(lines) * (COMPOSER_PX * 1.5)
@@ -707,8 +697,13 @@ draw_context :: proc(app: ^App, box: Rect) {
 	// reads as something having gone wrong.
 	tid := ui_id("context-in", at)
 	in_ := ui_anim(ui, tid, 1, 9)
-	y := box.y + box.h + 6
+	y := chips_y(box) + 1
 	r := Rect{box.x + COMPOSER_SIDE, y - 3, font_width(&ui.regular, label, 13) + 8, 20}
+	// The chips have the row by right — they are the two controls, this is a
+	// readout — so in a window too narrow for both it is the readout that goes.
+	// draw_chips wrote where the leftmost one ended up this frame, which is
+	// why this is drawn after it and not beside it.
+	if r.x + r.w > app.model_chip.x - 10 do return
 	ui_text(ui, &ui.regular, label, {r.x, y}, 13, color_alpha(FAINT, clamp(in_, 0, 1)))
 	// Rounded on screen, exact under the pointer: "24k" is the size and the
 	// figure is what you take to `/context` in the harness and compare.
@@ -936,6 +931,15 @@ draw_picker :: proc(
 	return
 }
 
+// Where the chips sit up and down: under the line, so the words have the
+// whole width of it. They sat on the last line of the words, at its right
+// end, which cut the line short by the width of two labels and put a pair of
+// buttons in the middle of what was being written. `y` is where a chip's
+// label is drawn, and the chip is drawn 5 above it and 26 tall.
+chips_y :: proc(box: Rect) -> f32 {
+	return box.y + box.h + 11
+}
+
 // The two controls the window has: which model answers and how hard it
 // thinks. Every box that starts work carries them — the composer inside a
 // thread and the box under the grid — because the moment the work is written
@@ -945,14 +949,6 @@ draw_picker :: proc(
 // This is also the one place the chip rects are written down. The picker
 // opens off them, and two boxes each keeping their own copy of where their
 // chips were is two popups to keep in step.
-// Where the chips sit up and down: on the last line of the words, so a box of
-// one line has them on the line you are typing on and a box that has grown
-// keeps them in its bottom corner. `y` is where a chip's label is drawn, and
-// the chip is drawn 5 above it and 26 tall.
-chips_y :: proc(box: Rect) -> f32 {
-	return box.y + box.h - COMPOSER_PAD - COMPOSER_PX * 0.75 - 8
-}
-
 @(private = "file")
 draw_chips :: proc(app: ^App, box: Rect, y: f32) {
 	ui := &app.ui
@@ -1004,10 +1000,6 @@ draw_pickers :: proc(app: ^App) {
 	}
 }
 
-chip_width :: proc(ui: ^UI, label: string) -> f32 {
-	return font_width(&ui.regular, label, 14) + 30
-}
-
 // A small text chip, right-aligned at `right`. Returns its left edge.
 //
 // `open` is whether the popup hanging off it is up, and it is the chip's own
@@ -1018,7 +1010,7 @@ chip_width :: proc(ui: ^UI, label: string) -> f32 {
 @(private = "file")
 draw_chip :: proc(app: ^App, id: u64, right, y: f32, label: string, open: bool) -> f32 {
 	ui := &app.ui
-	w := chip_width(ui, label)
+	w := font_width(&ui.regular, label, 14) + 30
 	r := Rect{right - w, y - 5, w, 26}
 	_, hovered := ui_invisible_button(ui, id, r)
 	// Eased rather than switched, so the chip and the popup it belongs to are
