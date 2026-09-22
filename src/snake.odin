@@ -558,12 +558,13 @@ draw_tile :: proc(app: ^App, t: Tile, r: Rect, open: bool, last: bool) {
 		return
 	}
 
-	// Every stone sits on the same slate and only the one the path ends on is
-	// filled with its colour. Each used to be tinted with its own family's,
-	// which is twenty coloured squares in a row with nothing to say which of
-	// them mattered; the marks still carry the family, and the fill is left
-	// to say where the thread has got to. A stone under the pointer still
-	// warms toward its colour, so the one being looked at is lit.
+	// Every stone is the same slate with a grey mark, and only the one the
+	// path ends on wears its colour. Each used to be tinted with its own
+	// family's, fill and mark both, which is twenty coloured squares in a row
+	// with nothing to say which of them mattered; the shape of the mark says
+	// the family, and the colour is left to say where the thread has got to.
+	// A stone under the pointer warms toward its colour, so the one being
+	// looked at is lit.
 	base := color_mix(PANEL, t.col, 0.2 * pop + 0.12 * live)
 	if last {
 		base = color_mix(PANEL, t.col, 0.16 + 0.2 * pop + 0.12 * live)
@@ -574,7 +575,8 @@ draw_tile :: proc(app: ^App, t: Tile, r: Rect, open: bool, last: bool) {
 	// The mark takes its size from the stone's width alone, so a stone
 	// wobbling taller than it is wide does not stretch the mark with it.
 	mark := Rect{cx - rr.w / 2, cy - rr.w / 2, rr.w, rr.w}
-	draw_icon(ui, t.icon, mark, color_alpha(t.col, (0.85 + 0.15 * pop) * born), base)
+	ink := last ? t.col : color_mix(MUTED, t.col, clamp(pop, 0, 1))
+	draw_icon(ui, t.icon, mark, color_alpha(ink, (0.85 + 0.15 * pop) * born), base)
 	// What a copy with nothing selected takes: the block itself, not the mark
 	// that stands for it.
 	ui_hover_text(ui, rr, t.kind == .Tool ? tool_hover(b) : block_text(b))
