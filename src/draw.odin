@@ -228,7 +228,7 @@ capture_height :: proc(app: ^App, width: f32) -> f32 {
 capture_box :: proc(app: ^App, full: Rect) -> Rect {
 	h := capture_height(app, full.w)
 	width := composer_width(full.w)
-	return {full.x + (full.w - width) / 2, full.y + full.h - h + 6, width, h - 18}
+	return {full.x + (full.w - width) / 2, full.y + full.h - h + COMPOSER_ABOVE, width, h - COMPOSER_ABOVE - COMPOSER_BELOW}
 }
 
 // Where the i'th picture in the box was drawn, which is wherever the words put
@@ -267,7 +267,7 @@ draw_capture :: proc(app: ^App, full: Rect) {
 	// like a letter, in the box you are already typing in.
 	inner_y := box.y + COMPOSER_PAD
 
-	text_w := box.w - COMPOSER_SIDE * 2
+	text_w := composer_text_width(app, box.w)
 	editor_layout_lines(ui, &app.capture, text_w, &ui.regular, COMPOSER_PX)
 	_, lines := editor_window(&app.capture, COMPOSER_LINES)
 	text_h := f32(lines) * (COMPOSER_PX * 1.5)
@@ -278,18 +278,16 @@ draw_capture :: proc(app: ^App, full: Rect) {
 	// can type, and a caret blinking in it says that already.
 	draw_editor(app, &app.capture, text_r, &ui.regular, COMPOSER_PX, focused, COMPOSER_LINES)
 
-	// The same band along the bottom the composer has, and the same two chips
-	// in the corner of it: what is typed here is what a card runs on, so the
-	// model is chosen where the card is written rather than inside a thread
-	// opened afterwards.
+	// The same two chips the composer has, in the same place: what is typed
+	// here is what a card runs on, so the model is chosen where the card is
+	// written rather than inside a thread opened afterwards.
 	//
-	// Nothing else sits in that band. It used to print what Enter would do —
-	// "enter · runs it", "enter · 3 cards, a thread each" — which is a line
-	// that says the same thing on every frame forever after it has been read
-	// once, and the cards it was warning about appear the moment Enter is
-	// pressed anyway.
-	chip_y := box.y + box.h - COMPOSER_CHIPS / 2 - 8
-	draw_chips(app, box, chip_y)
+	// Nothing else sits beside them. There used to be a line saying what Enter
+	// would do — "enter · runs it", "enter · 3 cards, a thread each" — which
+	// says the same thing on every frame forever after it has been read once,
+	// and the cards it was warning about appear the moment Enter is pressed
+	// anyway.
+	draw_chips(app, box, chips_y(box))
 }
 
 // --- the launcher ------------------------------------------------------------
@@ -479,14 +477,16 @@ launcher_confirm :: proc(app: ^App) {
 
 // --- composer ---------------------------------------------------------------
 
-// The edge of a box you can type in, which is a line under it and nothing
-// else. The boxes used to be filled panels with a border and a halo, cut out
-// of the window so the desktop blurred through — a slab at the bottom of the
-// window heavier than anything it was there to hold, and the one part of the
-// screen that is only ever a few words. The line is the box: a hairline at
-// rest that comes up under the pointer, and a stroke of the accent drawn out
-// from the middle when the caret arrives, on a spring so it overshoots the
-// ends a shade and settles. The box you are in is the box whose line is lit.
+// The edge of a box you can type in, which is a line under the words and
+// nothing else. The boxes were filled panels with a border and a halo — a
+// slab heavier than the few words it holds — and then an outline, which was
+// the same slab drawn in wire. The line sits right under the last line of
+// text with the chips on it at the right, so the words stand on something:
+// a line at the foot of a tall empty box, with the words and the chips
+// hanging in the band above it, read as three things floating near each
+// other rather than one field. A hairline at rest that comes up under the
+// pointer, and a stroke of the accent drawn out from the middle when the
+// caret arrives, on a spring so it overshoots the ends a shade and settles.
 @(private = "file")
 draw_box_edge :: proc(app: ^App, box: Rect, focused: bool, id: u64) {
 	ui := &app.ui
@@ -501,11 +501,13 @@ draw_box_edge :: proc(app: ^App, box: Rect, focused: bool, id: u64) {
 }
 
 COMPOSER_PX :: f32(19)
-COMPOSER_MIN :: f32(84)
 COMPOSER_LINES :: 8 // how tall the box grows before it starts scrolling
-COMPOSER_PAD :: f32(12) // inside the box, above the text and below it
-COMPOSER_CHIPS :: f32(36) // the band along the bottom holding the model chip
-COMPOSER_SIDE :: f32(4) // the text inset from either end of the line under it
+COMPOSER_PAD :: f32(8) // inside the box, above the text and below it
+COMPOSER_SIDE :: f32(4) // the text inset from the left end of the line
+COMPOSER_ABOVE :: f32(6) // air between whatever is above and the box
+// Below the box, and what sits in it: the context readout, the way a form
+// field in a browser keeps its helper text under the field rather than in it.
+COMPOSER_BELOW :: f32(28)
 COMPOSER_THUMB :: f32(72)
 
 // The box is exactly as tall as what goes in it, and this is the one place
@@ -516,16 +518,26 @@ COMPOSER_THUMB :: f32(72)
 // is no swap at all.
 strip_box_height :: proc(app: ^App, e: ^Editor, width: f32) -> f32 {
 	ui := &app.ui
-	inner := composer_width(width) - COMPOSER_SIDE * 2
-	editor_layout_lines(ui, e, inner, &ui.regular, COMPOSER_PX)
+	editor_layout_lines(ui, e, composer_text_width(app, composer_width(width)), &ui.regular, COMPOSER_PX)
 	_, lines := editor_window(e, COMPOSER_LINES)
-	return COMPOSER_PAD * 2 + f32(lines) * (COMPOSER_PX * 1.5) + COMPOSER_CHIPS
+	return COMPOSER_PAD * 2 + f32(lines) * (COMPOSER_PX * 1.5)
 }
 
-// The room the whole strip takes: the box plus the 6px of air above it and the
-// 12px below it that the draw insets by, and never less than the floor.
+// How wide the words in a box may run: up to the chips, which sit inside it
+// at the right-hand end the way a browser's box keeps its buttons at the end
+// of the line you type on. Worked out from the labels on the chips every time
+// it is asked, so the wrap and the chips cannot disagree about where the
+// chips are.
+composer_text_width :: proc(app: ^App, box_w: f32) -> f32 {
+	ui := &app.ui
+	chips := chip_width(ui, model_label[app.model]) + 8 + chip_width(ui, effort_label[app.effort])
+	return box_w - COMPOSER_SIDE - chips - 12
+}
+
+// The room the whole strip takes: the box, the air above it and the room
+// below it for the readout.
 strip_height :: proc(box_h: f32) -> f32 {
-	return max(box_h + 18, COMPOSER_MIN)
+	return box_h + COMPOSER_ABOVE + COMPOSER_BELOW
 }
 
 composer_box_height :: proc(app: ^App, width: f32) -> f32 {
@@ -553,7 +565,7 @@ draw_composer :: proc(app: ^App, r: Rect) {
 	width := composer_width(r.w)
 	x := r.x + (r.w - width) / 2
 
-	box := Rect{x, r.y + 6, width, r.h - 18}
+	box := Rect{x, r.y + COMPOSER_ABOVE, width, r.h - COMPOSER_ABOVE - COMPOSER_BELOW}
 	focused := app_focus(app) == .Composer
 	draw_box_edge(app, box, focused, ui_id("composer-edge"))
 
@@ -596,7 +608,7 @@ draw_composer :: proc(app: ^App, r: Rect) {
 
 	// The text starts under the top padding and the box grows downward with it,
 	// so the first line never moves as you type and the chip row stays clear.
-	text_w := box.w - COMPOSER_SIDE * 2
+	text_w := composer_text_width(app, box.w)
 	editor_layout_lines(ui, &app.editor, text_w, &ui.regular, COMPOSER_PX)
 	_, lines := editor_window(&app.editor, COMPOSER_LINES)
 	text_h := f32(lines) * (COMPOSER_PX * 1.5)
@@ -613,9 +625,8 @@ draw_composer :: proc(app: ^App, r: Rect) {
 	// button in the left of it, which is a second way to say what Ctrl+C
 	// already says, sitting in the box you are typing into and only there —
 	// on the grid, where cards actually run, it was never drawn at all.
-	chip_y := box.y + box.h - COMPOSER_CHIPS / 2 - 8
-	draw_chips(app, box, chip_y)
-	draw_context(app, box, chip_y)
+	draw_chips(app, box, chips_y(box))
+	draw_context(app, box)
 
 	// Last, so it is over the box rather than under it.
 	grow := ui_spring(ui, ui_id("composer-peek"), peek_at >= 0 ? 1 : 0, 320, 18)
@@ -685,7 +696,7 @@ draw_image_peek :: proc(app: ^App, thumb: Rect, a: Attachment, grow: f32) {
 // from the last turn is a measurement of a thread that has since been added
 // to.
 @(private = "file")
-draw_context :: proc(app: ^App, box: Rect, y: f32) {
+draw_context :: proc(app: ^App, box: Rect) {
 	ui := &app.ui
 	at := turn_here(app)
 	if at < 0 || app.turns[at].tokens <= 0 do return
@@ -696,13 +707,9 @@ draw_context :: proc(app: ^App, box: Rect, y: f32) {
 	// reads as something having gone wrong.
 	tid := ui_id("context-in", at)
 	in_ := ui_anim(ui, tid, 1, 9)
-	r := Rect{box.x + COMPOSER_SIDE, y - 5, font_width(&ui.regular, label, 13) + 8, 26}
-	// The chips have the band by right — they are the two controls, this is a
-	// readout — so in a window too narrow for both it is the readout that goes.
-	// draw_chips wrote where the leftmost one ended up this frame, which is
-	// why this is drawn after it and not beside it.
-	if r.x + r.w > app.model_chip.x - 10 do return
-	ui_text(ui, &ui.regular, label, {r.x, y + 1}, 13, color_alpha(FAINT, clamp(in_, 0, 1)))
+	y := box.y + box.h + 6
+	r := Rect{box.x + COMPOSER_SIDE, y - 3, font_width(&ui.regular, label, 13) + 8, 20}
+	ui_text(ui, &ui.regular, label, {r.x, y}, 13, color_alpha(FAINT, clamp(in_, 0, 1)))
 	// Rounded on screen, exact under the pointer: "24k" is the size and the
 	// figure is what you take to `/context` in the harness and compare.
 	ui_hover_text(ui, r, fmt.tprintf("%d tokens handed to the model on the last message", n))
@@ -938,6 +945,14 @@ draw_picker :: proc(
 // This is also the one place the chip rects are written down. The picker
 // opens off them, and two boxes each keeping their own copy of where their
 // chips were is two popups to keep in step.
+// Where the chips sit up and down: on the last line of the words, so a box of
+// one line has them on the line you are typing on and a box that has grown
+// keeps them in its bottom corner. `y` is where a chip's label is drawn, and
+// the chip is drawn 5 above it and 26 tall.
+chips_y :: proc(box: Rect) -> f32 {
+	return box.y + box.h - COMPOSER_PAD - COMPOSER_PX * 0.75 - 8
+}
+
 @(private = "file")
 draw_chips :: proc(app: ^App, box: Rect, y: f32) {
 	ui := &app.ui
@@ -989,6 +1004,10 @@ draw_pickers :: proc(app: ^App) {
 	}
 }
 
+chip_width :: proc(ui: ^UI, label: string) -> f32 {
+	return font_width(&ui.regular, label, 14) + 30
+}
+
 // A small text chip, right-aligned at `right`. Returns its left edge.
 //
 // `open` is whether the popup hanging off it is up, and it is the chip's own
@@ -999,7 +1018,7 @@ draw_pickers :: proc(app: ^App) {
 @(private = "file")
 draw_chip :: proc(app: ^App, id: u64, right, y: f32, label: string, open: bool) -> f32 {
 	ui := &app.ui
-	w := font_width(&ui.regular, label, 14) + 30
+	w := chip_width(ui, label)
 	r := Rect{right - w, y - 5, w, 26}
 	_, hovered := ui_invisible_button(ui, id, r)
 	// Eased rather than switched, so the chip and the popup it belongs to are
