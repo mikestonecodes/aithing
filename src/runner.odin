@@ -59,7 +59,7 @@ Model :: enum {
 model_flag := [Model]string {
 	.Haiku  = "claude-haiku-4-5",
 	.Sonnet = "claude-sonnet-5",
-	.Opus   = "claude-opus-5",
+	.Opus   = "claude-opus-5-5",
 	.Fable  = "claude-fable-5-1",
 }
 
@@ -75,7 +75,7 @@ model_short := [Model]string {
 model_label := [Model]string {
 	.Haiku  = "Haiku 4.5",
 	.Sonnet = "Sonnet 5",
-	.Opus   = "Opus 5",
+	.Opus   = "Opus 5.5",
 	.Fable  = "Fable 5.1",
 }
 
