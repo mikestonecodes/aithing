@@ -426,11 +426,13 @@ draw_pipes :: proc(app: ^App, top: f32, view: Rect) {
 		ay := a.r.y + top + a.r.h / 2
 		by := b.r.y + top + b.r.h / 2
 		if max(ay, by) < view.y - TILE || min(ay, by) > view.y + view.h + TILE do continue
-		// Grey, like the stones it runs between. It was the two stones' colours
-		// mixed, which strung a band of tints along a path whose stones had
-		// all gone grey — the colour on screen is for the stone the path ends
-		// on, and the wire into that one is where the gold starts.
+		// Grey, like the stones it runs between, except the last length into
+		// the stone the path ends on, which wears that stone's colour. It was
+		// the two stones' colours mixed, which strung a band of tints along a
+		// path whose stones had all gone grey: the colour on screen is for
+		// where the thread has got to, and the wire leads the eye into it.
 		col := color_alpha(MUTED, 0.35)
+		if i + 1 == len(app.snake) - 1 do col = color_alpha(b.col, 0.6)
 		if abs(ay - by) < 1 {
 			back := b.r.x < a.r.x
 			x0 := back ? b.r.x + b.r.w : a.r.x + a.r.w
