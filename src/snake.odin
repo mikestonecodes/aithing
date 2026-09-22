@@ -339,10 +339,10 @@ draw_transcript :: proc(app: ^App, r: Rect) {
 	top = r.y + PAD - app.transcript.offset
 	draw_pipes(app, top, r)
 
-	for tile in app.snake {
+	for tile, i in app.snake {
 		sr := Rect{tile.r.x, tile.r.y + top, tile.r.w, tile.r.h}
 		if sr.y > r.y + r.h || sr.y + sr.h < r.y do continue
-		draw_tile(app, tile, sr, tile.ref == open && !tile.answer)
+		draw_tile(app, tile, sr, tile.ref == open && !tile.answer, i == len(app.snake) - 1)
 	}
 
 	// A turn in flight says so on the path itself — the stone it is working
@@ -474,9 +474,10 @@ wire_param :: proc(at: int, back: bool) -> f32 {
 }
 
 // One stone. `open` is whether it is the one whose panel is up — under the
-// pointer, or pressed to keep it open once the pointer has gone.
+// pointer, or pressed to keep it open once the pointer has gone. `last` is
+// whether it is where the path ends.
 @(private = "file")
-draw_tile :: proc(app: ^App, t: Tile, r: Rect, open: bool) {
+draw_tile :: proc(app: ^App, t: Tile, r: Rect, open: bool, last: bool) {
 	ui := &app.ui
 	b := chat_block(&app.chat, t.ref)
 	if b == nil do return
@@ -557,9 +558,18 @@ draw_tile :: proc(app: ^App, t: Tile, r: Rect, open: bool) {
 		return
 	}
 
-	base := color_mix(PANEL, t.col, 0.16 + 0.2 * pop + 0.12 * live)
-	if t.answer do base = color_mix(PANEL, GOLD, 0.3 + 0.25 * pop)
-	if t.user do base = color_mix(USER_BG, ACCENT, 0.14 + 0.24 * pop)
+	// Every stone sits on the same slate and only the one the path ends on is
+	// filled with its colour. Each used to be tinted with its own family's,
+	// which is twenty coloured squares in a row with nothing to say which of
+	// them mattered; the marks still carry the family, and the fill is left
+	// to say where the thread has got to. A stone under the pointer still
+	// warms toward its colour, so the one being looked at is lit.
+	base := color_mix(PANEL, t.col, 0.2 * pop + 0.12 * live)
+	if last {
+		base = color_mix(PANEL, t.col, 0.16 + 0.2 * pop + 0.12 * live)
+		if t.answer do base = color_mix(PANEL, GOLD, 0.3 + 0.25 * pop)
+		if t.user do base = color_mix(USER_BG, ACCENT, 0.14 + 0.24 * pop)
+	}
 	ui_quad(ui, rr, {0, 0}, {1, 1}, color_alpha(base, born), WHITE_TEX, TILE_ROUND, .Pop, lift)
 	// The mark takes its size from the stone's width alone, so a stone
 	// wobbling taller than it is wide does not stretch the mark with it.

@@ -245,12 +245,12 @@ shot_run :: proc(path: string, scene: Scene, width, height: int) -> bool {
 	return true
 }
 
-// The window is see-through in places on purpose — the composer and the
-// launcher punch their alpha out so the compositor can blur the desktop
+// The window is see-through in places on purpose — a stone's panel and a
+// pasted picture's peek punch their alpha out so the compositor can blur the desktop
 // through them (see ui_punch) — and a file has no desktop behind it. This puts
 // the window's own colour there instead, which is what a compositor would do
 // minus the blur. Without it those panels come out as holes, and a viewer that
-// paints transparency white turns the composer into a white slab.
+// paints transparency white turns them into white slabs.
 //
 // The blending writes premultiplied colour, so the background goes under it
 // rather than being mixed with it.

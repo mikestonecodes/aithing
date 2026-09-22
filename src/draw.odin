@@ -258,7 +258,6 @@ draw_capture :: proc(app: ^App, full: Rect) {
 	if ui.pressed && ui_hovered(ui, box) do app.on_cards = false
 
 	focused := app_focus(app) == .Capture
-	ui_punch(ui, box, COMPOSER_BG, 14)
 	draw_box_edge(app, box, focused, ui_id("capture-edge"))
 	if ui_hovered(ui, box) do ui.cursor_text = true
 
@@ -480,17 +479,25 @@ launcher_confirm :: proc(app: ^App) {
 
 // --- composer ---------------------------------------------------------------
 
-// The edge of a box you can type in. The accent comes on with a spring when
-// the caret arrives, so it flares a shade past its colour and settles, and a
-// wide soft halo comes up under it: the box you are in is the box that is
-// lit, and it says so with a small movement rather than a switch.
+// The edge of a box you can type in, which is a line under it and nothing
+// else. The boxes used to be filled panels with a border and a halo, cut out
+// of the window so the desktop blurred through — a slab at the bottom of the
+// window heavier than anything it was there to hold, and the one part of the
+// screen that is only ever a few words. The line is the box: a hairline at
+// rest that comes up under the pointer, and a stroke of the accent drawn out
+// from the middle when the caret arrives, on a spring so it overshoots the
+// ends a shade and settles. The box you are in is the box whose line is lit.
 @(private = "file")
 draw_box_edge :: proc(app: ^App, box: Rect, focused: bool, id: u64) {
 	ui := &app.ui
+	hover := ui_anim(ui, id + 1, ui_hovered(ui, box) ? 1 : 0, 14)
+	y := box.y + box.h
+	ui_rect(ui, {box.x, y - 1, box.w, 1}, color_mix(color_alpha(MUTED, 0.35), color_alpha(MUTED, 0.7), hover), 0)
 	on := ui_spring(ui, id, focused ? 1 : 0, 200, 11)
-	halo := clamp(on, 0, 1.4)
-	if halo > 0.01 do ui_rect(ui, {box.x - 6, box.y - 6, box.w + 12, box.h + 12}, color_alpha(ACCENT, 0.07 * halo), 20)
-	ui_rect(ui, box, color_mix(color_alpha(BORDER, 0.9), color_alpha(ACCENT, 0.12), clamp(on, 0, 1)), 14)
+	if on <= 0.01 do return
+	half := box.w / 2 * clamp(on, 0, 1.04)
+	cx := box.x + box.w / 2
+	ui_rect(ui, {cx - half, y - 1.5, half * 2, 2}, ACCENT, 1)
 }
 
 COMPOSER_PX :: f32(19)
@@ -498,7 +505,7 @@ COMPOSER_MIN :: f32(84)
 COMPOSER_LINES :: 8 // how tall the box grows before it starts scrolling
 COMPOSER_PAD :: f32(12) // inside the box, above the text and below it
 COMPOSER_CHIPS :: f32(36) // the band along the bottom holding the model chip
-COMPOSER_SIDE :: f32(18) // the text inset from either edge of the box
+COMPOSER_SIDE :: f32(4) // the text inset from either end of the line under it
 COMPOSER_THUMB :: f32(72)
 
 // The box is exactly as tall as what goes in it, and this is the one place
@@ -548,10 +555,6 @@ draw_composer :: proc(app: ^App, r: Rect) {
 
 	box := Rect{x, r.y + 6, width, r.h - 18}
 	focused := app_focus(app) == .Composer
-	// What you are about to say sits over the desktop, not over the app: the
-	// box is cut out of everything drawn behind it and filled with a colour
-	// too thin to hide what the compositor blurs through the window.
-	ui_punch(ui, box, COMPOSER_BG, 14)
 	draw_box_edge(app, box, focused, ui_id("composer-edge"))
 
 	if ui_hovered(ui, box) do ui.cursor_text = true
@@ -563,7 +566,7 @@ draw_composer :: proc(app: ^App, r: Rect) {
 	peek_at := -1
 	if len(app.attach) > 0 {
 		thumb := COMPOSER_THUMB
-		tx := box.x + 14
+		tx := box.x + COMPOSER_SIDE
 		for i := 0; i < len(app.attach); i += 1 {
 			a := &app.attach[i]
 			tr := Rect{tx, inner_y, thumb, thumb}
@@ -661,8 +664,8 @@ draw_image_peek :: proc(app: ^App, thumb: Rect, a: Attachment, grow: f32) {
 	ui_push_zoom(ui, sc, {ax * (1 - sc), ay * (1 - sc)})
 	defer ui_pop_zoom(ui)
 
-	// The same ground the boxes stand on, cut out of the window: what is
-	// behind the picture is the desktop, not the transcript it is covering.
+	// Cut out of the window: what is behind the picture is the desktop, not
+	// the transcript it is covering.
 	ui_punch(ui, {box.x - 7, box.y - 7, box.w + 14, box.h + 14}, COMPOSER_BG, 12)
 	ui_image(ui, box, a.tex, 8)
 }
@@ -943,7 +946,7 @@ draw_chips :: proc(app: ^App, box: Rect, y: f32) {
 	// this one — the two controls the window has, under an opaque readout,
 	// with their picker opening behind it. The dial that replaced it stands in
 	// the other corner, so there is nothing here to be kept off.
-	right := box.x + box.w - 12
+	right := box.x + box.w
 	// The model reads first, left to right: it is the choice that decides
 	// what answers, and effort is a setting on top of it. They were the other
 	// way round because the row is laid out from its right edge, which is a
@@ -1013,7 +1016,9 @@ draw_chip :: proc(app: ^App, id: u64, right, y: f32, label: string, open: bool) 
 	ui_push_clip(ui, d)
 	ui_draw_ripples(ui, id)
 	ui_pop_clip(ui)
-	ui_circle(ui, {r.x + 12, r.y + 13}, 3.5 + up, color_mix(ACCENT, TEXT, lit))
+	// Grey at rest: the accent is for the chip whose picker is up, and a dot
+	// that was always lit could not say which one that was.
+	ui_circle(ui, {r.x + 12, r.y + 13}, 3.5 + up, color_mix(FAINT, TEXT, lit))
 	ui_text(ui, &ui.regular, label, {r.x + 21, y}, 14, color_mix(hovered ? TEXT : MUTED, TEXT, lit))
 	return r.x
 }
