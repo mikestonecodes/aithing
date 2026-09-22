@@ -502,13 +502,13 @@ draw_box_edge :: proc(app: ^App, box: Rect, focused: bool, id: u64) {
 
 COMPOSER_PX :: f32(19)
 COMPOSER_LINES :: 8 // how tall the box grows before it starts scrolling
-COMPOSER_PAD :: f32(8) // inside the box, above the text and below it
+COMPOSER_PAD :: f32(12) // inside the box, above the text and below it
 COMPOSER_SIDE :: f32(4) // the text inset from the left end of the line
 COMPOSER_ABOVE :: f32(6) // air between whatever is above and the box
 // Below the line, and what sits there: the two chips at the right and the
 // context readout at the left, the way a form field keeps its helper text
 // under the field rather than in it.
-COMPOSER_BELOW :: f32(40)
+COMPOSER_BELOW :: f32(48)
 COMPOSER_THUMB :: f32(72)
 
 // The box is exactly as tall as what goes in it, and this is the one place
@@ -937,7 +937,7 @@ draw_picker :: proc(
 // buttons in the middle of what was being written. `y` is where a chip's
 // label is drawn, and the chip is drawn 5 above it and 26 tall.
 chips_y :: proc(box: Rect) -> f32 {
-	return box.y + box.h + 11
+	return box.y + box.h + 15
 }
 
 // The two controls the window has: which model answers and how hard it
