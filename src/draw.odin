@@ -2,6 +2,7 @@ package aithing
 
 import "core:fmt"
 import "core:math"
+import "core:os"
 import "core:time"
 import "core:slice"
 import "core:strings"
@@ -299,6 +300,10 @@ Hit :: struct {
 	name:    string,
 	sub:     string,
 	count:   int,
+	// A project that is not there yet: choosing the row makes the directory
+	// before narrowing to it. cwd is where it will be, and empty while no
+	// name has been typed.
+	new:     bool,
 }
 
 LAUNCH_ROWS :: 8
@@ -351,15 +356,38 @@ launcher_hits :: proc(app: ^App) -> []Hit {
 		seen[home] = len(out)
 		append(&out, Hit{session = -1, cwd = home, name = base_name(home), sub = "project", count = 1})
 	}
+	// Last, and kept on screen whatever else is found: a row at the bottom
+	// is only ever reached on purpose, and Enter on whatever came first still
+	// opens what was searched for.
+	made, has_made := launcher_new_project(app, homes, query)
+	rows := LAUNCH_ROWS - (has_made ? 1 : 0)
 	// Threads: the filtered list is already in newest-first order and already
 	// matches the query, archived and abandoned ones included.
 	for i in app_visible(app) {
-		if len(out) >= LAUNCH_ROWS do break
+		if len(out) >= rows do break
 		s := &app.sessions[i]
 		append(&out, Hit{session = i, name = s.title, sub = base_name(s.cwd)})
 	}
-	if len(out) > LAUNCH_ROWS do resize(&out, LAUNCH_ROWS)
+	if len(out) > rows do resize(&out, rows)
+	if has_made do append(&out, made)
 	return out[:]
+}
+
+// The row that makes a project. With nothing typed it is there to say it can
+// be done, and says what it wants; with a name typed it says where the
+// project will go. Not offered for a name some project already has.
+@(private = "file")
+launcher_new_project :: proc(app: ^App, homes: Project_Homes, query: string) -> (Hit, bool) {
+	if query == "" do return Hit{session = -1, new = true, name = "new project", sub = "type its name"}, true
+	path, ok := new_project_path(app, homes, query)
+	if !ok || project_named(app, base_name(path)) do return {}, false
+	where_ := path
+	if home := os.get_env("HOME", context.temp_allocator); home != "" && strings.has_prefix(path, home) {
+		where_ = strings.concatenate({"~", path[len(home):]}, context.temp_allocator)
+	}
+	if os.exists(path) do where_ = strings.concatenate({where_, ", already there"}, context.temp_allocator)
+	name := strings.concatenate({"new project  ", base_name(path)}, context.temp_allocator)
+	return Hit{session = -1, new = true, cwd = path, name = name, sub = where_}, true
 }
 
 // Type big enough to read from across the room: the query, and under it what
@@ -453,6 +481,15 @@ draw_launcher :: proc(app: ^App, full: Rect) {
 
 // Choosing a row: a project narrows the grid, a thread opens.
 launcher_take :: proc(app: ^App, hit: Hit) {
+	if hit.new {
+		// Nothing typed yet: the menu stays up with the caret in it, which
+		// is where the name goes.
+		if hit.cwd == "" do return
+		if why := project_create(hit.cwd); why != "" {
+			app_status(app, why, .Fail)
+			return
+		}
+	}
 	if hit.session < 0 {
 		canvas_filter_project(app, hit.cwd)
 		app.overlay = .None

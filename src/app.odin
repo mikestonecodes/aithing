@@ -2,6 +2,7 @@ package aithing
 
 import "core:fmt"
 import "core:os"
+import "core:path/filepath"
 import "core:slice"
 import "core:strings"
 import "core:time"
@@ -1784,6 +1785,65 @@ project_home_beats :: proc(a: string, a_uses: int, b: string, b_uses: int) -> bo
 project_home :: proc(homes: Project_Homes, cwd: string) -> string {
 	if home, ok := homes[base_name(cwd)]; ok do return home
 	return cwd
+}
+
+// Where a project typed into the launcher is made: beside the projects already
+// there, in the directory most of them share. Asked of the projects rather than
+// of the one you are in, because being narrowed to a folder of recordings is
+// not a reason for the next repository to be made among the recordings.
+projects_parent :: proc(app: ^App, homes: Project_Homes) -> string {
+	root := worktree_root()
+	seen := make(map[string]bool, context.temp_allocator)
+	parents := make(map[string]int, context.temp_allocator)
+	count :: proc(root: string, homes: Project_Homes, seen: ^map[string]bool, parents: ^map[string]int, cwd: string) {
+		if cwd == "" || worktree_card_under(root, cwd) != "" do return
+		home := project_home(homes, cwd)
+		if home in seen do return
+		seen[home] = true
+		parents[filepath.dir(home)] += 1
+	}
+	for s in app.sessions do count(root, homes, &seen, &parents, s.cwd)
+	for td in app.todos.list do count(root, homes, &seen, &parents, td.cwd)
+	best, most := "", 0
+	for dir, n in parents {
+		if n > most || (n == most && dir < best) do best, most = dir, n
+	}
+	if best == "" do return os.get_env("HOME", context.temp_allocator)
+	return best
+}
+
+// The directory a new project called `typed` would be, or false when what is
+// typed is not a name for one. A bare name goes beside the other projects; a
+// path starting at / or ~ goes where it says. "new project" in front is
+// dropped, because it is what the row says and so what gets typed at it.
+new_project_path :: proc(app: ^App, homes: Project_Homes, typed: string) -> (path: string, ok: bool) {
+	name := strings.trim_space(typed)
+	if len(name) >= len("new project") && strings.equal_fold(name[:len("new project")], "new project") {
+		name = strings.trim_space(name[len("new project"):])
+	}
+	if name == "" || name == "." || name == ".." do return "", false
+	switch {
+	case strings.has_prefix(name, "~/"):
+		path, _ = filepath.join({os.get_env("HOME", context.temp_allocator), name[2:]}, context.temp_allocator)
+	case strings.has_prefix(name, "/"):
+		path, _ = filepath.clean(name, context.temp_allocator)
+	case strings.contains_rune(name, '/'):
+		return "", false
+	case:
+		path, _ = filepath.join({projects_parent(app, homes), name}, context.temp_allocator)
+	}
+	return path, base_name(path) != "" && path != "/"
+}
+
+// Whether some project already goes by `name`. A project is its name (see
+// project_homes), so a new one called the same would be the old one again:
+// the launcher offers the old one's row instead of a row that makes a
+// directory nobody will ever see apart from it.
+project_named :: proc(app: ^App, name: string) -> bool {
+	root := worktree_root()
+	for s in app.sessions do if s.cwd != "" && worktree_card_under(root, s.cwd) == "" && base_name(s.cwd) == name do return true
+	for td in app.todos.list do if td.cwd != "" && base_name(td.cwd) == name do return true
+	return false
 }
 
 // How many projects the grid is showing, and which one when it is showing

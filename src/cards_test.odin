@@ -2228,3 +2228,48 @@ two_directories_named_alike_are_one_section :: proc(t: ^testing.T) {
 	for card in app.canvas.cards do if card.head do heads += 1
 	testing.expect_value(t, heads, 2)
 }
+
+// A name typed into the launcher that no project has is offered as a new
+// one, beside the projects already there; taking it makes a repository with a
+// commit in it — so the first card has a HEAD to cut its tree from — and
+// narrows the grid to it, box and all.
+@(test)
+a_new_project_is_made_from_the_launcher :: proc(t: ^testing.T) {
+	ROOT :: "/tmp/aithing-test-new"
+	os.remove_all(ROOT)
+	defer os.remove_all(ROOT)
+	scratch_dir(t)
+	app := scratch_app()
+	defer scratch_free(app)
+	sessions := make([]Session, 3)
+	sessions[0] = fake_session("a1", "one")
+	sessions[0].cwd = ROOT + "/Source/game"
+	sessions[1] = fake_session("b1", "two")
+	sessions[1].cwd = ROOT + "/Source/tools"
+	sessions[2] = fake_session("c1", "three")
+	sessions[2].cwd = ROOT + "/Videos/clips"
+	app.sessions = sessions
+
+	app_launcher(app, true)
+	hits := launcher_hits(app)
+	testing.expect_value(t, hits[len(hits) - 1].new, true)
+
+	// A name some project already has is that project, not a new one.
+	editor_set_text(&app.search, "game")
+	hits = launcher_hits(app)
+	for h in hits do testing.expect_value(t, h.new, false)
+
+	editor_set_text(&app.search, "new project fresh")
+	hits = launcher_hits(app)
+	last := hits[len(hits) - 1]
+	testing.expect_value(t, last.new, true)
+	testing.expect_value(t, last.cwd, ROOT + "/Source/fresh")
+
+	launcher_take(app, last)
+	testing.expect_value(t, app.overlay, Overlay.None)
+	testing.expect_value(t, app.canvas.project, ROOT + "/Source/fresh")
+	testing.expect_value(t, app_focus(app), Focus.Capture)
+	testing.expect_value(t, app_project(app), ROOT + "/Source/fresh")
+	state, _, _, err := os.process_exec({command = {"git", "-C", ROOT + "/Source/fresh", "rev-parse", "--verify", "HEAD"}}, context.temp_allocator)
+	testing.expect(t, err == nil && state.exit_code == 0, "the new project has a commit to cut a card's tree from")
+}

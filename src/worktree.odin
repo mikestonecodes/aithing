@@ -574,3 +574,18 @@ git :: proc(cwd: string, args: []string) -> (ok: bool, msg: string) {
 	if said == "" do said = strings.trim_space(string(outs))
 	return false, said
 }
+
+// Makes the directory a project typed into the launcher lives in, and makes it
+// a repository with one commit in it. The commit is the point: a card's tree
+// is cut from HEAD, and a repository with no commits has none, so a project
+// made with `git init` alone ran its first card in the project itself with
+// git's complaint about an unborn branch on it. A directory that is already
+// there is left exactly as it is — it is somebody's, and it becomes a project
+// by being narrowed to, not by being written into.
+project_create :: proc(path: string) -> (why: string) {
+	if os.exists(path) do return ""
+	if err := os.make_directory_all(path); err != nil do return fmt.tprintf("cannot make %s: %v", path, err)
+	if ok, msg := git(path, {"init", "--quiet"}); !ok do return one_line(msg, 160)
+	if ok, msg := git(path, {"commit", "--quiet", "--allow-empty", "-m", "start"}); !ok do return one_line(msg, 160)
+	return ""
+}
