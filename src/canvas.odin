@@ -1,7 +1,6 @@
 package aithing
 
 import "core:math"
-import "core:path/filepath"
 import "core:slice"
 import "core:strings"
 
@@ -46,7 +45,7 @@ Card :: struct {
 	r:     Rect, // in content space: add the scroll offset to place it
 	head:  bool, // a section header rather than a card
 	cwd:   string, // the project a header names, whole — the label is read off
-	// it with filepath.base. It used to hold the base name alone, and the
+	// it with project_label. It used to hold the base name alone, and the
 	// spring that carries a header to its row is keyed on it: two projects
 	// with the same last component — Source/toomanymachines and
 	// Videos/toomanymachines — shared the key, so each frame asked one spring
@@ -381,7 +380,7 @@ draw_ghosts :: proc(app: ^App, view: Rect) {
 @(private = "file")
 draw_section_head :: proc(app: ^App, card: Card, r: Rect) {
 	ui := &app.ui
-	ui_text(ui, &ui.bold, filepath.base(card.cwd), {r.x, r.y + 14}, 22, TEXT)
+	ui_text(ui, &ui.bold, project_label(app, card.cwd), {r.x, r.y + 14}, 22, TEXT)
 	ui_rect(ui, {r.x, r.y + r.h - 9, r.w, 1}, color_alpha(BORDER, 0.7))
 }
 

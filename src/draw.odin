@@ -189,7 +189,7 @@ draw_project_head :: proc(app: ^App, full: Rect) {
 	hid := ui_id(name, 12)
 	ui_spring_seed(ui, hid, 0)
 	in_ := ui_spring(ui, hid, 1, 200, 12)
-	ui_text(ui, &ui.bold, base_name(name), {full.x + GRID_PAD - (1 - in_) * 18, full.y + 20}, 21, color_alpha(TEXT, clamp(in_, 0, 1)))
+	ui_text(ui, &ui.bold, project_label(app, name), {full.x + GRID_PAD - (1 - in_) * 18, full.y + 20}, 21, color_alpha(TEXT, clamp(in_, 0, 1)))
 }
 
 // --- the box under the grid ---------------------------------------------------
@@ -347,14 +347,14 @@ launcher_hits :: proc(app: ^App) -> []Hit {
 		}
 		if len(seen) >= LAUNCH_PROJECTS do continue
 		seen[s.cwd] = len(out)
-		append(&out, Hit{session = -1, cwd = s.cwd, name = base_name(s.cwd), sub = "project", count = 1})
+		append(&out, Hit{session = -1, cwd = s.cwd, name = project_label(app, s.cwd), sub = "project", count = 1})
 	}
 	// Threads: the filtered list is already in newest-first order and already
 	// matches the query, archived and abandoned ones included.
 	for i in app_visible(app) {
 		if len(out) >= LAUNCH_ROWS do break
 		s := &app.sessions[i]
-		append(&out, Hit{session = i, name = s.title, sub = base_name(s.cwd)})
+		append(&out, Hit{session = i, name = s.title, sub = project_label(app, s.cwd)})
 	}
 	if len(out) > LAUNCH_ROWS do resize(&out, LAUNCH_ROWS)
 	return out[:]

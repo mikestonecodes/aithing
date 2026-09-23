@@ -1728,6 +1728,38 @@ base_name :: proc(path: string) -> string {
 	return path
 }
 
+// What a project is called on screen: the last part of its path, and the one
+// before that too when another project ends the same way. ~/Source/toomanymachines
+// and ~/Videos/toomanymachines are two directories — a repo, and the folder its
+// recordings land in, where threads were run to cut them — and with the base
+// name alone the grid and the launcher each showed two sections called
+// toomanymachines with nothing to say which was which, which read as one
+// project split in two. Worked out on read from the threads and the cards, so
+// a name picks up its parent the frame a namesake appears and drops it the
+// frame the namesake goes.
+project_label :: proc(app: ^App, cwd: string) -> string {
+	name := base_name(cwd)
+	namesake := false
+	for s in app.sessions {
+		if s.cwd != cwd && base_name(s.cwd) == name {
+			namesake = true
+			break
+		}
+	}
+	if !namesake {
+		for td in app.todos.list {
+			if td.cwd != cwd && base_name(td.cwd) == name {
+				namesake = true
+				break
+			}
+		}
+	}
+	if !namesake do return name
+	parent := base_name(cwd[:max(len(cwd) - len(name) - 1, 0)])
+	if parent == "" do return name
+	return fmt.tprintf("%s/%s", parent, name)
+}
+
 // How many projects the grid is showing, and which one when it is showing
 // exactly one. The heading over the grid and the names over the sections are
 // two answers to the same question — what is on screen — and they used to
