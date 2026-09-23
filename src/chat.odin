@@ -60,6 +60,11 @@ Line :: struct {
 	// written by the wrap that made the line and read by md_draw_line, so
 	// there is one answer to what face a line starts in and not two.
 	pen:    Span_Pen,
+	// On a line of fenced code, the whole of the fence it is in, as it was
+	// written: Super+C over any line of a command copies the command. The
+	// hover used to be the whole answer, so a command read off a reply could
+	// only be had by copying the reply and cutting the prose away from it.
+	code:   string,
 }
 
 Line_Style :: enum {

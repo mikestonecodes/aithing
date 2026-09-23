@@ -127,6 +127,7 @@ md_layout :: proc(ui: ^UI, b: ^Block, width: f32) {
 	clear(&b.lines)
 
 	in_code := false
+	code_from, code_line := 0, 0
 	it := each_line(text)
 	for {
 		// `it.rest` is a suffix of `text`, so how far the walk has got is
@@ -138,6 +139,11 @@ md_layout :: proc(ui: ^UI, b: ^Block, width: f32) {
 		if !more do break
 
 		if strings.has_prefix(strings.trim_left_space(line), "```") {
+			if in_code {
+				md_code_source(b, text[code_from:before], code_line)
+			} else {
+				code_from, code_line = len(text) - len(it.rest), len(b.lines)
+			}
 			in_code = !in_code
 			continue
 		}
@@ -191,9 +197,23 @@ md_layout :: proc(ui: ^UI, b: ^Block, width: f32) {
 		}
 	}
 
+	// A fence still open is an answer still arriving, and what has come of
+	// the command so far is the command so far.
+	if in_code do md_code_source(b, text[code_from:], code_line)
+
 	h: f32
 	for l in b.lines do h += md_line_height(ui, l, width)
 	b.height = h
+}
+
+// Hands every line of one fence the fence's text. Sliced out of the block and
+// not joined back up from the lines, because the lines are the text folded to
+// the bubble, and a command copied with a newline wherever it was folded runs
+// as two commands.
+@(private = "file")
+md_code_source :: proc(b: ^Block, src: string, first: int) {
+	src := strings.trim_right(src, "\r\n")
+	for &l in b.lines[first:] do l.code = src
 }
 
 // The marker a list line opens with, and how far left of the text it hangs.
@@ -364,6 +384,9 @@ md_draw_line :: proc(ui: ^UI, l: Line, x, y, width: f32, col: Color, dim: Color)
 	// Not `Span_Pen{}`: a line opens in whatever face the wrap left open at
 	// the cut above it, which is the whole of what Line.pen is for.
 	md_draw_spans(ui, text, pen, y, font, px, col, l.pen)
+	// After the spans, which hover what is in backticks: a backtick inside a
+	// fence is part of the command, and the fence is what is being copied.
+	if l.style == .Code do ui_hover_text(ui, {x, y, width, lh}, l.code)
 	return lh
 }
 
@@ -391,7 +414,17 @@ md_draw_spans :: proc(
 	code := start_pen.code
 	seg_start := 0
 	i := 0
-	flush :: proc(ui: ^UI, s: string, pen: ^f32, y: f32, bold, code: bool, col: Color, base: ^Font, px: f32) {
+	flush :: proc(
+		ui: ^UI,
+		s: string,
+		pen: ^f32,
+		y: f32,
+		bold, code: bool,
+		col: Color,
+		base: ^Font,
+		px: f32,
+		whole := false,
+	) {
 		if s == "" do return
 		f := base
 		c := col
@@ -406,13 +439,20 @@ md_draw_spans :: proc(
 		if code {
 			w := font_width(f, s, size)
 			ui_rect(ui, {pen^ - 2, y + 1, w + 4, size + 7}, CODE_BG, 3)
+			// A `command` written inline is as much a thing to copy as a
+			// fenced one, and it is drawn in a box of its own to say so. Not
+			// a span the wrap cut in two, though: this line holds half of
+			// it, and half a command pasted is worse than the whole reply.
+			if whole do ui_hover_text(ui, {pen^ - 2, y + 1, w + 4, size + 7}, s)
 		}
 		pen^ += ui_text(ui, f, s, {pen^, y}, size, c)
 	}
 
 	for i < len(text) {
 		if text[i] == '`' {
-			flush(ui, text[seg_start:i], &pen, y, bold, code, col, base, px)
+			// Closed here, and opened on this line unless it is the very
+			// start of the line and the line opened inside the span.
+			flush(ui, text[seg_start:i], &pen, y, bold, code, col, base, px, seg_start > 0 || !start_pen.code)
 			code = !code
 			i += 1
 			seg_start = i

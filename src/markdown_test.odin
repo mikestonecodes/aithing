@@ -332,3 +332,61 @@ a_numbered_marker_does_not_sit_on_top_of_its_line :: proc(t: ^testing.T) {
 		body_left[2],
 	)
 }
+
+// Super+C over a reply copies what is under the pointer, and what was under
+// the pointer was always the whole reply: a command set out in a fence could
+// only be had by copying everything around it and cutting it back out. Over a
+// fence it is the fence, as written — not the lines the bubble folded it into,
+// which would paste as two commands where there was one.
+@(test)
+a_command_in_a_reply_is_what_is_copied_over_it :: proc(t: ^testing.T) {
+	g_atlas = Atlas{width = 1, height = 1, distance_range = 4, em_px = 48}
+
+	ui: UI
+	defer ui_destroy(&ui)
+	ui.regular = even_font(0.5)
+	ui.bold = even_font(0.5)
+	ui.mono = even_font(0.5)
+
+	CMD :: "sudo pacman -S --asexplicit gtk4-layer-shell && systemctl --user restart discordthing-clipd"
+	b: Block
+	defer strings.builder_destroy(&b.text)
+	defer delete(b.lines)
+	strings.write_string(&b.text, "`ls -la` first, then this:\n\n```sh\n" + CMD + "\n```\n\nThen restart, and `this span is long enough that the wrap has to cut it somewhere in the middle`.")
+
+	WIDTH :: f32(300)
+	md_layout(&ui, &b, WIDTH)
+
+	folded := 0
+	for l in b.lines do if l.style == .Code {
+		folded += 1
+		testing.expect_value(t, l.code, CMD)
+	}
+	testing.expect(t, folded > 1, "the command was not folded, so this proves nothing about folding")
+
+	// Over each line in turn: the reply, the inline span, the fence, the
+	// reply again. The reply is said first, the way draw_answer says it, so
+	// anything under the pointer that is not a command still copies it.
+	hovered :: proc(ui: ^UI, b: ^Block, at: [2]f32) -> string {
+		input := Input{mouse = at, has_mouse = true}
+		ui_begin(ui, 800, 600, &input, 1.0 / 60)
+		ui_hover_text(ui, {0, 0, 800, 600}, block_text(b))
+		y: f32
+		for l in b.lines do y += md_draw_line(ui, l, 0, y, WIDTH, TEXT, FAINT)
+		out := strings.clone(ui_hovered_text(ui), context.temp_allocator)
+		ui_end(ui)
+		return out
+	}
+	y: f32
+	code_y := f32(-1)
+	for l in b.lines {
+		if l.style == .Code && code_y < 0 do code_y = y
+		y += md_line_height(&ui, l, WIDTH)
+	}
+	testing.expect_value(t, hovered(&ui, &b, {WIDTH - 2, code_y + 4}), CMD)
+	testing.expect_value(t, hovered(&ui, &b, {WIDTH - 2, y - 4}), block_text(&b))
+	testing.expect_value(t, hovered(&ui, &b, {4, 10}), "ls -la")
+	// The long span is folded, and neither half of it is the span: over
+	// either, it is the reply that is copied.
+	testing.expect_value(t, hovered(&ui, &b, {4, y - 4}), block_text(&b))
+}
