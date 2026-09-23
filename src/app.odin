@@ -254,9 +254,12 @@ app_init :: proc(app: ^App) {
 	app.status = strings.clone("ready")
 	archive_load(&app.archive)
 	todos_load(&app.todos)
+	// What the last window left running, before the sweep: it is the only
+	// thing that knows which trees still have work going on in them.
+	turns_adopt(app)
 	// Every tree left behind by a card that is finished or gone, before
 	// anything can start running in one.
-	worktree_sweep(&app.todos)
+	worktree_sweep(&app.todos, turns_cwds(app))
 	groups_load(&app.groups)
 	usage_load(&app.usage)
 	// The saved reading is last week's until something says otherwise, so the
@@ -281,6 +284,9 @@ app_destroy :: proc(app: ^App) {
 	editor_destroy(&app.search)
 	archive_save(&app.archive)
 	archive_destroy(&app.archive)
+	// The one run that is stopped on the way out: it is only ever wanted for
+	// its first record, and nothing would read the rest.
+	runner_stop(&app.probe)
 	runner_destroy(&app.probe)
 	// Nothing to save on the way out: a reading is written the moment it
 	// lands, which is the only moment there is anything new to write.
@@ -1289,7 +1295,7 @@ app_apply :: proc(app: ^App, at: int, e: ^Event) {
 	// only the one on screen could deliver would almost never arrive.
 	if e.kind == .Limits do usage_take(&app.usage, e.limits)
 
-	if !t.chat || (t.session != "" && t.session != c.session_id) {
+	if e.replay || !t.chat || (t.session != "" && t.session != c.session_id) {
 		#partial switch e.kind {
 		case .Failed:
 			app_turn_failed(app, t, e.text)

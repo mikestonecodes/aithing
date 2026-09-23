@@ -3,6 +3,7 @@ package aithing
 import "core:fmt"
 import "core:os"
 import "core:path/filepath"
+import "core:slice"
 import "core:strings"
 
 // Cards run several at a time, and they all used to run in the same checkout.
@@ -432,14 +433,16 @@ worktree_idle :: proc(t: ^Todos, id: string) -> bool {
 }
 
 // Every tree in the cache that no card is working in, given back at once.
-// Run at startup, because that is when nothing is running and when the pile
-// left by every card ever finished is at its biggest — a window that has been
-// used for a week otherwise carries a checkout per card it ever ran.
+// Run at startup, because that is when the pile left by every card ever
+// finished is at its biggest — a window that has been used for a week
+// otherwise carries a checkout per card it ever ran. Startup is not a moment
+// when nothing is running, though: a turn the last window left going is still
+// working in its tree, which is what `running` names.
 //
 // It waits for git, one remove per tree, and the trees that are still in use
 // cost a `stat` and nothing else. A machine with a hundred finished cards on
 // it pays a second, once, on the launch after the version that made them.
-worktree_sweep :: proc(t: ^Todos) {
+worktree_sweep :: proc(t: ^Todos, running: []string = nil) {
 	root := cache_path("worktrees")
 	dir, err := os.open(root)
 	if err != nil do return
@@ -450,6 +453,7 @@ worktree_sweep :: proc(t: ^Todos) {
 		if e.type != .Directory do continue
 		id := worktree_card(e.fullpath)
 		if id == "" || !worktree_idle(t, id) do continue
+		if slice.contains(running, e.fullpath) do continue
 		// The tree knows its repository — `.git` in it is a line pointing at
 		// the one that made it — so a card that is gone from the list, and
 		// cannot say which project it belonged to, is still removable.

@@ -3,9 +3,12 @@ package aithing
 import "core:encoding/json"
 import "core:fmt"
 import "core:os"
+import "core:strconv"
 import "core:strings"
 import "core:sync"
+import "core:sys/linux"
 import "core:thread"
+import "core:time"
 
 // The whole point of this program: the harness is the real `claude` CLI, run
 // in print mode with the JSON stream turned on. Nothing here reimplements any
@@ -43,6 +46,8 @@ Event :: struct {
 	name:       string,
 	id:         string,
 	parent:     string, // the Task tool id, when this came from a subagent
+	// Written before this window was watching: see Runner.replay_to.
+	replay:     bool,
 }
 
 // Which model the next turn runs on. The CLI takes the short aliases, and an
@@ -125,22 +130,62 @@ effort_parse :: proc(name: string) -> (e: Effort, ok: bool) {
 	return EFFORT_DEFAULT, false
 }
 
+// A turn outlives the window that started it. Closing the window used to kill
+// every `claude` it had running: on the way out it stopped them by hand, and
+// had it not, each one's stdout was a pipe into this process and the next
+// write after the window went would have been a SIGPIPE. Work you had set
+// going stopped the moment you closed the lid on it.
+//
+// So a turn is a directory, not a pipe. The harness writes its stream to
+// `out` and its stderr to `err`, and runs under a shell that writes the exit
+// code to `exit` once it is gone — the one thing that cannot be had from a
+// process this window is no longer the parent of. The whole lot runs under
+// `setsid`, out of this window's session and process group, so neither a
+// terminal closing nor a Ctrl-C reaches it. The reader tails `out`, and the
+// window that opens next finds the directory still there and tails it again
+// from the top (see turns_adopt).
+//
+// The window holding a run holds an flock on `lock`, which is how a second
+// window open at the same time knows not to adopt it too and land the same
+// card twice. The kernel lets go of it when the window dies, however it dies.
+RUN_SCRIPT :: `"$@"; echo $? >"$0/exit.tmp" && mv "$0/exit.tmp" "$0/exit"`
+
+// How long the reader waits at the end of `out` before looking again. A pipe
+// woke it the moment there was more; a file cannot, and a tenth of this is
+// below anything a person reading along can tell apart.
+RUN_POLL :: 25 * time.Millisecond
+
 Runner :: struct {
-	mu:      sync.Mutex,
-	events:  [dynamic]Event,
-	running: bool,
-	failed:  bool,
+	mu:        sync.Mutex,
+	events:    [dynamic]Event,
+	running:   bool,
+	failed:    bool,
 	// The subtype of the last `result` record, empty when it said success.
 	// The harness writes one of these every time it winds a turn up, and it
 	// winds one up and carries on more often than it exits: an interrupted
 	// turn gets a `result`, then a "continue from where you left off" and
 	// another two minutes of work. Read at the end rather than acted on when
 	// it arrives, because until the process is gone it is not the last one.
-	result:  string,
-	process: os.Process,
-	worker:  ^thread.Thread,
-	out_r:   ^os.File,
-	err_path: string,
+	result:    string,
+	// The shell under `setsid`: its pid is its process group, which is what
+	// a stop kills, so the tools the harness started go with it.
+	pid:       int,
+	// Only a run this window started is its child, and only a child can be
+	// waited for. One adopted from a window since closed belongs to init.
+	process:   os.Process,
+	owned:     bool,
+	dir:       string,
+	lock:      ^os.File,
+	worker:    ^thread.Thread,
+	// The window is going and the process is not: the reader stops without
+	// saying the turn ended, because it has not.
+	detach:    bool,
+	// How much of `out` was already written when this window adopted the
+	// run. Those records happened while nobody was watching; they are read
+	// for what they say about the turn, and marked so the transcript does not
+	// draw them a second time over the thread it has just read off disk.
+	replay_to: i64,
+	replaying: bool,
 }
 
 runner_busy :: proc(r: ^Runner) -> bool {
@@ -158,14 +203,12 @@ runner_settled :: proc(r: ^Runner) -> bool {
 }
 
 // The one run that is not a turn: the probe that asks what is left of the
-// plan, which needs a stderr file of its own rather than turn zero's.
+// plan. It is killed as soon as it has answered, so it is never adopted and
+// has one directory it reuses rather than a new one per launch.
 PROBE_SLOT :: -1
 
-// Starts a turn. `session_id` empty means a brand new session.
-// `slot` only names the file this turn's stderr goes to. Turns run several at
-// a time and they all used to write one `last-stderr.log`, each truncating it
-// as it started — so the reason a turn failed was as likely to be another
-// turn's stderr, or nothing at all.
+// Starts a turn. `session_id` empty means a brand new session. `slot` goes
+// into the name of the run's directory, which only has to be unique.
 runner_start :: proc(
 	r: ^Runner,
 	cwd: string,
@@ -175,9 +218,35 @@ runner_start :: proc(
 	effort: string = "",
 	slot := 0,
 ) -> bool {
-	if runner_busy(r) do return false
+	probe := slot == PROBE_SLOT
+	dir := cache_path(probe ? "probe" : fmt.tprintf("runs/%d-%d", time.now()._nsec, slot))
+	return runner_start_in(r, dir, cwd, session_id, prompt, model, effort, probe)
+}
 
-	args := make([dynamic]string, context.allocator)
+// The same, in a directory the caller names. Only the tests name one: the
+// cache is shared by every test in the suite, and one of them clears it.
+runner_start_in :: proc(r: ^Runner, dir, cwd, session_id, prompt, model, effort: string, probe := false) -> bool {
+	if runner_busy(r) do return false
+	runner_detach(r)
+	runner_unlock(r)
+
+	if err := os.make_directory_all(dir); err != nil {
+		runner_fail(r, fmt.tprintf("cannot make %s: %v", dir, err))
+		return false
+	}
+	lock: ^os.File
+	if !probe {
+		lock = run_lock(dir)
+		if lock == nil {
+			runner_fail(r, fmt.tprintf("cannot lock %s", dir))
+			_ = os.remove_all(dir)
+			return false
+		}
+	}
+	_ = os.remove(run_file(dir, "exit"))
+
+	args := make([dynamic]string, context.temp_allocator)
+	append(&args, "setsid", "sh", "-c", RUN_SCRIPT, dir)
 	append(&args, "claude", "-p", prompt)
 	append(&args, "--output-format", "stream-json", "--include-partial-messages", "--verbose")
 	if model != "" do append(&args, "--model", model)
@@ -186,36 +255,39 @@ runner_start :: proc(
 	// The browser tools: without this a card cannot open a page to look at
 	// what it built. The CLI only offers them when asked, whatever the
 	// settings say. The probe only says "hi", so it goes without them.
-	if slot != PROBE_SLOT do append(&args, "--chrome")
+	if !probe do append(&args, "--chrome")
 
-	out_r, out_w, pipe_err := os.pipe()
-	if pipe_err != nil {
-		runner_fail(r, fmt.tprintf("cannot create a pipe: %v", pipe_err))
+	out, out_err := os.open(run_file(dir, "out"), {.Write, .Create, .Trunc})
+	if out_err != nil {
+		if lock != nil do os.close(lock)
+		runner_fail(r, fmt.tprintf("cannot write %s: %v", dir, out_err))
 		return false
 	}
-
-	// stderr goes to a file rather than a second pipe: nothing reads it until
-	// the process is gone, and a pipe nobody drains would eventually wedge.
-	err_path := cache_path(slot == PROBE_SLOT ? "probe-stderr.log" : fmt.tprintf("turn-%d-stderr.log", slot))
-	err_file, err_open := os.open(err_path, {.Write, .Create, .Trunc})
+	// stderr goes to a file of its own: nothing reads it until the process is
+	// gone, and then only to say why it failed.
+	err_file, err_open := os.open(run_file(dir, "err"), {.Write, .Create, .Trunc})
 	if err_open != nil do err_file = nil
 
 	desc := os.Process_Desc {
 		command     = args[:],
 		working_dir = cwd,
-		stdout      = out_w,
+		stdout      = out,
 		stderr      = err_file,
 	}
 	process, start_err := os.process_start(desc)
-	os.close(out_w) // the child owns the writing end now
+	os.close(out)
 	if err_file != nil do os.close(err_file)
-	delete(args)
 
 	if start_err != nil {
-		os.close(out_r)
+		if lock != nil do os.close(lock)
+		if !probe do _ = os.remove_all(dir)
 		runner_fail(r, fmt.tprintf("cannot run claude: %v", start_err))
 		return false
 	}
+	// For the window that adopts this run if this one closes first. `setsid`
+	// execs in place when its caller does not lead a process group, which a
+	// freshly forked child never does, so this is the shell's pid.
+	_ = os.write_entire_file(run_file(dir, "pid"), fmt.tprintf("%d", process.pid))
 
 	sync.mutex_lock(&r.mu)
 	r.running = true
@@ -223,28 +295,123 @@ runner_start :: proc(
 	delete(r.result)
 	r.result = ""
 	r.process = process
-	r.out_r = out_r
-	delete(r.err_path)
-	r.err_path = strings.clone(err_path)
+	r.pid = process.pid
+	r.owned = true
+	delete(r.dir)
+	r.dir = strings.clone(dir)
+	r.lock = lock
+	r.detach = false
+	r.replay_to = 0
+	r.replaying = false
 	sync.mutex_unlock(&r.mu)
 
 	r.worker = thread.create_and_start_with_poly_data(r, runner_thread)
 	return true
 }
 
-// Stops the turn. The process gets a chance to exit on its own; the reader
-// thread notices the closed pipe and finishes.
+// Picks up a run a window since closed left going, or left finished and not
+// yet read. False when another window already holds it.
+runner_adopt :: proc(r: ^Runner, dir: string, pid: int) -> bool {
+	lock := run_lock(dir)
+	if lock == nil do return false
+	size: i64
+	if info, err := os.stat(run_file(dir, "out"), context.temp_allocator); err == nil do size = info.size
+
+	sync.mutex_lock(&r.mu)
+	r.running = true
+	r.pid = pid
+	r.owned = false
+	r.dir = strings.clone(dir)
+	r.lock = lock
+	r.replay_to = size
+	r.replaying = size > 0
+	sync.mutex_unlock(&r.mu)
+
+	r.worker = thread.create_and_start_with_poly_data(r, runner_thread)
+	return true
+}
+
+// The directory's name for one of the files in it.
+run_file :: proc(dir, name: string) -> string {
+	return strings.concatenate({dir, "/", name}, context.temp_allocator)
+}
+
+// Close-on-exec, as everything os.open makes is: a lock the harness inherited
+// would be held by the process the lock is about, and never let go.
+@(private = "file")
+run_lock :: proc(dir: string) -> ^os.File {
+	f, err := os.open(run_file(dir, "lock"), {.Write, .Create})
+	if err != nil do return nil
+	if linux.flock(linux.Fd(os.fd(f)), {.EX, .NB}) != .NONE {
+		os.close(f)
+		return nil
+	}
+	return f
+}
+
+// Whether the shell behind a run is still there. A child of this window is
+// asked only whether it has exited: its pid cannot be anybody else's until it
+// has been waited for, and for the first moment after the fork its command
+// line is still this window's, which read as a run that had gone before it
+// began. Anything else is also asked by its command line, because a run left
+// over from before a reboot names a pid that may well be some other process
+// by now, and killing that one on a stop would be a great deal worse than a
+// turn read as gone.
+@(private = "file")
+run_alive :: proc(pid: int, dir: string, owned: bool) -> bool {
+	if pid <= 0 do return false
+	stat, err := os.read_entire_file_from_path(fmt.tprintf("/proc/%d/stat", pid), context.temp_allocator)
+	if err != nil do return false
+	// The state is the field after the name, and the name is in parentheses
+	// and may hold anything, so it is found from the last one.
+	if at := strings.last_index_byte(string(stat), ')'); at < 0 || at + 2 >= len(stat) || stat[at + 2] == 'Z' do return false
+	if owned do return true
+	data, cmd_err := os.read_entire_file_from_path(fmt.tprintf("/proc/%d/cmdline", pid), context.temp_allocator)
+	if cmd_err != nil do return false
+	return strings.contains(string(data), dir)
+}
+
+// The exit code the shell wrote down, if it has.
+@(private = "file")
+run_exit :: proc(dir: string) -> (code: int, ok: bool) {
+	data, err := os.read_entire_file_from_path(run_file(dir, "exit"), context.temp_allocator)
+	if err != nil do return 0, false
+	return strconv.parse_int(strings.trim_space(string(data)))
+}
+
+// Stops the turn: the whole process group, the harness and whatever it has
+// running. The reader sees the shell gone and finishes.
 runner_stop :: proc(r: ^Runner) {
 	sync.mutex_lock(&r.mu)
 	running := r.running
-	process := r.process
+	pid := r.pid
+	owned := r.owned
+	dir := strings.clone(r.dir, context.temp_allocator)
 	sync.mutex_unlock(&r.mu)
 	if !running do return
 	// A running flag with no process behind it can only come of a bug, but
 	// the pid it carries is 0, and killing 0 is killing this whole process
 	// group — the window, and every turn in it.
-	if process.pid <= 0 do return
-	_ = os.process_kill(process)
+	if !run_alive(pid, dir, owned) do return
+	_ = linux.kill(linux.Pid(-pid), .SIGKILL)
+	// And the pid on its own, for a child stopped before `setsid` has made
+	// it a group: there is no group -pid yet.
+	_ = linux.kill(linux.Pid(pid), .SIGKILL)
+}
+
+// Lets go of the run without stopping it: the reader goes, the process stays.
+runner_detach :: proc(r: ^Runner) {
+	sync.mutex_lock(&r.mu)
+	r.detach = true
+	sync.mutex_unlock(&r.mu)
+	if r.worker != nil do thread.destroy(r.worker)
+	r.worker = nil
+}
+
+@(private = "file")
+runner_unlock :: proc(r: ^Runner) {
+	if r.lock != nil do os.close(r.lock)
+	r.lock = nil
 }
 
 @(private = "file")
@@ -258,7 +425,9 @@ runner_fail :: proc(r: ^Runner, msg: string) {
 
 @(private = "file")
 runner_emit :: proc(r: ^Runner, ev: Event) {
+	ev := ev
 	sync.mutex_lock(&r.mu)
+	ev.replay = r.replaying
 	append(&r.events, ev)
 	sync.mutex_unlock(&r.mu)
 }
@@ -281,9 +450,48 @@ runner_thread :: proc(r: ^Runner) {
 	pending := strings.builder_make()
 	defer strings.builder_destroy(&pending)
 
+	sync.mutex_lock(&r.mu)
+	dir := strings.clone(r.dir)
+	pid := r.pid
+	owned := r.owned
+	replay_to := r.replay_to
+	sync.mutex_unlock(&r.mu)
+	defer delete(dir)
+
+	f, open_err := os.open(run_file(dir, "out"))
+	if open_err != nil {
+		runner_fail(r, fmt.tprintf("cannot read %s: %v", dir, open_err))
+		runner_emit(r, Event{kind = .Done})
+		return
+	}
+
+	// The file offset `pending` starts at, so each line knows whether it was
+	// written before this window adopted the run.
+	at: i64
+	code, exited := 0, false
 	for {
-		n, err := os.read(r.out_r, buf[:])
-		if err != nil || n <= 0 do break
+		sync.mutex_lock(&r.mu)
+		detach := r.detach
+		sync.mutex_unlock(&r.mu)
+		if detach {
+			os.close(f)
+			return
+		}
+
+		// Asked before the read, not after: `exit` is written once the
+		// harness has closed its stdout, so a read that comes up empty after
+		// it has been seen really is the end.
+		code, exited = run_exit(dir)
+		over := exited || !run_alive(pid, dir, owned)
+		if over && !exited do code, exited = run_exit(dir) // wrote it as it went
+
+		n, err := os.read(f, buf[:])
+		if err != nil && err != .EOF do break
+		if n <= 0 {
+			if over do break
+			time.sleep(RUN_POLL)
+			continue
+		}
 		strings.write_bytes(&pending, buf[:n])
 
 		// NDJSON: complete lines only, whatever is left waits for more bytes.
@@ -294,9 +502,11 @@ runner_thread :: proc(r: ^Runner) {
 			if idx < 0 do break
 			line := text[start:start + idx]
 			start += idx + 1
+			r.replaying = at + i64(start) <= replay_to
 			if len(strings.trim_space(line)) > 0 do runner_line(r, line)
 		}
 		if start > 0 {
+			at += i64(start)
 			rest := strings.clone(text[start:], context.temp_allocator)
 			strings.builder_reset(&pending)
 			strings.write_string(&pending, rest)
@@ -304,25 +514,24 @@ runner_thread :: proc(r: ^Runner) {
 		free_all(context.temp_allocator)
 	}
 
-	os.close(r.out_r)
+	os.close(f)
+	// A child that has gone is a zombie until it is waited for.
+	if owned do _, _ = os.process_wait(r.process)
 
 	sync.mutex_lock(&r.mu)
-	process := r.process
-	err_path := strings.clone(r.err_path, context.temp_allocator)
 	// The stream is over, so this is the last `result` there will be.
 	result := strings.clone(r.result, context.temp_allocator)
 	sync.mutex_unlock(&r.mu)
 
-	state, _ := os.process_wait(process)
-
 	// One ending, and the process is what says so. The exit code first,
 	// because it is the harness's own verdict on the whole run; the last
 	// `result` after it, for a harness that reports an error and still exits
-	// zero.
-	if state.exit_code != 0 {
-		msg := fmt.tprintf("claude exited with %d", state.exit_code)
+	// zero. No code at all is a shell killed before it could write one: a
+	// stop, or a machine that went down under it.
+	if !exited || code != 0 {
+		msg := exited ? fmt.tprintf("claude exited with %d", code) : "claude went away without exiting"
 		if result != "" do msg = fmt.tprintf("%s (%s)", msg, result)
-		if data, ok := os.read_entire_file_from_path(err_path, context.temp_allocator); ok == nil {
+		if data, ok := os.read_entire_file_from_path(run_file(dir, "err"), context.temp_allocator); ok == nil {
 			trimmed := strings.trim_space(string(data))
 			if trimmed != "" do msg = fmt.tprintf("%s\n%s", msg, one_line(trimmed, 400))
 		}
@@ -566,11 +775,16 @@ event_destroy :: proc(e: ^Event) {
 	delete(e.parent)
 }
 
+// Never stops the process: a window closing leaves its turns running, and the
+// next one picks them up. The directory goes only once the turn is over and
+// everything it said has been read, because until then it is the only record
+// of how the turn ended.
 runner_destroy :: proc(r: ^Runner) {
-	runner_stop(r)
-	if r.worker != nil do thread.destroy(r.worker)
+	runner_detach(r)
+	if r.dir != "" && !r.running && len(r.events) == 0 do _ = os.remove_all(r.dir)
+	runner_unlock(r)
 	for &e in r.events do event_destroy(&e)
 	delete(r.events)
-	delete(r.err_path)
+	delete(r.dir)
 	delete(r.result)
 }

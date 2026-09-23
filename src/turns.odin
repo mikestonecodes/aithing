@@ -1,5 +1,8 @@
 package aithing
 
+import "core:encoding/json"
+import "core:os"
+import "core:strconv"
 import "core:strings"
 
 // A window used to run exactly one `claude -p` and make everything else wait
@@ -259,7 +262,74 @@ turn_start :: proc(app: ^App, cwd, project, session, prompt, todo: string, chat:
 		turn_release(app, at)
 		return false
 	}
+	turn_write_note(t)
 	return true
+}
+
+// What a window picking this turn up needs to know that the stream will not
+// tell it: where it runs, the project and the card it is for. The thread it
+// writes to is here only for a follow-up, which knows it from the start; a new
+// thread is named by the first record in `out`, and adopting reads that again.
+Turn_Note :: struct {
+	session: string,
+	cwd:     string,
+	project: string,
+	todo:    string,
+}
+
+@(private = "file")
+turn_write_note :: proc(t: ^Turn) {
+	if t.runner.dir == "" do return
+	note := Turn_Note{t.session, t.cwd, t.project, t.todo}
+	data, err := json.marshal(note, allocator = context.temp_allocator)
+	if err != nil do return
+	_ = os.write_entire_file(run_file(t.runner.dir, "turn.json"), data)
+}
+
+// Every turn a window since closed left behind, running or finished while
+// nobody was looking, taken back as if this window had started it. Headless
+// to begin with: it draws into the transcript only once its thread is opened,
+// the same as a card's turn does.
+//
+// A directory another window is holding is that window's, and one with no
+// note in it — a window that died in the instant between starting a turn and
+// writing down what it was for — is still read, for the thread it names.
+turns_adopt :: proc(app: ^App) {
+	root := cache_path("runs")
+	dir, err := os.open(root)
+	if err != nil do return
+	defer os.close(dir)
+	entries, read_err := os.read_directory(dir, -1, context.temp_allocator)
+	if read_err != nil do return
+	for e in entries {
+		if e.type != .Directory do continue
+		note: Turn_Note
+		if data, ok := os.read_entire_file_from_path(run_file(e.fullpath, "turn.json"), context.temp_allocator); ok == nil {
+			_ = json.unmarshal(data, &note, allocator = context.temp_allocator)
+		}
+		pid := 0
+		if data, ok := os.read_entire_file_from_path(run_file(e.fullpath, "pid"), context.temp_allocator); ok == nil {
+			pid, _ = strconv.parse_int(strings.trim_space(string(data)))
+		}
+		t := app.turns[turn_slot(app)]
+		// Nothing to give back when this says no: it takes nothing until it
+		// has the lock, and the slot stays empty for the next turn.
+		if !runner_adopt(&t.runner, e.fullpath, pid) do continue
+		t.live = true
+		t.session = strings.clone(note.session)
+		t.cwd = strings.clone(note.cwd)
+		t.project = strings.clone(note.project)
+		t.todo = strings.clone(note.todo)
+	}
+}
+
+// Where every adopted turn is working, which the startup sweep of finished
+// cards' trees must leave alone: a follow-up to a card that is done runs in
+// that card's tree.
+turns_cwds :: proc(app: ^App, allocator := context.temp_allocator) -> []string {
+	out := make([dynamic]string, allocator)
+	for t in app.turns do if t.live && t.cwd != "" do append(&out, t.cwd)
+	return out[:]
 }
 
 // Gives a slot back. Only ever called on a turn that has settled — no process
@@ -315,12 +385,6 @@ turn_stop :: proc(app: ^App, at: int) {
 	if !t.live do return
 	t.stopped = true
 	runner_stop(&t.runner)
-}
-
-// Stops every turn. Only quitting does this now: a key press must never be
-// able to kill every process at once by falling through to it.
-turns_stop_all :: proc(app: ^App) {
-	for t, i in app.turns do if t.live do turn_stop(app, i)
 }
 
 // --- messages waiting for the thread they were typed into -----------------------
@@ -442,12 +506,11 @@ queue_destroy :: proc(app: ^App) {
 	delete(app.queued)
 }
 
+// Nothing is stopped. Closing the window is not asking for the work to stop,
+// and every turn still running is picked up again by the next window to open
+// — see runner.odin. What is lost is the messages waiting for a busy thread,
+// which live only here.
 turns_destroy :: proc(app: ^App) {
-	// Every process first, then the waiting. Releasing a slot joins its
-	// reader thread, which does not finish until its process has let go of
-	// the pipe — so stopping them one at a time on the way out is one wait
-	// after another instead of all of them at once.
-	turns_stop_all(app)
 	for t, i in app.turns do if t.live do turn_release(app, i)
 	for t in app.turns do free(t)
 	delete(app.turns)
