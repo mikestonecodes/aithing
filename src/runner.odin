@@ -13,7 +13,7 @@ import "core:thread"
 // turns each record into an event the UI applies to the transcript.
 //
 //   claude -p <prompt> --output-format stream-json --include-partial-messages
-//          --verbose [--resume <id>] [--permission-mode <mode>]
+//          --verbose --chrome [--resume <id>] [--model <id>] [--effort <level>]
 
 Ev_Kind :: enum {
 	Session, // the id to --resume next time
@@ -183,6 +183,10 @@ runner_start :: proc(
 	if model != "" do append(&args, "--model", model)
 	if effort != "" do append(&args, "--effort", effort)
 	if session_id != "" do append(&args, "--resume", session_id)
+	// The browser tools: without this a card cannot open a page to look at
+	// what it built. The CLI only offers them when asked, whatever the
+	// settings say. The probe only says "hi", so it goes without them.
+	if slot != PROBE_SLOT do append(&args, "--chrome")
 
 	out_r, out_w, pipe_err := os.pipe()
 	if pipe_err != nil {
