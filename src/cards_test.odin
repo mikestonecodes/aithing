@@ -1933,6 +1933,35 @@ the_launcher_never_offers_a_tree :: proc(t: ^testing.T) {
 	testing.expect_value(t, len(app_visible(app)), 0)
 }
 
+// A project whose only thread ran on a card is still a project. menuthing was
+// made from the launcher and handed a card straight away; the card's thread
+// ran in its tree, the tree is not a project, and so the launcher had nothing
+// that said menuthing was there at all.
+@(test)
+a_project_worked_only_on_cards_is_in_the_launcher :: proc(t: ^testing.T) {
+	scratch_dir(t)
+	scratch_cache()
+	app := scratch_app()
+	defer scratch_free(app)
+
+	id := todos_add(&app.todos, "launch apps", "w1", "/tmp/menuthing")
+	todos_add(&app.todos, "not run yet", "", "/tmp/unrun")
+	sessions := make([]Session, 2, context.temp_allocator)
+	sessions[0] = fake_session("a1", "one")
+	sessions[1] = fake_session("w1", "in a tree")
+	sessions[1].cwd = worktree_path("/tmp/menuthing", id, context.temp_allocator)
+	app.sessions = sessions
+	defer app.sessions = nil
+
+	app_launcher(app, true)
+	found := map[string]bool{}
+	defer delete(found)
+	for h in launcher_hits(app) do if h.session < 0 && !h.new do found[h.cwd] = true
+	testing.expect(t, found["/tmp/menuthing"], "the card's project is offered")
+	testing.expect(t, found["/tmp/unrun"], "a card that has not run yet names its project")
+	testing.expect(t, !found[sessions[1].cwd], "the tree itself is not")
+}
+
 // A window nobody has told otherwise thinks as hard as the harness would on
 // its own, and the word it saves is the word the CLI takes. The chip used to
 // be able to show a level the flag did not spell the same way, because the

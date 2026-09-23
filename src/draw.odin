@@ -337,25 +337,36 @@ launcher_hits :: proc(app: ^App) -> []Hit {
 	}
 	seen := make(map[string]int, context.temp_allocator)
 	homes := project_homes(app)
-	for s in app.sessions {
-		// Not a card's own tree. Its name is the project with a card id on
-		// the end, so typing the project's name found it once per card ever
-		// run there and offered to narrow the grid to a directory in the
-		// cache that has nothing on it.
-		if worktree_card_under(root, s.cwd) != "" do continue
+	offer := proc(app: ^App, out: ^[dynamic]Hit, seen: ^map[string]int, homes: Project_Homes, query, cwd: string) {
+		if cwd == "" do return
 		// The project the grid is already narrowed to is not offered: the row
 		// above widens it, and narrowing to where you are does nothing.
-		home := project_home(homes, s.cwd)
-		if app.canvas.project != "" && home == project_home(homes, app.canvas.project) do continue
-		if !contains_fold(base_name(home), query) do continue
+		home := project_home(homes, cwd)
+		if app.canvas.project != "" && home == project_home(homes, app.canvas.project) do return
+		if !contains_fold(base_name(home), query) do return
 		if at, has := seen[home]; has {
 			out[at].count += 1
-			continue
+			return
 		}
-		if len(seen) >= LAUNCH_PROJECTS do continue
+		if len(seen) >= LAUNCH_PROJECTS do return
 		seen[home] = len(out)
-		append(&out, Hit{session = -1, cwd = home, name = base_name(home), sub = "project", count = 1})
+		append(out, Hit{session = -1, cwd = home, name = base_name(home), sub = "project", count = 1})
 	}
+	// A card's own tree is not a project: its name is the project with a
+	// card id on the end, so offering it found one row per card ever run and
+	// narrowed the grid to a directory in the cache with nothing on it. But
+	// the thread in it is still work done in the card's project, and skipping
+	// it outright lost a project whose only threads ran on cards — a project
+	// made from this menu and handed a card at once never came back to it.
+	card_cwd := make(map[string]string, len(app.todos.list), context.temp_allocator)
+	for td in app.todos.list do card_cwd[td.id] = td.cwd
+	for s in app.sessions {
+		cwd := s.cwd
+		if card := worktree_card_under(root, cwd); card != "" do cwd = card_cwd[card]
+		offer(app, &out, &seen, homes, query, cwd)
+	}
+	// A card that has not run yet has no thread to be found by.
+	for td in app.todos.list do if td.session == "" do offer(app, &out, &seen, homes, query, td.cwd)
 	// Last, and kept on screen whatever else is found: a row at the bottom
 	// is only ever reached on purpose, and Enter on whatever came first still
 	// opens what was searched for.
