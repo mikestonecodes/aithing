@@ -189,7 +189,7 @@ draw_project_head :: proc(app: ^App, full: Rect) {
 	hid := ui_id(name, 12)
 	ui_spring_seed(ui, hid, 0)
 	in_ := ui_spring(ui, hid, 1, 200, 12)
-	ui_text(ui, &ui.bold, project_label(app, name), {full.x + GRID_PAD - (1 - in_) * 18, full.y + 20}, 21, color_alpha(TEXT, clamp(in_, 0, 1)))
+	ui_text(ui, &ui.bold, base_name(name), {full.x + GRID_PAD - (1 - in_) * 18, full.y + 20}, 21, color_alpha(TEXT, clamp(in_, 0, 1)))
 }
 
 // --- the box under the grid ---------------------------------------------------
@@ -331,6 +331,7 @@ launcher_hits :: proc(app: ^App) -> []Hit {
 		append(&out, Hit{session = -1, cwd = "", name = "all projects", sub = "everything"})
 	}
 	seen := make(map[string]int, context.temp_allocator)
+	homes := project_homes(app)
 	for s in app.sessions {
 		// Not a card's own tree. Its name is the project with a card id on
 		// the end, so typing the project's name found it once per card ever
@@ -339,22 +340,23 @@ launcher_hits :: proc(app: ^App) -> []Hit {
 		if worktree_card_under(root, s.cwd) != "" do continue
 		// The project the grid is already narrowed to is not offered: the row
 		// above widens it, and narrowing to where you are does nothing.
-		if app.canvas.project != "" && s.cwd == app.canvas.project do continue
-		if !contains_fold(base_name(s.cwd), query) do continue
-		if at, has := seen[s.cwd]; has {
+		home := project_home(homes, s.cwd)
+		if app.canvas.project != "" && home == project_home(homes, app.canvas.project) do continue
+		if !contains_fold(base_name(home), query) do continue
+		if at, has := seen[home]; has {
 			out[at].count += 1
 			continue
 		}
 		if len(seen) >= LAUNCH_PROJECTS do continue
-		seen[s.cwd] = len(out)
-		append(&out, Hit{session = -1, cwd = s.cwd, name = project_label(app, s.cwd), sub = "project", count = 1})
+		seen[home] = len(out)
+		append(&out, Hit{session = -1, cwd = home, name = base_name(home), sub = "project", count = 1})
 	}
 	// Threads: the filtered list is already in newest-first order and already
 	// matches the query, archived and abandoned ones included.
 	for i in app_visible(app) {
 		if len(out) >= LAUNCH_ROWS do break
 		s := &app.sessions[i]
-		append(&out, Hit{session = i, name = s.title, sub = project_label(app, s.cwd)})
+		append(&out, Hit{session = i, name = s.title, sub = base_name(s.cwd)})
 	}
 	if len(out) > LAUNCH_ROWS do resize(&out, LAUNCH_ROWS)
 	return out[:]

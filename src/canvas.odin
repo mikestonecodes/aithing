@@ -1,6 +1,7 @@
 package aithing
 
 import "core:math"
+import "core:path/filepath"
 import "core:slice"
 import "core:strings"
 
@@ -45,7 +46,7 @@ Card :: struct {
 	r:     Rect, // in content space: add the scroll offset to place it
 	head:  bool, // a section header rather than a card
 	cwd:   string, // the project a header names, whole — the label is read off
-	// it with project_label. It used to hold the base name alone, and the
+	// it with filepath.base. It used to hold the base name alone, and the
 	// spring that carries a header to its row is keyed on it: two projects
 	// with the same last component — Source/toomanymachines and
 	// Videos/toomanymachines — shared the key, so each frame asked one spring
@@ -174,17 +175,18 @@ grid_layout :: proc(app: ^App, r: Rect) -> f32 {
 	// grow into that the scissor will not take back.
 	y := CARD_ROOM
 	col := 0
+	homes := project_homes(app)
 	cwd := ""
 	for at in app.todo_view {
 		if at >= len(app.todos.list) do continue
-		td := app.todos.list[at]
-		if td.cwd != cwd {
+		home := project_home(homes, app.todos.list[at].cwd)
+		if home != cwd {
 			// Close the section before it off.
 			if cwd != "" {
 				if col != 0 do y += CARD_H + CARD_GAP
 				y += SECTION_GAP
 			}
-			cwd = td.cwd
+			cwd = home
 			col = 0
 			if sections > 1 {
 				append(&c.cards, Card{head = true, cwd = cwd, r = {GRID_PAD, y, inner, SECTION_HEAD}})
@@ -380,7 +382,7 @@ draw_ghosts :: proc(app: ^App, view: Rect) {
 @(private = "file")
 draw_section_head :: proc(app: ^App, card: Card, r: Rect) {
 	ui := &app.ui
-	ui_text(ui, &ui.bold, project_label(app, card.cwd), {r.x, r.y + 14}, 22, TEXT)
+	ui_text(ui, &ui.bold, filepath.base(card.cwd), {r.x, r.y + 14}, 22, TEXT)
 	ui_rect(ui, {r.x, r.y + r.h - 9, r.w, 1}, color_alpha(BORDER, 0.7))
 }
 

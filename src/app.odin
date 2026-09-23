@@ -443,9 +443,10 @@ app_launcher :: proc(app: ^App, open: bool) {
 // written down while reading a card used to be filed under a path in the
 // cache that nothing else on the grid shared.
 app_project :: proc(app: ^App) -> string {
-	if app.page == .Thread && app.chat.cwd != "" do return worktree_project(app, app.chat.cwd)
-	if app.canvas.project != "" do return app.canvas.project
-	return app.cwd
+	homes := project_homes(app)
+	if app.page == .Thread && app.chat.cwd != "" do return project_home(homes, worktree_project(app, app.chat.cwd))
+	if app.canvas.project != "" do return project_home(homes, app.canvas.project)
+	return project_home(homes, app.cwd)
 }
 
 // Where the thread on screen runs. A thread that has not been given one yet
@@ -496,6 +497,7 @@ app_filter :: proc(app: ^App) {
 	// Worked out once for the whole sweep, not once per session: see
 	// worktree_root.
 	root := worktree_root()
+	homes := project_homes(app)
 	for s, i in app.sessions {
 		// A card's own tree is not a place you browse to. Threads that ran in
 		// one filled the launcher with a project per card ever run —
@@ -504,7 +506,7 @@ app_filter :: proc(app: ^App) {
 		// been given back. The card on the grid is the door to that thread,
 		// and it is the only one that stays true.
 		if worktree_card_under(root, s.cwd) != "" do continue
-		if app.canvas.project != "" && s.cwd != app.canvas.project do continue
+		if app.canvas.project != "" && project_home(homes, s.cwd) != project_home(homes, app.canvas.project) do continue
 		if query != "" {
 			// Searching looks everywhere: the archive and the abandoned
 			// threads included. Something you go looking for by name is
@@ -581,17 +583,19 @@ app_build_cards :: proc(app: ^App) {
 	// so a search that hides a project's first card does not leave its
 	// section pinned to a number nothing on screen accounts for.
 	born := make(map[string]int, context.temp_allocator)
+	homes := project_homes(app)
 	for td, i in app.todos.list {
+		home := project_home(homes, td.cwd)
 		if query != "" {
 			if !todo_matches(td, query) do continue
-		} else if app.canvas.project != "" && td.cwd != app.canvas.project {
+		} else if app.canvas.project != "" && home != project_home(homes, app.canvas.project) {
 			continue
 		}
 		seq := todo_seq(td)
-		if was, seen := born[td.cwd]; !seen || seq < was do born[td.cwd] = seq
+		if was, seen := born[home]; !seen || seq < was do born[home] = seq
 		append(&rows, Card_Sort{seq = seq, todo = i})
 	}
-	for &row in rows do row.born = born[app.todos.list[row.todo].cwd]
+	for &row in rows do row.born = born[project_home(homes, app.todos.list[row.todo].cwd)]
 	slice.sort_by(rows[:], card_before)
 
 	for row in rows do append(&app.todo_view, row.todo)
@@ -687,7 +691,7 @@ app_start_todo :: proc(app: ^App, id: string) {
 	td := app.todos.list[at]
 	if td.session != "" do return // it found a thread another way
 	if td.text == "" do return
-	project := td.cwd != "" ? td.cwd : app.cwd
+	project := project_home(project_homes(app), td.cwd != "" ? td.cwd : app.cwd)
 
 	app_note_clear(app, id) // whatever went wrong last time is last time
 	// Its own checkout, so that four cards running at once are four working
@@ -1651,7 +1655,7 @@ app_start_resolve :: proc(app: ^App, id: string) {
 	// thread: a resolve started beside one of those is two processes on one
 	// session.
 	if turn_for_card(app, td) >= 0 do return
-	project := td.cwd != "" ? td.cwd : app.cwd
+	project := project_home(project_homes(app), td.cwd != "" ? td.cwd : app.cwd)
 	tree := worktree_path(project, id, context.temp_allocator)
 	if !worktree_merging(tree) do return
 	prompt := verdict_preamble(strings.concatenate({RESOLVE_PROMPT, td.text}, context.temp_allocator))
@@ -1728,36 +1732,58 @@ base_name :: proc(path: string) -> string {
 	return path
 }
 
-// What a project is called on screen: the last part of its path, and the one
-// before that too when another project ends the same way. ~/Source/toomanymachines
-// and ~/Videos/toomanymachines are two directories — a repo, and the folder its
-// recordings land in, where threads were run to cut them — and with the base
-// name alone the grid and the launcher each showed two sections called
-// toomanymachines with nothing to say which was which, which read as one
-// project split in two. Worked out on read from the threads and the cards, so
-// a name picks up its parent the frame a namesake appears and drops it the
-// frame the namesake goes.
-project_label :: proc(app: ^App, cwd: string) -> string {
-	name := base_name(cwd)
-	namesake := false
-	for s in app.sessions {
-		if s.cwd != cwd && base_name(s.cwd) == name {
-			namesake = true
-			break
+// A project is its name. ~/Videos/toomanymachines is where the game's
+// recordings land, and one thread run there to cut a clip made it a second
+// project called toomanymachines: the launcher offered both under the one
+// name, the wrong one got picked, and a card about the game was filed and run
+// in a folder of videos. Two directories with one name are one project, and
+// the work goes where the code is.
+//
+// So every question about which project a directory is in comes through here,
+// and the answer is a map from a name to the directory that name stands for —
+// the git repository among those that share it, then the one more threads ran
+// in, then the first in order so the pick does not move from frame to frame.
+// A directory whose name nothing else shares is its own project and is not in
+// the map at all. Built on read, like the grid it serves; the only disk it
+// touches is one stat per directory that has a namesake.
+Project_Homes :: map[string]string
+
+project_homes :: proc(app: ^App) -> Project_Homes {
+	uses := make(map[string]int, context.temp_allocator)
+	for s in app.sessions do if s.cwd != "" do uses[s.cwd] += 1
+	for td in app.todos.list do if td.cwd != "" do uses[td.cwd] += 1
+
+	homes := make(Project_Homes, context.temp_allocator)
+	for cwd, n in uses {
+		name := base_name(cwd)
+		have, taken := homes[name]
+		if !taken {
+			homes[name] = cwd
+			continue
 		}
+		if project_home_beats(cwd, n, have, uses[have]) do homes[name] = cwd
 	}
-	if !namesake {
-		for td in app.todos.list {
-			if td.cwd != cwd && base_name(td.cwd) == name {
-				namesake = true
-				break
-			}
-		}
-	}
-	if !namesake do return name
-	parent := base_name(cwd[:max(len(cwd) - len(name) - 1, 0)])
-	if parent == "" do return name
-	return fmt.tprintf("%s/%s", parent, name)
+	// A name only one directory answers to needs no entry: project_home
+	// gives a directory back unchanged when there is none.
+	lone := make(map[string]bool, context.temp_allocator)
+	for cwd in uses do lone[base_name(cwd)] = !(base_name(cwd) in lone)
+	for name, only in lone do if only do delete_key(&homes, name)
+	return homes
+}
+
+@(private = "file")
+project_home_beats :: proc(a: string, a_uses: int, b: string, b_uses: int) -> bool {
+	a_git := os.exists(fmt.tprintf("%s/.git", a))
+	b_git := os.exists(fmt.tprintf("%s/.git", b))
+	if a_git != b_git do return a_git
+	if a_uses != b_uses do return a_uses > b_uses
+	return a < b
+}
+
+// The directory the project `cwd` is in goes by.
+project_home :: proc(homes: Project_Homes, cwd: string) -> string {
+	if home, ok := homes[base_name(cwd)]; ok do return home
+	return cwd
 }
 
 // How many projects the grid is showing, and which one when it is showing
@@ -1767,12 +1793,13 @@ project_label :: proc(app: ^App, cwd: string) -> string {
 // the heading sat directly on top of, went unnamed on the grounds that the
 // line above it had already said which project it was. Both now read this.
 app_view_projects :: proc(app: ^App) -> (n: int, only: string) {
+	homes := project_homes(app)
 	cwd := ""
 	for at in app.todo_view {
 		if at >= len(app.todos.list) do continue
-		td := app.todos.list[at]
-		if td.cwd == cwd do continue
-		cwd = td.cwd
+		home := project_home(homes, app.todos.list[at].cwd)
+		if home == cwd do continue
+		cwd = home
 		n += 1
 		only = cwd
 	}
