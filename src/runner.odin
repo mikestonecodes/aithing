@@ -29,6 +29,8 @@ Ev_Kind :: enum {
 	Tool_Input, // the tool call's whole input, once it parses
 	Verdict, // the agent's own word on whether the work is finished
 	Limits, // how much of the plan's allowance is gone: see usage.odin
+	Task, // work handed off to run beside the turn: a subagent, a background command
+	Turn_Over, // the agent has written its last message, whether or not the process is gone
 	Done,
 	Failed,
 }
@@ -46,8 +48,20 @@ Event :: struct {
 	name:       string,
 	id:         string,
 	parent:     string, // the Task tool id, when this came from a subagent
+	// On `Task`: which call started it, where it stands now, and whether it
+	// is an agent or a command. The task's own id is `id`, what it was asked
+	// to do is `name` and the last thing it said it was doing is `text`.
+	tool_use:   string,
+	status:     Task_Status,
+	agent:      bool,
 	// Written before this window was watching: see Runner.replay_to.
 	replay:     bool,
+}
+
+Task_Status :: enum {
+	Running,
+	Finished, // it came back, well or badly: either way it is no longer out
+	Dropped, // the harness killed it, or it was told to stop
 }
 
 // Which model the next turn runs on. The CLI takes the short aliases, and an
@@ -570,6 +584,31 @@ runner_line :: proc(r: ^Runner, line: string) {
 		switch jstr(v, "subtype") {
 		case "init":
 			runner_emit(r, Event{kind = .Session, id = strings.clone(jstr(v, "session_id"))})
+		case "task_started", "task_progress":
+			runner_emit(r, Event {
+				kind     = .Task,
+				id       = strings.clone(jstr(v, "task_id")),
+				name     = strings.clone(jstr(v, "subtype") == "task_started" ? jstr(v, "description") : ""),
+				text     = strings.clone(jstr(v, "subtype") == "task_progress" ? jstr(v, "description") : ""),
+				tool_use = strings.clone(jstr(v, "tool_use_id")),
+				agent    = jstr(v, "task_type") == "local_agent" || jstr(v, "subagent_type") != "",
+			})
+		case "task_updated", "task_notification":
+			// The one says it in a patch and the other says it outright, and
+			// the harness sends both for one ending: whichever arrives first
+			// takes the task off the turn and the second finds nothing.
+			status := jstr(v, "status")
+			if patch, ok := jobj(v, "patch"); ok do status = jstr(patch, "status")
+			ended: Task_Status
+			switch status {
+			case "completed", "failed":
+				ended = .Finished
+			case "killed", "stopped":
+				ended = .Dropped
+			case:
+				return
+			}
+			runner_emit(r, Event{kind = .Task, id = strings.clone(jstr(v, "task_id")), status = ended})
 		}
 
 	case "stream_event":
@@ -722,6 +761,7 @@ runner_line :: proc(r: ^Runner, line: string) {
 		// the thread it came from went on to say the build and the tests
 		// passed.
 		sub := jstr(v, "subtype")
+		runner_emit(r, Event{kind = .Turn_Over})
 		sync.mutex_lock(&r.mu)
 		delete(r.result)
 		r.result = strings.clone(sub == "success" ? "" : sub)
@@ -773,6 +813,7 @@ event_destroy :: proc(e: ^Event) {
 	delete(e.name)
 	delete(e.id)
 	delete(e.parent)
+	delete(e.tool_use)
 }
 
 // Never stops the process: a window closing leaves its turns running, and the

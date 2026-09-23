@@ -555,7 +555,11 @@ draw_card :: proc(app: ^App, card: Card, base: Rect) {
 	// the words themselves are still there, under the pointer.
 	room := r.w - pad * 2 - pill.w - 14
 	if turn := turn_for_card(app, td); turn >= 0 {
-		if room > DOING do draw_doing(app, app.turns[turn], {r.x + r.w - pad - DOING / 2, pill.y + pill.h / 2}, id)
+		if room > DOING {
+			doing := [2]f32{r.x + r.w - pad - DOING / 2, pill.y + pill.h / 2}
+			draw_doing(app, app.turns[turn], doing, id)
+			draw_tasks(app, app.turns[turn], {doing.x - DOING / 2 - 8, doing.y}, room - DOING - 8)
+		}
 	} else if state == .Failed || state == .Asked {
 		// Why. A headless turn has no transcript to read it out of, and a
 		// card that says `failed` and nothing else is a card you cannot act
@@ -608,6 +612,9 @@ draw_doing :: proc(app: ^App, t: ^Turn, at: [2]f32, card: u64) {
 	// something said stands in, in its own colour, so a card that is thinking
 	// does not wear the grey nut kept for tools this build has never heard of.
 	if t.tool == "" do col, icon = TILE_SAID, .Said
+	// And nothing named with work out is an agent waiting on what it sent
+	// off, which is not writing either.
+	if t.tool == "" && len(t.tasks) > 0 do col, icon = tool_style("Agent")
 
 	// The knock. Which tool it is is the one thing written down — no note is
 	// kept of the last one — so the change is caught by handing the name's
@@ -652,6 +659,30 @@ draw_doing :: proc(app: ^App, t: ^Turn, at: [2]f32, card: u64) {
 	// The line it replaced, for whoever wants it: pointing at the mark is
 	// asking what it stands for.
 	ui_hover_text(ui, {at.x - rad, at.y - rad, rad * 2, rad * 2}, turn_doing(t))
+}
+
+// One bead per piece of work the turn has out, right to left from `at`, as many
+// as `room` holds. A card whose agent had sent four subagents off looked, from
+// the grid, like a card with one thing going on — or, while the agent sat
+// waiting on them, nothing — and a card that is doing five things and a card
+// that has stopped are the two a glance most needs to tell apart. Pointing at
+// a bead says what it is doing.
+@(private = "file")
+draw_tasks :: proc(app: ^App, t: ^Turn, at: [2]f32, room: f32) {
+	ui := &app.ui
+	BEAD :: f32(8)
+	GAP :: f32(5)
+	x := at.x
+	for task, i in t.tasks {
+		if at.x - x + BEAD > room do break
+		col, _ := tool_style(task.agent ? "Agent" : "Bash")
+		// Out of step with each other, so four beads read as four things
+		// running and not as one thing blinking.
+		breath := 0.5 + 0.5 * math.sin(ui.time * 4 + f32(i) * 1.3)
+		ui_circle(ui, {x - BEAD / 2, at.y}, BEAD / 2 * (0.8 + 0.2 * breath), color_alpha(col, 0.5 + 0.5 * breath))
+		ui_hover_text(ui, {x - BEAD - GAP / 2, at.y - BEAD, BEAD + GAP, BEAD * 2}, task_line(task))
+		x -= BEAD + GAP
+	}
 }
 
 // A few lines of body text, ellipsized on the last. Returns the height.

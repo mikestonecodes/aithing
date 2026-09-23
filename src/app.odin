@@ -1275,6 +1275,9 @@ app_apply_event_for_test :: proc(app: ^App, at: int, e: ^Event) {
 app_apply :: proc(app: ^App, at: int, e: ^Event) {
 	c := &app.chat
 	t := app.turns[at]
+	// Asked before the turn hears of it: a task's ending names only the task,
+	// and the turn forgets which call started it as it takes the task off.
+	call := e.kind == .Task ? turn_task_call(t, e) : ""
 	turn_note(t, e)
 
 	// The harness names the thread in the first record it writes, and that is
@@ -1319,6 +1322,15 @@ app_apply :: proc(app: ^App, at: int, e: ^Event) {
 
 	case .Limits:
 		// Taken above as well, and for the same reason.
+
+	case .Turn_Over:
+
+	case .Task:
+		// The call that started it came back the moment the work started, so
+		// its block is put back to running until the work itself does.
+		if b := chat_block(c, chat_find_tool(c, call)); b != nil {
+			b.running = e.status == .Running
+		}
 
 	case .Msg_Start:
 		if e.parent == "" do app.cur_msg = chat_append(c, .Assistant)
@@ -1403,7 +1415,7 @@ app_apply :: proc(app: ^App, at: int, e: ^Event) {
 	case .Tool_Result:
 		b := chat_block(c, chat_find_tool(c, e.id))
 		if b == nil do return
-		b.running = false
+		b.running = turn_task_out(t, e.id)
 		strings.write_string(&b.result, e.text)
 
 	case .Failed:
@@ -1488,9 +1500,20 @@ app_turn_ended :: proc(app: ^App, t: ^Turn, state: Todo_State) {
 	// What the process did and what the work did are two questions, and the
 	// exit code only answers the first.
 	outcome := turn_outcome(t, state)
+	app.rescan = true
+	// Not finished and not asking either: it walked out on work it had left
+	// running, so it goes back in to finish rather than standing there saying
+	// `needs you`. Nothing is landed or settled — a card that said `merged`
+	// over a subagent's work still sitting in a tree of its own was the same
+	// lie from the other end. What is written down is only what the card says
+	// if the turn sent back never starts; until then it reads `processing`.
+	if outcome == .Asked && turn_send_back(app, t) {
+		app_note(app, t.todo, "left work running when it stopped, and was sent back to finish it")
+		app_todo_finished(app, t.todo, .Asked)
+		return
+	}
 	if outcome == .Asked do app_note(app, t.todo, t.say)
 	app_todo_finished(app, t.todo, outcome)
-	app.rescan = true
 	// And the work goes back into the project it came from, now, on the frame
 	// the card said it was finished — see app_land_worktree.
 	app_land_worktree(app, t)

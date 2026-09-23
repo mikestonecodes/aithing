@@ -2340,3 +2340,124 @@ a_question_from_the_launcher_is_not_a_card :: proc(t: ^testing.T) {
 	app_launcher(app, true)
 	for h in launcher_hits(app) do testing.expect(t, !is_ask(h.cwd), "questions offered as a project")
 }
+
+// A card whose agent started the build in the background, wrote `I'm waiting
+// for the build` and ended its turn read `needs you` over that sentence — and
+// the build had been stopped the moment the sentence was written. It is sent
+// back to finish, and says `processing` while it goes.
+@(test)
+a_turn_that_left_work_running_goes_back_to_it :: proc(t: ^testing.T) {
+	scratch_dir(t)
+	app := scratch_app()
+	defer scratch_free(app)
+	app.cwd = strings.clone("/tmp")
+
+	editor_set_text(&app.capture, "bake the atlas")
+	app_capture(app)
+
+	events := []Event {
+		{kind = .Session, id = "s-bake"},
+		{kind = .Task, id = "b1", name = "build the atlas", tool_use = "toolu_1"},
+		{kind = .Task, id = "b1", text = "Running ./build.sh"},
+		{kind = .Turn_Over},
+		{kind = .Task, id = "b1", status = .Dropped},
+		// The second word the harness sends for the same ending.
+		{kind = .Task, id = "b1", status = .Dropped},
+		{kind = .Done},
+	}
+	for e in events {
+		ev := Event{kind = e.kind, id = strings.clone(e.id), name = strings.clone(e.name), text = strings.clone(e.text), tool_use = strings.clone(e.tool_use), status = e.status}
+		app_apply_event_for_test(app, 0, &ev)
+		event_destroy(&ev)
+	}
+
+	testing.expect_value(t, len(app.queued), 1)
+	if len(app.queued) != 1 do return
+	q := app.queued[0]
+	testing.expect_value(t, q.session, "s-bake")
+	testing.expect_value(t, q.todo, app.todos.list[0].id)
+	testing.expect(t, q.again)
+	testing.expect(t, strings.contains(q.prompt, "build the atlas"), q.prompt)
+	testing.expect_value(t, todo_display_state(app, app.todos.list[0]), Todo_State.Running)
+}
+
+// Only work stopped because the turn was over counts. A command the agent
+// stopped itself while it was still going is a decision, not a walk-out.
+@(test)
+work_stopped_mid_turn_is_not_left_behind :: proc(t: ^testing.T) {
+	scratch_dir(t)
+	app := scratch_app()
+	defer scratch_free(app)
+	app.cwd = strings.clone("/tmp")
+
+	editor_set_text(&app.capture, "bake the atlas")
+	app_capture(app)
+
+	events := []Event {
+		{kind = .Session, id = "s-bake"},
+		{kind = .Task, id = "b1", name = "a server", tool_use = "toolu_1"},
+		{kind = .Task, id = "b1", status = .Dropped},
+		{kind = .Turn_Over},
+		{kind = .Done},
+	}
+	for e in events {
+		ev := Event{kind = e.kind, id = strings.clone(e.id), name = strings.clone(e.name), tool_use = strings.clone(e.tool_use), status = e.status}
+		app_apply_event_for_test(app, 0, &ev)
+		event_destroy(&ev)
+	}
+	testing.expect_value(t, len(app.queued), 0)
+}
+
+// Once. The turn sent back that walks out again is left saying `needs you`,
+// because a third go at the same thing is a loop with a bill.
+@(test)
+a_turn_sent_back_is_not_sent_back_again :: proc(t: ^testing.T) {
+	scratch_dir(t)
+	app := scratch_app()
+	defer scratch_free(app)
+	app.cwd = strings.clone("/tmp")
+
+	editor_set_text(&app.capture, "bake the atlas")
+	app_capture(app)
+	app.turns[0].again = true
+
+	events := []Event {
+		{kind = .Session, id = "s-bake"},
+		{kind = .Task, id = "b1", name = "build the atlas", tool_use = "toolu_1"},
+		{kind = .Turn_Over},
+		{kind = .Task, id = "b1", status = .Dropped},
+		{kind = .Done},
+	}
+	for e in events {
+		ev := Event{kind = e.kind, id = strings.clone(e.id), name = strings.clone(e.name), tool_use = strings.clone(e.tool_use), status = e.status}
+		app_apply_event_for_test(app, 0, &ev)
+		event_destroy(&ev)
+	}
+	testing.expect_value(t, len(app.queued), 0)
+}
+
+// A subagent out is work on the card, and it is still on the turn while the
+// agent that sent it sits writing nothing; it comes off when it comes back.
+@(test)
+a_subagent_is_on_the_turn_until_it_comes_back :: proc(t: ^testing.T) {
+	scratch_dir(t)
+	app := scratch_app()
+	defer scratch_free(app)
+	app.cwd = strings.clone("/tmp")
+
+	editor_set_text(&app.capture, "bake the atlas")
+	app_capture(app)
+	turn := app.turns[0]
+
+	start := Event{kind = .Task, id = strings.clone("a1"), name = strings.clone("the voice engine"), tool_use = strings.clone("toolu_9"), agent = true}
+	app_apply_event_for_test(app, 0, &start)
+	event_destroy(&start)
+	testing.expect_value(t, len(turn.tasks), 1)
+	testing.expect_value(t, turn_doing(turn), "waiting on 1 in the background")
+
+	back := Event{kind = .Task, id = strings.clone("a1"), status = .Finished}
+	app_apply_event_for_test(app, 0, &back)
+	event_destroy(&back)
+	testing.expect_value(t, len(turn.tasks), 0)
+	testing.expect_value(t, len(turn.left), 0)
+}

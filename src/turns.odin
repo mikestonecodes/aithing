@@ -1,6 +1,7 @@
 package aithing
 
 import "core:encoding/json"
+import "core:fmt"
 import "core:os"
 import "core:strconv"
 import "core:strings"
@@ -71,6 +72,34 @@ Turn :: struct {
 	// turn, and the cards must take the first of those and not the second —
 	// and the sweep that catches a turn dying silently must not undo either.
 	ended:   bool,
+	// What it has handed off and not had back: subagents and commands running
+	// beside it. Off the stream, like `tool`, because the harness is the only
+	// thing that knows — and while the agent sits waiting on three agents its
+	// own tool is nothing at all, so a card that asked only that looked like
+	// a card doing nothing.
+	tasks:   [dynamic]Turn_Task,
+	// The agent has written its last message. The process can outlive that:
+	// the harness waits on subagents and wakes the agent when one comes back,
+	// so the next message it starts puts this back.
+	over:    bool,
+	// What the harness stopped because the turn was over while it was still
+	// running. An agent that starts the build in the background, writes `I'm
+	// waiting for the build` and ends its turn has not asked anything — it
+	// has left, and the build went with it. That read `needs you` over its
+	// own sentence about waiting, which was true of nothing by then.
+	left:    [dynamic]string,
+	// This turn is already the one sent back to finish what an earlier one
+	// left running. It is not sent back again: once is a nudge, twice is a
+	// loop with a bill.
+	again:   bool,
+}
+
+Turn_Task :: struct {
+	id:       string,
+	what:     string, // what it was asked to do
+	doing:    string, // the last thing it said it was at, "" until it says
+	tool_use: string, // the call that started it, which is its block in the transcript
+	agent:    bool,
 }
 
 // --- finding one --------------------------------------------------------------
@@ -192,7 +221,14 @@ turn_note :: proc(t: ^Turn, e: ^Event) {
 		// And whatever it last claimed about the work is about the message
 		// before this one. The verdict is the last message's verdict, so a
 		// turn that says it is done and then carries on is not done.
-		t.verdict = .None
+		if e.parent == "" {
+			t.verdict = .None
+			t.over = false
+		}
+	case .Turn_Over:
+		t.over = true
+	case .Task:
+		turn_task(t, e)
 	case .Verdict:
 		t.verdict = e.verdict
 		delete(t.say)
@@ -206,6 +242,57 @@ turn_note :: proc(t: ^Turn, e: ^Event) {
 		// has room for one argument of it.
 		turn_set_tool(t, e.name, tool_arg(e.text, e.name))
 	}
+}
+
+@(private = "file")
+turn_task :: proc(t: ^Turn, e: ^Event) {
+	at := -1
+	for task, i in t.tasks do if task.id == e.id do at = i
+	if e.status != .Running {
+		if at < 0 do return
+		if e.status == .Dropped && t.over do append(&t.left, strings.clone(t.tasks[at].what))
+		turn_task_destroy(&t.tasks[at])
+		ordered_remove(&t.tasks, at)
+		return
+	}
+	if at < 0 {
+		append(&t.tasks, Turn_Task{id = strings.clone(e.id), what = strings.clone(e.name), tool_use = strings.clone(e.tool_use), agent = e.agent})
+		at = len(t.tasks) - 1
+	}
+	if e.text != "" {
+		delete(t.tasks[at].doing)
+		t.tasks[at].doing = strings.clone(e.text)
+	}
+}
+
+@(private = "file")
+turn_task_destroy :: proc(task: ^Turn_Task) {
+	delete(task.id)
+	delete(task.what)
+	delete(task.doing)
+	delete(task.tool_use)
+}
+
+// Whether the call that started a task is still out: the transcript keeps its
+// block running until the task comes back, because the harness answers a
+// background call at once and the block would otherwise stop the moment the
+// work it stands for started.
+turn_task_out :: proc(t: ^Turn, tool_use: string) -> bool {
+	for task in t.tasks do if task.tool_use == tool_use do return true
+	return false
+}
+
+// Which call started the task an event is about.
+turn_task_call :: proc(t: ^Turn, e: ^Event, allocator := context.temp_allocator) -> string {
+	if e.tool_use != "" do return strings.clone(e.tool_use, allocator)
+	for task in t.tasks do if task.id == e.id do return strings.clone(task.tool_use, allocator)
+	return ""
+}
+
+// A task as a line to read under the pointer.
+task_line :: proc(task: Turn_Task, allocator := context.temp_allocator) -> string {
+	if task.doing == "" do return task.what
+	return strings.concatenate({task.what, "  ", task.doing}, allocator)
 }
 
 @(private = "file")
@@ -228,6 +315,7 @@ turn_outcome :: proc(t: ^Turn, state: Todo_State) -> Todo_State {
 
 // The line a card shows while its turn runs.
 turn_doing :: proc(t: ^Turn, allocator := context.temp_allocator) -> string {
+	if t.tool == "" && len(t.tasks) > 0 do return fmt.aprintf("waiting on %d in the background", len(t.tasks), allocator = allocator)
 	if t.tool == "" do return "working"
 	if t.arg == "" do return t.tool
 	return strings.concatenate({t.tool, "  ", t.arg}, allocator)
@@ -245,7 +333,7 @@ turn_spawn := runner_start
 // `todo` names the card it is running, and `chat` says its output is wanted
 // in the transcript on screen. False means a harness that would not start —
 // there is no such thing as no room any more.
-turn_start :: proc(app: ^App, cwd, project, session, prompt, todo: string, chat: bool) -> bool {
+turn_start :: proc(app: ^App, cwd, project, session, prompt, todo: string, chat: bool, again := false) -> bool {
 	at := turn_slot(app)
 	// One transcript, so at most one turn drawing into it.
 	if chat do for other in app.turns do other.chat = false
@@ -257,6 +345,7 @@ turn_start :: proc(app: ^App, cwd, project, session, prompt, todo: string, chat:
 		project = strings.clone(project),
 		todo    = strings.clone(todo),
 		chat    = chat,
+		again   = again,
 	}
 	if !turn_spawn(&t.runner, cwd, session, prompt, model_flag[turn_model(app, cwd)], effort_flag[app.effort], at) {
 		turn_release(app, at)
@@ -275,12 +364,13 @@ Turn_Note :: struct {
 	cwd:     string,
 	project: string,
 	todo:    string,
+	again:   bool,
 }
 
 @(private = "file")
 turn_write_note :: proc(t: ^Turn) {
 	if t.runner.dir == "" do return
-	note := Turn_Note{t.session, t.cwd, t.project, t.todo}
+	note := Turn_Note{t.session, t.cwd, t.project, t.todo, t.again}
 	data, err := json.marshal(note, allocator = context.temp_allocator)
 	if err != nil do return
 	_ = os.write_entire_file(run_file(t.runner.dir, "turn.json"), data)
@@ -320,6 +410,7 @@ turns_adopt :: proc(app: ^App) {
 		t.cwd = strings.clone(note.cwd)
 		t.project = strings.clone(note.project)
 		t.todo = strings.clone(note.todo)
+		t.again = note.again
 	}
 }
 
@@ -348,6 +439,10 @@ turn_release :: proc(app: ^App, at: int) {
 	delete(t.tool)
 	delete(t.arg)
 	delete(t.say)
+	for &task in t.tasks do turn_task_destroy(&task)
+	delete(t.tasks)
+	for s in t.left do delete(s)
+	delete(t.left)
 	t^ = {}
 }
 
@@ -419,9 +514,13 @@ Queued :: struct {
 	cwd:     string,
 	project: string,
 	prompt:  string,
+	// The card it is for, when it is a turn sent back to finish a card's
+	// work rather than something a person typed: see turn_send_back.
+	todo:    string,
+	again:   bool,
 }
 
-turn_queue :: proc(app: ^App, session: string, wait: ^Turn, cwd, project, prompt: string) {
+turn_queue :: proc(app: ^App, session: string, wait: ^Turn, cwd, project, prompt: string, todo := "", again := false) {
 	append(
 		&app.queued,
 		Queued {
@@ -430,6 +529,8 @@ turn_queue :: proc(app: ^App, session: string, wait: ^Turn, cwd, project, prompt
 			cwd     = strings.clone(cwd),
 			project = strings.clone(project),
 			prompt  = strings.clone(prompt),
+			todo    = strings.clone(todo),
+			again   = again,
 		},
 	)
 }
@@ -440,6 +541,7 @@ queued_destroy :: proc(q: ^Queued) {
 	delete(q.cwd)
 	delete(q.project)
 	delete(q.prompt)
+	delete(q.todo)
 	q^ = {}
 }
 
@@ -491,7 +593,7 @@ turns_pump :: proc(app: ^App) -> bool {
 		}
 		// Into the transcript if this is the thread on screen, the same as
 		// the message would have been had it gone out when it was typed.
-		if !turn_start(app, q.cwd, q.project, q.session, q.prompt, "", q.session == app.chat.session_id) {
+		if !turn_start(app, q.cwd, q.project, q.session, q.prompt, q.todo, q.session == app.chat.session_id, q.again) {
 			app_status(app, "could not start claude", .Fail)
 		}
 		queued_destroy(q)
@@ -499,6 +601,25 @@ turns_pump :: proc(app: ^App) -> bool {
 		sent = true
 	}
 	return sent
+}
+
+// What a turn is given when the one before it walked away from its own work.
+AGAIN_PROMPT :: "Your last turn ended while work you had started in the background was still running, and nothing waits once a turn is over: when you wrote your last message the harness stopped it. Carry on from where you were and finish. Anything you need to wait for — a build, the tests, a command that takes a while — run in the foreground, or wait on it until it has finished, before you write your last message. If you were really stopping to ask something, ask it again.\n\nWhat was stopped: "
+
+// Puts the agent back in a thread it left with work still running — once,
+// and only when the turn ended without saying the work was finished. The
+// message goes through the queue, so it waits on this turn's process being
+// gone like anything else typed into a busy thread, and the card reads
+// `processing` from the moment it is decided: the work is not done, and the
+// card says so.
+turn_send_back :: proc(app: ^App, t: ^Turn) -> bool {
+	if len(t.left) == 0 || t.again || t.stopped || t.session == "" do return false
+	prompt := strings.concatenate({AGAIN_PROMPT, strings.join(t.left[:], "; ", context.temp_allocator)}, context.temp_allocator)
+	// A card's turn is headless and is asked for a verdict like the one it
+	// is finishing; a thread a person typed into is read by that person.
+	if t.todo != "" do prompt = verdict_preamble(prompt)
+	turn_queue(app, t.session, nil, t.cwd, t.project, prompt, t.todo, true)
+	return true
 }
 
 queue_destroy :: proc(app: ^App) {
