@@ -1230,9 +1230,6 @@ app_submit :: proc(app: ^App, text, prompt: string) -> bool {
 app_card_for_thread :: proc(app: ^App, text: string) {
 	session := app.chat.session_id
 	if session == "" do return // a thread with no name yet is a card being run
-	// A question is not work on anything, and a card for it would put a
-	// section on the grid for a directory nobody chose.
-	if is_ask(app_chat_cwd(app)) do return
 	if todos_has(&app.todos, session) do return
 	id := todos_add(&app.todos, text, session, app_project(app), .Asked)
 	canvas_set_sel(app, id) // where the cursor lands when you go back

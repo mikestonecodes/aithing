@@ -585,8 +585,10 @@ launcher_opens_on_the_projects :: proc(t: ^testing.T) {
 	testing.expect_value(t, hits[0].count, 2)
 	testing.expect_value(t, hits[1].session, -1)
 	testing.expect_value(t, hits[1].name, "other")
+	// And the one for questions, which is there with nothing asked yet.
+	testing.expect_value(t, hits[2].name, "questions")
 	// Then the threads.
-	testing.expect(t, hits[2].session >= 0)
+	testing.expect(t, hits[3].session >= 0)
 
 	// Narrowed, the project you are in is not offered again: the row that
 	// widens it is what the top of the menu is for.
@@ -2303,12 +2305,11 @@ a_new_project_is_made_from_the_launcher :: proc(t: ^testing.T) {
 	testing.expect(t, err == nil && state.exit_code == 0, "the new project has a commit to cut a card's tree from")
 }
 
-// A question typed into the launcher is asked where no project is, on the
-// question's own model whatever the cards are set to, and leaves nothing on
-// the grid — the follow-up included, which is the turn that would otherwise
-// give a thread with no card one.
+// The questions project is in the launcher before anything has been asked
+// there, and a card typed into its box runs in its own empty directory — no
+// tree cut for it — on its own model whatever the others are set to.
 @(test)
-a_question_from_the_launcher_is_not_a_card :: proc(t: ^testing.T) {
+questions_are_a_project_of_their_own :: proc(t: ^testing.T) {
 	scratch_dir(t)
 	scratch_cache()
 	app := scratch_app()
@@ -2316,29 +2317,22 @@ a_question_from_the_launcher_is_not_a_card :: proc(t: ^testing.T) {
 	app.model = .Haiku
 
 	app_launcher(app, true)
-	editor_set_text(&app.search, "why is the sky blue")
-	asks := 0
-	for h in launcher_hits(app) do if h.ask do asks += 1
-	testing.expect_value(t, asks, 1)
+	editor_set_text(&app.search, "quest")
+	row: Hit
+	for h in launcher_hits(app) do if h.name == "questions" do row = h
+	testing.expect(t, is_questions(row.cwd), "no questions row")
 
-	launcher_ask(app)
-	testing.expect_value(t, app.overlay, Overlay.None)
-	testing.expect_value(t, app.page, Page.Thread)
-	testing.expect(t, is_ask(app.chat.cwd), "the thread runs where questions do")
+	launcher_take(app, row)
+	testing.expect(t, is_questions(app.canvas.project), "not narrowed to it")
+	testing.expect_value(t, app_focus(app), Focus.Capture)
+
+	editor_set_text(&app.capture, "why is the sky blue")
+	app_capture(app)
+	testing.expect_value(t, len(app.todos.list), 1)
 	testing.expect_value(t, app_turns_live(app), 1)
-	testing.expect_value(t, turn_model(app, app.turns[0].cwd), ASK_MODEL)
+	testing.expect(t, is_questions(app.turns[0].cwd), "the card ran somewhere else")
+	testing.expect_value(t, turn_model(app, app.turns[0].cwd), QUESTIONS_MODEL)
 	testing.expect_value(t, app.model, Model.Haiku)
-
-	app.chat.session_id = strings.clone("q1")
-	app.turns[0].runner.running = false
-	editor_set_text(&app.editor, "and at sunset?")
-	app_send(app)
-	testing.expect_value(t, len(app.todos.list), 0)
-	editor_destroy(&app.editor)
-
-	// And a question's directory is not offered as a project to narrow to.
-	app_launcher(app, true)
-	for h in launcher_hits(app) do testing.expect(t, !is_ask(h.cwd), "questions offered as a project")
 }
 
 // A card whose agent started the build in the background, wrote `I'm waiting
