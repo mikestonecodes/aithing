@@ -2302,3 +2302,41 @@ a_new_project_is_made_from_the_launcher :: proc(t: ^testing.T) {
 	state, _, _, err := os.process_exec({command = {"git", "-C", ROOT + "/Source/fresh", "rev-parse", "--verify", "HEAD"}}, context.temp_allocator)
 	testing.expect(t, err == nil && state.exit_code == 0, "the new project has a commit to cut a card's tree from")
 }
+
+// A question typed into the launcher is asked where no project is, on the
+// question's own model whatever the cards are set to, and leaves nothing on
+// the grid — the follow-up included, which is the turn that would otherwise
+// give a thread with no card one.
+@(test)
+a_question_from_the_launcher_is_not_a_card :: proc(t: ^testing.T) {
+	scratch_dir(t)
+	scratch_cache()
+	app := scratch_app()
+	defer scratch_free(app)
+	app.model = .Haiku
+
+	app_launcher(app, true)
+	editor_set_text(&app.search, "why is the sky blue")
+	asks := 0
+	for h in launcher_hits(app) do if h.ask do asks += 1
+	testing.expect_value(t, asks, 1)
+
+	launcher_ask(app)
+	testing.expect_value(t, app.overlay, Overlay.None)
+	testing.expect_value(t, app.page, Page.Thread)
+	testing.expect(t, is_ask(app.chat.cwd), "the thread runs where questions do")
+	testing.expect_value(t, app_turns_live(app), 1)
+	testing.expect_value(t, turn_model(app, app.turns[0].cwd), ASK_MODEL)
+	testing.expect_value(t, app.model, Model.Haiku)
+
+	app.chat.session_id = strings.clone("q1")
+	app.turns[0].runner.running = false
+	editor_set_text(&app.editor, "and at sunset?")
+	app_send(app)
+	testing.expect_value(t, len(app.todos.list), 0)
+	editor_destroy(&app.editor)
+
+	// And a question's directory is not offered as a project to narrow to.
+	app_launcher(app, true)
+	for h in launcher_hits(app) do testing.expect(t, !is_ask(h.cwd), "questions offered as a project")
+}

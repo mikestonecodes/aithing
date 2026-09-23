@@ -452,6 +452,11 @@ app_input :: proc(app: ^App) {
 			case KEY_DOWN:
 				app.canvas.menu_at += 1
 				continue
+			case KEY_ENTER, KEY_KPENTER:
+				if .Ctrl in k.mods {
+					launcher_ask(app)
+					continue
+				}
 			}
 		} else if app.page == .Grid {
 			// With the keyboard on the cards the arrows are hjkl said the

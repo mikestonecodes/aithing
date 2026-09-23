@@ -304,6 +304,8 @@ Hit :: struct {
 	// before narrowing to it. cwd is where it will be, and empty while no
 	// name has been typed.
 	new:     bool,
+	// What is typed, asked as a question: see ask.odin.
+	ask:     bool,
 }
 
 LAUNCH_ROWS :: 8
@@ -337,8 +339,11 @@ launcher_hits :: proc(app: ^App) -> []Hit {
 	}
 	seen := make(map[string]int, context.temp_allocator)
 	homes := project_homes(app)
-	offer := proc(app: ^App, out: ^[dynamic]Hit, seen: ^map[string]int, homes: Project_Homes, query, cwd: string) {
-		if cwd == "" do return
+	// Where questions run, once: see worktree_root for what asking it per
+	// session costs.
+	asked := cache_path("questions")
+	offer := proc(app: ^App, out: ^[dynamic]Hit, seen: ^map[string]int, homes: Project_Homes, query, asked, cwd: string) {
+		if cwd == "" || cwd == asked do return
 		// The project the grid is already narrowed to is not offered: the row
 		// above widens it, and narrowing to where you are does nothing.
 		home := project_home(homes, cwd)
@@ -363,15 +368,16 @@ launcher_hits :: proc(app: ^App) -> []Hit {
 	for s in app.sessions {
 		cwd := s.cwd
 		if card := worktree_card_under(root, cwd); card != "" do cwd = card_cwd[card]
-		offer(app, &out, &seen, homes, query, cwd)
+		offer(app, &out, &seen, homes, query, asked, cwd)
 	}
 	// A card that has not run yet has no thread to be found by.
-	for td in app.todos.list do if td.session == "" do offer(app, &out, &seen, homes, query, td.cwd)
+	for td in app.todos.list do if td.session == "" do offer(app, &out, &seen, homes, query, asked, td.cwd)
 	// Last, and kept on screen whatever else is found: a row at the bottom
 	// is only ever reached on purpose, and Enter on whatever came first still
 	// opens what was searched for.
 	made, has_made := launcher_new_project(app, homes, query)
-	rows := LAUNCH_ROWS - (has_made ? 1 : 0)
+	has_ask := query != ""
+	rows := LAUNCH_ROWS - (has_made ? 1 : 0) - (has_ask ? 1 : 0)
 	// Threads: the filtered list is already in newest-first order and already
 	// matches the query, archived and abandoned ones included.
 	for i in app_visible(app) {
@@ -380,6 +386,7 @@ launcher_hits :: proc(app: ^App) -> []Hit {
 		append(&out, Hit{session = i, name = s.title, sub = base_name(s.cwd)})
 	}
 	if len(out) > rows do resize(&out, rows)
+	if has_ask do append(&out, Hit{session = -1, ask = true, name = query, sub = strings.concatenate({"ask ", model_label[ASK_MODEL], "  ·  ctrl enter"}, context.temp_allocator)})
 	if has_made do append(&out, made)
 	return out[:]
 }
@@ -487,11 +494,15 @@ draw_launcher :: proc(app: ^App, full: Rect) {
 		y += row_h
 	}
 
-	ui_text(ui, &ui.regular, "enter opens  ·  esc closes  ·  a project row narrows the grid", {x, y + 18}, 13.5, color_alpha(FAINT, 0.8 * t))
+	ui_text(ui, &ui.regular, "enter opens  ·  ctrl enter asks it  ·  esc closes  ·  a project row narrows the grid", {x, y + 18}, 13.5, color_alpha(FAINT, 0.8 * t))
 }
 
 // Choosing a row: a project narrows the grid, a thread opens.
 launcher_take :: proc(app: ^App, hit: Hit) {
+	if hit.ask {
+		launcher_ask(app)
+		return
+	}
 	if hit.new {
 		// Nothing typed yet: the menu stays up with the caret in it, which
 		// is where the name goes.
@@ -1015,6 +1026,14 @@ draw_chips :: proc(app: ^App, box: Rect, y: f32) {
 	ex := draw_chip(app, ui_id("effort-chip"), right, y, effort_label[app.effort], app.overlay == .Effort)
 	if ui.pressed && ui.hot == ui_id("effort-chip") do app.overlay = app.overlay == .Effort ? .None : .Effort
 	app.effort_chip = Rect{ex, y - 5, right - ex, 26}
+	// A question's thread answers on its own model whatever the cards are
+	// set to, so its chip says that one and opens nothing: a picker there
+	// would be choosing for the cards from inside a thread it cannot touch.
+	if app.page == .Thread && is_ask(app_chat_cwd(app)) {
+		_ = draw_chip(app, ui_id("model-chip"), ex - 8, y, model_label[ASK_MODEL], false)
+		app.model_chip = {}
+		return
+	}
 	cx := draw_chip(app, ui_id("model-chip"), ex - 8, y, model_label[app.model], app.overlay == .Model)
 	if ui.pressed && ui.hot == ui_id("model-chip") do app.overlay = app.overlay == .Model ? .None : .Model
 	app.model_chip = Rect{cx, y - 5, ex - 8 - cx, 26}
