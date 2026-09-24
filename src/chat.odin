@@ -65,6 +65,10 @@ Line :: struct {
 	// hover used to be the whole answer, so a command read off a reply could
 	// only be had by copying the reply and cutting the prose away from it.
 	code:   string,
+	// The paragraph the wrap cut this line from, which is where a link on it
+	// is looked for: a URL longer than the line is broken across two, and
+	// either half has to open the whole of it (see link.odin).
+	src:    string,
 }
 
 Line_Style :: enum {

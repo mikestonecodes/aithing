@@ -3,9 +3,10 @@ package aithing
 import "core:strings"
 
 // Just enough Markdown to make an answer readable: headings, bullets, block
-// quotes, fenced code, pipe tables, and inline `code` and **bold**. Wrapping happens once
-// per block and is cached on the block, because a long transcript re-wrapped
-// every frame is the one thing that would make this UI feel slow.
+// quotes, fenced code, pipe tables, inline `code` and **bold**, and links.
+// Wrapping happens once per block and is cached on the block, because a long
+// transcript re-wrapped every frame is the one thing that would make this UI
+// feel slow.
 
 BODY_PX :: f32(19)
 CODE_PX :: f32(16.5)
@@ -269,7 +270,7 @@ wrap_into :: proc(
 ) {
 	font, px, _ := line_style_font(ui, style)
 	if width <= 20 {
-		append(out, Line{text = text, style = style, indent = indent})
+		append(out, Line{text = text, style = style, indent = indent, src = text})
 		return
 	}
 
@@ -286,8 +287,9 @@ wrap_into :: proc(
 		text: string,
 		indent: f32,
 		pen: Span_Pen,
+		src: string,
 	) {
-		append(out, Line{text = text, style = st^, indent = indent, pen = pen})
+		append(out, Line{text = text, style = st^, indent = indent, pen = pen, src = src})
 		if st^ == .Bullet do st^ = .Body
 	}
 
@@ -313,7 +315,7 @@ wrap_into :: proc(
 		if w + cw > width && i > start {
 			cut := last_break > start ? last_break : i
 			cut_pen := last_break > start ? break_pen : here
-			emit(out, &st, text[start:cut], indent, line_pen)
+			emit(out, &st, text[start:cut], indent, line_pen, text)
 			start = cut
 			for start < len(text) && text[start] == ' ' do start += 1
 			last_break = -1
@@ -343,7 +345,7 @@ wrap_into :: proc(
 		i = next
 	}
 	if start < len(text) {
-		emit(out, &st, text[start:], indent, line_pen)
+		emit(out, &st, text[start:], indent, line_pen, text)
 	}
 }
 
@@ -383,7 +385,7 @@ md_draw_line :: proc(ui: ^UI, l: Line, x, y, width: f32, col: Color, dim: Color)
 
 	// Not `Span_Pen{}`: a line opens in whatever face the wrap left open at
 	// the cut above it, which is the whole of what Line.pen is for.
-	md_draw_spans(ui, text, pen, y, font, px, col, l.pen)
+	md_draw_spans(ui, text, pen, y, font, px, col, l.pen, l.src)
 	// After the spans, which hover what is in backticks: a backtick inside a
 	// fence is part of the command, and the fence is what is being copied.
 	if l.style == .Code do ui_hover_text(ui, {x, y, width, lh}, l.code)
@@ -408,7 +410,10 @@ md_draw_spans :: proc(
 	px: f32,
 	col: Color,
 	start_pen := Span_Pen{},
+	src := "",
 ) -> f32 {
+	// A table cell has no line to have been cut from, and is its own src.
+	src := src == "" ? text : src
 	pen := x
 	bold := start_pen.bold
 	code := start_pen.code
@@ -423,6 +428,7 @@ md_draw_spans :: proc(
 		col: Color,
 		base: ^Font,
 		px: f32,
+		src: string,
 		whole := false,
 	) {
 		if s == "" do return
@@ -445,21 +451,21 @@ md_draw_spans :: proc(
 			// it, and half a command pasted is worse than the whole reply.
 			if whole do ui_hover_text(ui, {pen^ - 2, y + 1, w + 4, size + 7}, s)
 		}
-		pen^ += ui_text(ui, f, s, {pen^, y}, size, c)
+		pen^ += link_draw_run(ui, s, {pen^, y}, f, size, c, src)
 	}
 
 	for i < len(text) {
 		if text[i] == '`' {
 			// Closed here, and opened on this line unless it is the very
 			// start of the line and the line opened inside the span.
-			flush(ui, text[seg_start:i], &pen, y, bold, code, col, base, px, seg_start > 0 || !start_pen.code)
+			flush(ui, text[seg_start:i], &pen, y, bold, code, col, base, px, src, seg_start > 0 || !start_pen.code)
 			code = !code
 			i += 1
 			seg_start = i
 			continue
 		}
 		if i + 1 < len(text) && text[i] == '*' && text[i + 1] == '*' {
-			flush(ui, text[seg_start:i], &pen, y, bold, code, col, base, px)
+			flush(ui, text[seg_start:i], &pen, y, bold, code, col, base, px, src)
 			bold = !bold
 			i += 2
 			seg_start = i
@@ -467,7 +473,7 @@ md_draw_spans :: proc(
 		}
 		i += 1
 	}
-	flush(ui, text[seg_start:], &pen, y, bold, code, col, base, px)
+	flush(ui, text[seg_start:], &pen, y, bold, code, col, base, px, src)
 	return pen - x
 }
 
