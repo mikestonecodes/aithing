@@ -543,7 +543,17 @@ app_input :: proc(app: ^App) {
 		case .Cancel:
 			if app_cancel(app) do search_changed = true
 		case .Stop:
-			app_interrupt(app)
+			// Something half-typed goes first, the way ctrl c on a shell's
+			// prompt throws the line away. Pressed to give up a message, it
+			// used to stop the turn the message was going to follow instead,
+			// and leave the message where it was.
+			if target != nil && editor_text(target) != "" {
+				editor_clear(target)
+				if target == &app.capture do app_history_done(app)
+				search_changed = app_focus(app) == .Search
+			} else {
+				app_interrupt(app)
+			}
 		case .Copy:
 			app_copy(app, target)
 		case .Cut:
@@ -761,7 +771,8 @@ app_paste_image :: proc(app: ^App, target: ^Editor, data: []byte, mime: string) 
 // anyone could see.
 //
 // Ctrl+C: stop the work in front of you. Inside a thread that is the thread's
-// turn; on the grid it is the turn the card the cursor is on is running.
+// turn; on the grid it is the turn the card the cursor is on is running. Only
+// once the box the caret is in is empty — until then ctrl c clears it.
 //
 // One thing, never everything. A key that stops turns you cannot see is how
 // work stopped for no reason anyone could make out — which is what Esc used
