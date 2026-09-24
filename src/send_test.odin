@@ -66,6 +66,7 @@ scratch_free :: proc(app: ^App) {
 	chat_destroy(&app.chat)
 	delete(app.status)
 	turns_destroy(app)
+	thread_settings_destroy(app)
 	free(app)
 }
 
@@ -238,4 +239,54 @@ send_into_a_cardless_thread_makes_a_card :: proc(t: ^testing.T) {
 	editor_set_text(&app.editor, "and this too")
 	app_send(app)
 	testing.expect_value(t, len(app.todos.list), 1)
+}
+
+// A thread runs on what it was set to, and changing it from inside the thread
+// changes that thread and nothing else. It used to be one choice for the
+// window: the chips in a thread said whatever had last been picked for a card
+// on the grid, and the next message went out on it.
+@(test)
+a_thread_keeps_its_own_model :: proc(t: ^testing.T) {
+	os.make_directory_all("/tmp/aithing-test-config")
+	_ = os.set_env("AITHING_CONFIG", "/tmp/aithing-test-config")
+	app := scratch_app()
+	defer scratch_free(app)
+	app.model, app.effort = .Fable, .Medium
+	app.page = .Thread
+	turn := busy_chat(app)
+	turn.setting = Setting{app.model, app.effort} // what it was started on
+	thread_keep(app, "s-1", turn.setting)
+	thread_keep(app, "s-other", Setting{.Haiku, .Low})
+
+	// Picked mid-turn: the thread's, not the window's, and it says the
+	// running turn is not the one it applies to.
+	app.overlay = .Model
+	app_picker_step(app, -1)
+	app.overlay = .Effort
+	app_picker_step(app, 2)
+	testing.expect_value(t, app_setting(app), Setting{.Opus, .Xhigh})
+	testing.expect_value(t, app.model, Model.Fable)
+	testing.expect_value(t, app.effort, Effort.Medium)
+	testing.expect_value(t, thread_setting(app, "s-other"), Setting{.Haiku, .Low})
+	testing.expect(t, strings.contains(app.status, "next message"), "nothing said the change waits for the next turn")
+
+	// The message typed while it ran goes out on what the thread says now.
+	editor_set_text(&app.editor, "the follow-up")
+	app_send(app)
+	ended(turn)
+	_ = turns_reap(app)
+	testing.expect(t, turns_pump(app))
+	next := app.turns[turn_for_session(app, "s-1")]
+	testing.expect_value(t, next.setting, Setting{.Opus, .Xhigh})
+
+	// Naming the thread again does not put back what it started on.
+	thread_keep(app, "s-1", Setting{.Fable, .Medium})
+	testing.expect_value(t, thread_setting(app, "s-1"), Setting{.Opus, .Xhigh})
+
+	// On the grid the chips are what new work starts on, and moving them
+	// leaves the thread where it was.
+	app.page = .Grid
+	app_choose(app, Setting{.Sonnet, .Low})
+	testing.expect_value(t, app.model, Model.Sonnet)
+	testing.expect_value(t, thread_setting(app, "s-1"), Setting{.Opus, .Xhigh})
 }

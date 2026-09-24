@@ -1006,6 +1006,11 @@ chips_y :: proc(box: Rect) -> f32 {
 // is the moment the choice is about, and for a while the choice could only be
 // made from inside a thread you had to open first.
 //
+// Under a thread they say what that thread runs on and change only it; under
+// the grid, what new work starts on. They used to say the window's one choice
+// everywhere, so a thread showed whatever had last been picked for a card
+// somewhere else, and its next message went out on that. See setting.odin.
+//
 // This is also the one place the chip rects are written down. The picker
 // opens off them, and two boxes each keeping their own copy of where their
 // chips were is two popups to keep in step.
@@ -1022,7 +1027,8 @@ draw_chips :: proc(app: ^App, box: Rect, y: f32) {
 	// what answers, and effort is a setting on top of it. They were the other
 	// way round because the row is laid out from its right edge, which is a
 	// reason about the code and not about the two words.
-	ex := draw_chip(app, ui_id("effort-chip"), right, y, effort_label[app.effort], app.overlay == .Effort)
+	s := app_setting(app)
+	ex := draw_chip(app, ui_id("effort-chip"), right, y, effort_label[s.effort], app.overlay == .Effort)
 	if ui.pressed && ui.hot == ui_id("effort-chip") do app.overlay = app.overlay == .Effort ? .None : .Effort
 	app.effort_chip = Rect{ex, y - 5, right - ex, 26}
 	// The questions project answers on its own model whatever the others are
@@ -1033,7 +1039,7 @@ draw_chips :: proc(app: ^App, box: Rect, y: f32) {
 		app.model_chip = {}
 		return
 	}
-	cx := draw_chip(app, ui_id("model-chip"), ex - 8, y, model_label[app.model], app.overlay == .Model)
+	cx := draw_chip(app, ui_id("model-chip"), ex - 8, y, model_label[s.model], app.overlay == .Model)
 	if ui.pressed && ui.hot == ui_id("model-chip") do app.overlay = app.overlay == .Model ? .None : .Model
 	app.model_chip = Rect{cx, y - 5, ex - 8 - cx, 26}
 }
@@ -1044,27 +1050,26 @@ draw_chips :: proc(app: ^App, box: Rect, y: f32) {
 // page that has gone has nothing to hang off and is not drawn.
 @(private = "file")
 draw_pickers :: proc(app: ^App) {
+	s := app_setting(app)
 	if m, picked := draw_picker(
 		app,
 		app.model_chip,
 		slice.enumerated_array(&model_label),
-		int(app.model),
+		int(s.model),
 		"model",
 		app.overlay == .Model,
 	); picked {
-		app.model = Model(m)
-		model_save(app.model)
+		app_choose(app, Setting{Model(m), s.effort})
 	}
 	if e, picked := draw_picker(
 		app,
 		app.effort_chip,
 		slice.enumerated_array(&effort_label),
-		int(app.effort),
+		int(s.effort),
 		"effort",
 		app.overlay == .Effort,
 	); picked {
-		app.effort = Effort(e)
-		effort_save(app.effort)
+		app_choose(app, Setting{s.model, Effort(e)})
 	}
 }
 

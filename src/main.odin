@@ -505,12 +505,14 @@ app_input :: proc(app: ^App) {
 				app.rescan = true
 				continue
 			case KEY_M:
-				app.model = Model((int(app.model) + 1) % len(Model))
-				model_save(app.model)
+				s := app_setting(app)
+				s.model = Model((int(s.model) + 1) % len(Model))
+				app_choose(app, s)
 				continue
 			case KEY_E:
-				app.effort = Effort((int(app.effort) + 1) % len(Effort))
-				effort_save(app.effort)
+				s := app_setting(app)
+				s.effort = Effort((int(s.effort) + 1) % len(Effort))
+				app_choose(app, s)
 				continue
 			}
 		}

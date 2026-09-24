@@ -25,9 +25,3 @@ questions_dir :: proc(allocator := context.temp_allocator) -> string {
 is_questions :: proc(cwd: string) -> bool {
 	return cwd != "" && cwd == cache_path("questions")
 }
-
-// The model a turn in `cwd` runs on. The chip under the box reads the same
-// answer, so what it says is what answers.
-turn_model :: proc(app: ^App, cwd: string) -> Model {
-	return is_questions(cwd) ? QUESTIONS_MODEL : app.model
-}

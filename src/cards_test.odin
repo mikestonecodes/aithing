@@ -86,6 +86,7 @@ scratch_free :: proc(app: ^App) {
 	canvas_destroy(&app.canvas)
 	todos_destroy(&app.todos)
 	usage_destroy(&app.usage)
+	thread_settings_destroy(app)
 	delete(app.sessions)
 	free(app)
 }
@@ -2333,7 +2334,7 @@ questions_are_a_project_of_their_own :: proc(t: ^testing.T) {
 	testing.expect_value(t, len(app.todos.list), 1)
 	testing.expect_value(t, app_turns_live(app), 1)
 	testing.expect(t, is_questions(app.turns[0].cwd), "the card ran somewhere else")
-	testing.expect_value(t, turn_model(app, app.turns[0].cwd), QUESTIONS_MODEL)
+	testing.expect_value(t, app.turns[0].setting.model, QUESTIONS_MODEL)
 	testing.expect_value(t, app.model, Model.Haiku)
 }
 

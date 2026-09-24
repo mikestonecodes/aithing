@@ -92,6 +92,9 @@ Turn :: struct {
 	// left running. It is not sent back again: once is a nudge, twice is a
 	// loop with a bill.
 	again:   bool,
+	// What the process was started on. The thread keeps this the first time
+	// the harness names it, rather than whatever the chips say by then.
+	setting: Setting,
 }
 
 Turn_Task :: struct {
@@ -346,8 +349,9 @@ turn_start :: proc(app: ^App, cwd, project, session, prompt, todo: string, chat:
 		todo    = strings.clone(todo),
 		chat    = chat,
 		again   = again,
+		setting = turn_setting(app, cwd, session),
 	}
-	if !turn_spawn(&t.runner, cwd, session, prompt, model_flag[turn_model(app, cwd)], effort_flag[app.effort], at) {
+	if !turn_spawn(&t.runner, cwd, session, prompt, model_flag[t.setting.model], effort_flag[t.setting.effort], at) {
 		turn_release(app, at)
 		return false
 	}
@@ -365,12 +369,14 @@ Turn_Note :: struct {
 	project: string,
 	todo:    string,
 	again:   bool,
+	model:   string,
+	effort:  string,
 }
 
 @(private = "file")
 turn_write_note :: proc(t: ^Turn) {
 	if t.runner.dir == "" do return
-	note := Turn_Note{t.session, t.cwd, t.project, t.todo, t.again}
+	note := Turn_Note{t.session, t.cwd, t.project, t.todo, t.again, model_short[t.setting.model], effort_flag[t.setting.effort]}
 	data, err := json.marshal(note, allocator = context.temp_allocator)
 	if err != nil do return
 	_ = os.write_entire_file(run_file(t.runner.dir, "turn.json"), data)
@@ -415,6 +421,10 @@ turns_adopt :: proc(app: ^App) {
 		t.project = strings.clone(note.project)
 		t.todo = strings.clone(note.todo)
 		t.again = note.again
+		// A note from before it said is a turn started on the window's.
+		t.setting = Setting{app.model, app.effort}
+		if m, ok := model_parse(note.model); ok do t.setting.model = m
+		if e, ok := effort_parse(note.effort); ok do t.setting.effort = e
 	}
 }
 

@@ -192,10 +192,13 @@ App :: struct {
 
 	status:    string,
 	status_tone: Status_Tone,
+	// What new work starts on. A thread that has been named has its own: see
+	// setting.odin.
 	model:     Model,
 	model_chip: Rect, // where it opens from
 	effort:    Effort,
 	effort_chip: Rect,
+	per_thread: map[string]Setting,
 	cwd:       string, // where a new chat runs
 	cur_msg:   int,
 	// The transcript's tiles: scratch, not state. snake_gather rebuilds the
@@ -254,6 +257,11 @@ app_init :: proc(app: ^App) {
 	app.status = strings.clone("ready")
 	archive_load(&app.archive)
 	todos_load(&app.todos)
+	// Before the turns are adopted: one whose note predates saying what it
+	// was started on is taken to have started on the window's.
+	app.model = model_load()
+	app.effort = effort_load()
+	thread_settings_load(app)
 	// What the last window left running, before the sweep: it is the only
 	// thing that knows which trees still have work going on in them.
 	turns_adopt(app)
@@ -265,8 +273,6 @@ app_init :: proc(app: ^App) {
 	// The saved reading is last week's until something says otherwise, so the
 	// window asks on the way up rather than standing there empty.
 	probe_start(app)
-	app.model = model_load()
-	app.effort = effort_load()
 	app.profile = os.get_env("AITHING_PROFILE", context.temp_allocator) != ""
 	chat_new(app)
 	app_rescan(app)
@@ -292,6 +298,7 @@ app_destroy :: proc(app: ^App) {
 	// lands, which is the only moment there is anything new to write.
 	usage_destroy(&app.usage)
 	sessions_free(app.sessions)
+	thread_settings_destroy(app)
 	delete(app.visible)
 	for &a in app.attach do attachment_destroy(&a)
 	app_previews_destroy(app)
@@ -969,14 +976,16 @@ app_cancel :: proc(app: ^App) -> bool {
 // running off the end of a list you are looking at is how you lose the top of
 // it without seeing where it went.
 app_picker_step :: proc(app: ^App, d: int) {
+	s := app_setting(app)
 	#partial switch app.overlay {
 	case .Model:
-		app.model = Model(clamp(int(app.model) + d, 0, len(Model) - 1))
-		model_save(app.model)
+		s.model = Model(clamp(int(s.model) + d, 0, len(Model) - 1))
 	case .Effort:
-		app.effort = Effort(clamp(int(app.effort) + d, 0, len(Effort) - 1))
-		effort_save(app.effort)
+		s.effort = Effort(clamp(int(s.effort) + d, 0, len(Effort) - 1))
+	case:
+		return
 	}
+	app_choose(app, s)
 }
 
 // Asking for a thread. The page moves to it in the same breath, so the chat
@@ -1290,6 +1299,7 @@ app_apply :: proc(app: ^App, at: int, e: ^Event) {
 			c.session_id = strings.clone(e.id)
 		}
 	}
+	if e.kind == .Session do thread_keep(app, t.session, t.setting)
 
 	// What is left of the plan's allowance. It is the account's answer and not
 	// this turn's — every turn's stream carries the same reading — so it is
