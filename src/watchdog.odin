@@ -2,6 +2,7 @@ package aithing
 
 import "core:fmt"
 import "core:sync"
+import "core:sys/linux"
 import "core:thread"
 import "core:time"
 
@@ -34,6 +35,7 @@ Watchdog :: struct {
 	worker:  ^thread.Thread,
 	running: bool,
 	warned:  bool,
+	main:    linux.Pid, // the frame loop's thread, which is the one asked for its stack
 	last_seq: u64,
 	since:   time.Time,
 }
@@ -52,11 +54,13 @@ STALL_SECONDS :: 3.0
 watchdog_start :: proc() {
 	g_watch.running = true
 	g_watch.since = time.now()
+	g_watch.main = linux.gettid()
 	g_watch.worker = thread.create_and_start(proc() {
 		for sync.atomic_load_explicit(&g_watch.running, .Relaxed) {
 			time.sleep(500 * time.Millisecond)
 			seq := sync.atomic_load_explicit(&g_watch.seq, .Relaxed)
 			if seq != g_watch.last_seq {
+				if g_watch.warned do crash_unstall(time.duration_seconds(time.since(g_watch.since)))
 				g_watch.last_seq = seq
 				g_watch.since = time.now()
 				g_watch.warned = false
@@ -71,6 +75,8 @@ watchdog_start :: proc() {
 			if stuck > STALL_SECONDS && !g_watch.warned {
 				g_watch.warned = true
 				fmt.eprintfln("STALL: %v for %.1fs", phase, stuck)
+				crash_stall(phase, stuck, g_watch.main)
+				free_all(context.temp_allocator)
 			}
 		}
 	})

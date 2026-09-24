@@ -1,6 +1,7 @@
 package aithing
 
 import "core:c"
+import "core:fmt"
 import "core:os"
 import "core:sys/linux"
 import "core:sys/posix"
@@ -27,9 +28,10 @@ foreign libc {
 g_crash_fd: c.int = -1
 
 // Appends rather than truncating: a crash is worth keeping across the runs
-// that come after it.
-crash_report_install :: proc() {
-	path := cache_path("crash.log", context.temp_allocator)
+// that come after it. The path is for the tests, whose shared cache directory
+// another test may be emptying while this one writes into it.
+crash_report_install :: proc(log := "") {
+	path := log != "" ? log : cache_path("crash.log", context.temp_allocator)
 	f, err := os.open(path, {.Write, .Create, .Append})
 	if err != nil do return
 	g_crash_fd = c.int(os.fd(f))
@@ -53,6 +55,48 @@ crash_report_install :: proc() {
 	// the window to disappear. Ignored, so the write fails as EPIPE where it
 	// happens and the caller deals with it.
 	posix.sigignore(.SIGPIPE)
+
+	// The watchdog's way of asking the frame loop where it is. Restarted, so
+	// a wait the loop is stuck in carries on waiting after the report instead
+	// of coming back EINTR to a caller that would take it for a failure.
+	stack := posix.sigaction_t {
+		sa_flags = {.RESTART},
+	}
+	stack.sa_handler = on_stack
+	posix.sigaction(.SIGUSR1, &stack, nil)
+
+	// glibc loads the unwinder on the first backtrace, and loading allocates,
+	// which a handler must not; a frame loop stuck inside malloc would then
+	// never write its report. So the first one is taken here.
+	frames: [1]rawptr
+	backtrace(&frames[0], 1)
+}
+
+// A freeze, told the way a crash is: the watchdog notices the frame loop has
+// stopped and says so here, and then has the loop's own thread write the
+// stack it is standing on. The line the watchdog used to print went to
+// last-run.log alone, which relaunching the frozen window truncates — so the
+// one freeze anybody reported left nothing behind but the fact of it.
+crash_stall :: proc(phase: Phase, seconds: f64, main_tid: linux.Pid) {
+	if g_crash_fd < 0 do return
+	say(fmt.tprintf("\n--- aithing stalled: %v for %.1fs ---\n", phase, seconds))
+	_ = linux.tgkill(linux.getpid(), main_tid, .SIGUSR1)
+}
+
+// And how long it lasted. A window that comes back after eight seconds of
+// running git is a different bug from one that has to be killed, and without
+// this line the two leave the same report.
+crash_unstall :: proc(seconds: f64) {
+	if g_crash_fd < 0 do return
+	say(fmt.tprintf("--- moving again after %.1fs ---\n", seconds))
+}
+
+@(private = "file")
+on_stack :: proc "c" (sig: posix.Signal) {
+	if g_crash_fd < 0 do return
+	frames: [64]rawptr
+	n := backtrace(&frames[0], len(frames))
+	backtrace_symbols_fd(&frames[0], n, g_crash_fd)
 }
 
 // For the deaths that are not signals. A Vulkan call that fails takes the

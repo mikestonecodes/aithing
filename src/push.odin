@@ -1,5 +1,6 @@
 package aithing
 
+import "base:runtime"
 import "core:strings"
 import "core:sync"
 import "core:thread"
@@ -33,7 +34,7 @@ g_push: Push
 
 push_destroy :: proc() {
 	push_reap()
-	delete(g_push.why)
+	delete(g_push.why, runtime.heap_allocator())
 	delete(g_push.again)
 }
 
@@ -56,19 +57,24 @@ push_start :: proc(app: ^App, project: string) {
 	g_push.ready = false
 	sync.mutex_unlock(&g_push.mu)
 
+	// The worker is a new thread with a context of its own, so its allocator
+	// is not the caller's. Everything that crosses between the two is made and
+	// freed on the heap by name: the test runner hands each test a tracking
+	// allocator, and the path cloned with it and freed here as heap memory was
+	// a `free(): invalid pointer` that took the whole suite down with it.
 	g_push.worker = thread.create_and_start_with_poly_data(
-		strings.clone(project),
+		strings.clone(project, runtime.heap_allocator()),
 		proc(project: string) {
-			defer delete(project)
+			defer delete(project, runtime.heap_allocator())
 			why := worktree_push(project)
 			// Kept before the scratch goes: what git said is a slice of the
 			// temp allocator this thread is about to drop, and the frame that
 			// says it runs long after this one has gone.
-			kept := why == "" ? "" : strings.clone(why)
+			kept := why == "" ? "" : strings.clone(why, runtime.heap_allocator())
 			free_all(context.temp_allocator)
 
 			sync.mutex_lock(&g_push.mu)
-			delete(g_push.why)
+			delete(g_push.why, runtime.heap_allocator())
 			g_push.why = kept
 			g_push.ready = true
 			g_push.running = false

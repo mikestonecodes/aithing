@@ -261,9 +261,12 @@ screen pixels the distance ramp spans, which rides along in the vertex.
 ## When it goes wrong
 
 Both of the failures a window cannot narrate itself are written down instead.
-A frame loop that stops moving for three seconds prints `STALL: <phase>` — the
-phase being whichever of poll, events, jobs, input, build or draw it stopped
-in. A fatal signal appends a named backtrace to `~/.cache/aithing/crash.log`
+A frame loop that stops moving for three seconds writes `aithing stalled:
+<phase>` to `~/.cache/aithing/crash.log` — the phase being whichever of events,
+jobs, input, build or draw it stopped in — followed by the stack the loop is
+standing on, and `moving again after <n>s` if it comes back. It goes in
+crash.log rather than last-run.log because a frozen window gets relaunched,
+and relaunching truncates last-run.log. A fatal signal appends a named backtrace to `~/.cache/aithing/crash.log`
 before the process dies; `build.sh` links with `--export-dynamic` so the frames
 carry names, and `BUILD_FLAGS=-debug ./build.sh` adds line numbers.
 

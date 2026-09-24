@@ -2179,8 +2179,11 @@ a_thread_the_scan_has_not_listed_is_read_off_disk :: proc(t: ^testing.T) {
 	projects := "/tmp/aithing-test-projects"
 	dir := strings.concatenate({projects, "/-tmp-proj"}, context.temp_allocator)
 	os.make_directory_all(dir)
+	// Set and never put back, the way the cache is: two tests point it at
+	// this same directory, and one clearing it on the way out while the other
+	// was mid-read sent that one looking in the real ~/.claude for a thread
+	// that was only ever in here.
 	_ = os.set_env("AITHING_PROJECTS", projects)
-	defer _ = os.set_env("AITHING_PROJECTS", "")
 
 	body := strings.concatenate(
 		{
@@ -2224,7 +2227,6 @@ a_thread_with_no_file_yet_keeps_the_click :: proc(t: ^testing.T) {
 	projects := "/tmp/aithing-test-projects"
 	os.make_directory_all(projects)
 	_ = os.set_env("AITHING_PROJECTS", projects)
-	defer _ = os.set_env("AITHING_PROJECTS", "")
 
 	app := scratch_app()
 	defer scratch_free(app)
