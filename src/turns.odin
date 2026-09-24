@@ -401,7 +401,11 @@ turns_adopt :: proc(app: ^App) {
 		if data, ok := os.read_entire_file_from_path(run_file(e.fullpath, "pid"), context.temp_allocator); ok == nil {
 			pid, _ = strconv.parse_int(strings.trim_space(string(data)))
 		}
-		t := app.turns[turn_slot(app)]
+		// The slot first and the index after: `app.turns[turn_slot(app)]`
+		// reads the array before the call grows it, so the first turn adopted
+		// into an empty window indexed past the end and nothing started.
+		at := turn_slot(app)
+		t := app.turns[at]
 		// Nothing to give back when this says no: it takes nothing until it
 		// has the lock, and the slot stays empty for the next turn.
 		if !runner_adopt(&t.runner, e.fullpath, pid) do continue
