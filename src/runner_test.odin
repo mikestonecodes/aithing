@@ -88,7 +88,6 @@ a_turn_outlives_the_window_that_started_it :: proc(t: ^testing.T) {
 	testing.expect(t, runner_start_in(&first, fake_run("outlives"), "/tmp", "", "hi", "", ""))
 	wait_for_output(first.dir)
 	dir := strings.clone(first.dir, context.temp_allocator)
-	pid := first.pid
 	runner_destroy(&first) // the window closing
 
 	testing.expect(t, os.exists(dir), "a run still going keeps its directory")
@@ -99,12 +98,12 @@ a_turn_outlives_the_window_that_started_it :: proc(t: ^testing.T) {
 	second: Runner
 	adopted := false
 	for _ in 0 ..< 100 {
-		if adopted = runner_adopt(&second, dir, pid); adopted do break
+		if adopted = runner_adopt(&second, dir); adopted do break
 		time.sleep(5 * time.Millisecond)
 	}
 	testing.expect(t, adopted)
 	third: Runner
-	testing.expect(t, !runner_adopt(&third, dir, pid), "a run another window holds is that window's")
+	testing.expect(t, !runner_adopt(&third, dir), "a run another window holds is that window's")
 
 	events := drain_to_done(&second)
 	defer delete(events)

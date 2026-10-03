@@ -151,6 +151,9 @@ App :: struct {
 	// work asks for and never compacted, because each running turn's reader
 	// thread holds a pointer into its own slot.
 	turns:     [dynamic]^Turn,
+	// The turns some other window open at the same time is holding, as of
+	// this frame: see turns_survey.
+	elsewhere: [dynamic]Elsewhere,
 	// Not a turn: the one `claude -p` this window starts for itself, to ask
 	// what is left of the plan without waiting for somebody to run a card.
 	// See usage.odin.
@@ -199,6 +202,11 @@ App :: struct {
 	effort:    Effort,
 	effort_chip: Rect,
 	per_thread: map[string]Setting,
+	// What the per-thread file and the two words new work starts on were
+	// when this window last read or wrote them: see share.odin.
+	threads_seen: File_Stamp,
+	model_seen:  File_Stamp,
+	effort_seen: File_Stamp,
 	cwd:       string, // where a new chat runs
 	cur_msg:   int,
 	// The transcript's tiles: scratch, not state. snake_gather rebuilds the
@@ -222,10 +230,6 @@ App :: struct {
 	canvas:    Canvas,
 	groups:    Groups,
 
-	// Why a card failed, by card. A card's turn is headless, so the message
-	// the harness gave has nowhere else to go and used to be dropped on the
-	// floor — leaving a card that said `failed` and nothing more.
-	notes:     map[string]string,
 	// The grid is todo items, not threads: see todos.odin. `todo_view` is
 	// what the grid draws, in the order it draws it.
 	todos:     Todos,
@@ -259,12 +263,13 @@ app_init :: proc(app: ^App) {
 	todos_load(&app.todos)
 	// Before the turns are adopted: one whose note predates saying what it
 	// was started on is taken to have started on the window's.
-	app.model = model_load()
-	app.effort = effort_load()
+	app.model = model_load(&app.model_seen)
+	app.effort = effort_load(&app.effort_seen)
 	thread_settings_load(app)
-	// What the last window left running, before the sweep: it is the only
-	// thing that knows which trees still have work going on in them.
-	turns_adopt(app)
+	// What the last window left running, and what the other windows have
+	// running now, before the sweep: they are the only things that know which
+	// trees still have work going on in them.
+	turns_survey(app)
 	// Every tree left behind by a card that is finished or gone, before
 	// anything can start running in one.
 	worktree_sweep(&app.todos, turns_cwds(app))
@@ -283,6 +288,8 @@ app_destroy :: proc(app: ^App) {
 	// live state, and a moment later none of it is live.
 	state_save(app)
 	turns_destroy(app)
+	elsewhere_clear(app)
+	delete(app.elsewhere)
 	scan_destroy(&app.scan)
 	load_destroy(&app.load)
 	chat_destroy(&app.chat)
@@ -311,10 +318,8 @@ app_destroy :: proc(app: ^App) {
 	delete(app.pending_open)
 	delete(app.pending_card)
 	editor_destroy(&app.capture)
-	todos_save(&app.todos)
 	todos_destroy(&app.todos)
 	delete(app.todo_view)
-	app_notes_destroy(app)
 	for id in app.pending_dismiss do delete(id)
 	for id in app.pending_resolve do delete(id)
 	delete(app.state_last)
@@ -349,7 +354,6 @@ app_apply_clicks :: proc(app: ^App) -> bool {
 			delete(id)
 		}
 		clear(&app.pending_dismiss)
-		todos_save(&app.todos)
 		archive_save(&app.archive)
 	}
 	if id := app.pending_open; id != "" {
@@ -419,7 +423,6 @@ app_poll_jobs :: proc(app: ^App) -> bool {
 		// Every thread on the map has a card, and the ones that have moved
 		// since the agent last read them are queued to be read again.
 		app_sync_todos(app)
-		todos_save(&app.todos)
 		changed = true
 	}
 
@@ -633,8 +636,10 @@ app_sync_todos :: proc(app: ^App) {
 		id := app.todos.list[i].session
 		if id == "" || id in alive do continue
 		// A turn is writing that thread right now, so of course the list does
-		// not have it: it did not exist when the scan started.
-		if turn_for_session(app, id) >= 0 do continue
+		// not have it: it did not exist when the scan started. Another
+		// window's turn as much as this one's — the list is shared, and a card
+		// dropped here is a card dropped from under the window running it.
+		if turn_for_session(app, id) >= 0 || elsewhere_card(app, app.todos.list[i]) do continue
 		// And the same the other way round, for a turn that has since
 		// finished: a scan already in flight when a card was given its thread
 		// knows nothing about that thread, and dropping the card on the
@@ -703,6 +708,9 @@ app_start_todo :: proc(app: ^App, id: string) {
 	at := todos_find(&app.todos, id)
 	if at < 0 do return
 	td := app.todos.list[at]
+	// Running in another window is running: the card is shared, and a second
+	// turn here would be a second agent in the same tree.
+	if elsewhere_card(app, td) do return
 	if td.session != "" do return // it found a thread another way
 	if td.text == "" do return
 	project := project_home(project_homes(app), td.cwd != "" ? td.cwd : app.cwd)
@@ -732,40 +740,32 @@ app_start_todo :: proc(app: ^App, id: string) {
 	// running, and it says so until it ends.
 }
 
-// Why a card failed, kept until it is asked to run again. Not written down
-// with the card: it is about this attempt, not about the work.
+// Why a card failed, or what it stopped to ask, kept until it is asked to run
+// again. A card's turn is headless, so the message the harness gave has
+// nowhere else to go and used to be dropped on the floor — leaving a card that
+// said `failed` and nothing more.
 app_note :: proc(app: ^App, id, text: string) {
 	if id == "" do return
 	line := strings.trim_space(one_line(text, 160))
 	if line == "" do return
-	if old, has := app.notes[id]; has {
-		delete(old)
-		app.notes[id] = strings.clone(line)
-		return
-	}
-	app.notes[strings.clone(id)] = strings.clone(line)
+	todo_set_note(&app.todos, id, line)
 }
 
 app_note_clear :: proc(app: ^App, id: string) {
-	if key, val := delete_key(&app.notes, id); key != "" {
-		delete(key)
-		delete(val)
-	}
+	if id == "" do return
+	todo_set_note(&app.todos, id, "")
 }
 
-app_notes_destroy :: proc(app: ^App) {
-	for key, val in app.notes {
-		delete(key)
-		delete(val)
-	}
-	delete(app.notes)
+// What a card says about itself, or "".
+app_note_of :: proc(app: ^App, id: string) -> string {
+	at := todos_find(&app.todos, id)
+	return at >= 0 ? app.todos.list[at].note : ""
 }
 
 // The turn a card was running has ended, one way or the other.
 app_todo_finished :: proc(app: ^App, id: string, state: Todo_State) {
 	if id == "" do return
 	todo_set_state(&app.todos, id, state)
-	todos_save(&app.todos)
 }
 
 // What a card says its work is doing. The store is the record and the process
@@ -779,6 +779,9 @@ todo_display_state :: proc(app: ^App, td: Todo) -> Todo_State {
 	// no process yet and is work all the same.
 	if turn_for_card(app, td) >= 0 do return .Running
 	if td.session != "" && app_session_busy(app, td.session) do return .Running
+	// And one another window is running, which this window cannot read the
+	// stream of but can see is there: see turns_survey.
+	if elsewhere_card(app, td) do return .Running
 	return td.state
 }
 
@@ -811,6 +814,7 @@ app_drop_todo :: proc(app: ^App, id: string) {
 	// deliberate — which is the whole difference between it and what Esc used
 	// to do.
 	if running >= 0 do turn_stop(app, running)
+	else do elsewhere_stop(app, id, session)
 	// Including anything typed into that thread and still waiting: a card off
 	// the grid must not start a turn a second later.
 	if session != "" do _ = turn_unqueue(app, session)
@@ -846,7 +850,6 @@ app_capture :: proc(app: ^App) {
 	}
 	editor_clear(&app.capture)
 	app_history_done(app)
-	todos_save(&app.todos)
 	canvas_set_sel(app, first)
 }
 
@@ -1243,7 +1246,6 @@ app_card_for_thread :: proc(app: ^App, text: string) {
 	id := todos_add(&app.todos, text, session, app_project(app), .Asked)
 	canvas_set_sel(app, id) // where the cursor lands when you go back
 	archive_set(&app.archive, session, false)
-	todos_save(&app.todos)
 }
 
 // --- applying what the runner streams ---------------------------------------
@@ -1291,6 +1293,7 @@ app_apply :: proc(app: ^App, at: int, e: ^Event) {
 	if e.kind == .Session && e.id != "" && t.session != e.id {
 		delete(t.session)
 		t.session = strings.clone(e.id)
+		turn_write_note(t)
 		// The project, not the tree it is checked out into: the card is filed
 		// under the work it belongs to.
 		if t.todo != "" do todo_set_session(&app.todos, t.todo, e.id, t.project)
@@ -1477,7 +1480,7 @@ app_reread_chat :: proc(app: ^App, t: ^Turn) {
 // it, and a card that says `failed` and nothing else is one you cannot act on.
 @(private = "file")
 app_turn_failed :: proc(app: ^App, t: ^Turn, text: string) {
-	if t.stopped {
+	if turn_stopped(t) {
 		// Killed by hand a moment ago. The non-zero exit that follows is us,
 		// not the work.
 		app_note(app, t.todo, "stopped")
@@ -1557,7 +1560,7 @@ app_turn_ended :: proc(app: ^App, t: ^Turn, state: Todo_State) {
 app_land_worktree :: proc(app: ^App, t: ^Turn) {
 	if t.todo == "" || t.project == "" || t.cwd == t.project do return
 	if !worktree_idle(&app.todos, t.todo) do return
-	for other in app.turns do if other != t && other.live && other.cwd == t.cwd do return
+	if tree_busy(app, t.cwd, t) do return
 	app_land_card(app, t.project, t.todo)
 }
 
@@ -1580,6 +1583,11 @@ app_land_worktree :: proc(app: ^App, t: ^Turn) {
 app_land_finished :: proc(app: ^App) {
 	for todo in app.todos.list {
 		if todo.cwd == "" do continue
+		// A card something is still working on — a follow-up the last window
+		// left going, or one the window beside this one is running — lands
+		// when that turn ends. Landing it now merges a branch the agent is
+		// still committing to and then takes its tree away.
+		if turn_for_card(app, todo) >= 0 || elsewhere_card(app, todo) do continue
 		// `Merged` is asked of git here as well, rather than taken at its
 		// word. It is written when a landing works, and that landing told the
 		// truth about the commits that existed when it ran — a card whose
@@ -1627,7 +1635,6 @@ app_settle_card :: proc(app: ^App, id: string) {
 	// the work is the same lie in a smaller place.
 	if worktree_catch_up(td.cwd, td.id) do build_start(app, td.cwd)
 	todo_set_state(&app.todos, id, .Merged)
-	todos_save(&app.todos)
 }
 
 @(private = "file")
@@ -1694,7 +1701,7 @@ app_start_resolve :: proc(app: ^App, id: string) {
 	// Anything already working the card, including a message typed into its
 	// thread: a resolve started beside one of those is two processes on one
 	// session.
-	if turn_for_card(app, td) >= 0 do return
+	if turn_for_card(app, td) >= 0 || elsewhere_card(app, td) do return
 	project := project_home(project_homes(app), td.cwd != "" ? td.cwd : app.cwd)
 	tree := worktree_path(project, id, context.temp_allocator)
 	if !worktree_merging(tree) do return

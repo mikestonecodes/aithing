@@ -76,6 +76,10 @@ window_used :: proc(w: Allowance) -> f32 {
 Ledger :: struct {
 	limits: Limits,
 	last:   string, // the text last written, so a window reading nothing writes nothing
+	// What the file was when this window last read or wrote it. One account,
+	// one reading: a window beside this one that has heard something newer
+	// writes it, and this one takes it rather than going on showing its own.
+	seen:   File_Stamp,
 }
 
 usage_destroy :: proc(l: ^Ledger) {
@@ -108,9 +112,16 @@ usage_text :: proc(l: ^Ledger) -> string {
 }
 
 usage_load :: proc(l: ^Ledger) {
-	data, err := os.read_entire_file(config_path("usage"), context.temp_allocator)
-	if err != nil do return
-	lines := each_line(string(data))
+	data, stamp, ok := file_read(config_path("usage"))
+	l.seen = stamp
+	if ok do usage_parse(l, string(data))
+	delete(l.last)
+	l.last = strings.clone(usage_text(l))
+}
+
+@(private = "file")
+usage_parse :: proc(l: ^Ledger, data: string) {
+	lines := each_line(data)
 	for line in iter_next(&lines) {
 		f := strings.fields(line, context.temp_allocator)
 		if len(f) == 2 && f[0] == "version" {
@@ -126,17 +137,24 @@ usage_load :: proc(l: ^Ledger) {
 		l.limits.week = {util = f32(week), resets = atoi(f[5])}
 		l.limits.fable = {util = f32(fable), resets = atoi(f[7])}
 	}
-	l.last = strings.clone(usage_text(l))
 }
 
-// Called on the same slow tick the rest of what this program remembers is
-// written on, and on the way out.
+// Read again when another window has written it since this one last looked.
+usage_sync :: proc(l: ^Ledger) -> bool {
+	if file_stamp(config_path("usage")) == l.seen do return false
+	usage_load(l)
+	return true
+}
+
 usage_save :: proc(l: ^Ledger) {
 	text := usage_text(l)
 	if text == l.last do return
 	delete(l.last)
 	l.last = strings.clone(text)
-	_ = os.write_entire_file(config_path("usage"), transmute([]byte)text)
+	path := config_path("usage")
+	lock := file_lock(path)
+	defer file_unlock(lock)
+	l.seen, _ = file_replace(path, transmute([]byte)text)
 }
 
 @(private = "file")

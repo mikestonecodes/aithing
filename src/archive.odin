@@ -60,28 +60,40 @@ archive_set :: proc(a: ^Archive, id: string, archived: bool) {
 }
 
 // The model choice lives beside the archive: one word, so that picking a model
-// is remembered the way the sidebar is.
-model_load :: proc() -> Model {
-	data, err := os.read_entire_file_from_path(config_path("model"), context.temp_allocator)
-	if err != nil do return MODEL_DEFAULT
+// is remembered the way the sidebar is. It is what new work starts on in every
+// window, not in the one it was picked in, so each window reads it again when
+// another has written it (see app_catch_up) — the chips under the grid said a
+// different model in each window, and a card ran on whichever one it was
+// typed into.
+model_load :: proc(seen: ^File_Stamp) -> Model {
+	data, stamp, ok := file_read(config_path("model"))
+	seen^ = stamp
+	if !ok do return MODEL_DEFAULT
 	m, _ := model_parse(strings.trim_space(string(data)))
 	return m
 }
 
-model_save :: proc(m: Model) {
-	_ = os.write_entire_file(config_path("model"), transmute([]byte)model_short[m])
+model_save :: proc(m: Model, seen: ^File_Stamp) {
+	path := config_path("model")
+	lock := file_lock(path)
+	defer file_unlock(lock)
+	seen^, _ = file_replace(path, transmute([]byte)model_short[m])
 }
 
 // And the effort beside the model, for the same reason and in the same shape.
-effort_load :: proc() -> Effort {
-	data, err := os.read_entire_file_from_path(config_path("effort"), context.temp_allocator)
-	if err != nil do return EFFORT_DEFAULT
+effort_load :: proc(seen: ^File_Stamp) -> Effort {
+	data, stamp, ok := file_read(config_path("effort"))
+	seen^ = stamp
+	if !ok do return EFFORT_DEFAULT
 	e, _ := effort_parse(strings.trim_space(string(data)))
 	return e
 }
 
-effort_save :: proc(e: Effort) {
-	_ = os.write_entire_file(config_path("effort"), transmute([]byte)effort_flag[e])
+effort_save :: proc(e: Effort, seen: ^File_Stamp) {
+	path := config_path("effort")
+	lock := file_lock(path)
+	defer file_unlock(lock)
+	seen^, _ = file_replace(path, transmute([]byte)effort_flag[e])
 }
 
 archive_destroy :: proc(a: ^Archive) {

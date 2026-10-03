@@ -45,6 +45,14 @@ the symptom.
   ahead of it and then resumes the same session, and what it waits on is the
   process being gone (`session_running`) — not a turn remembering to say it
   ended, which is what left the first queue holding follow-ups for good.
+- **What another window did** is read off the disk. Two windows are two
+  processes over one config directory, and each file in it is the variable: a
+  window's copy is what it read last, caught up once a frame when the file has
+  moved (`app_catch_up`), and every change is made to the file as it stands,
+  under a lock (`todos_begin`). Each window used to write its own copy over
+  the other's. The turns another window holds are `app.elsewhere`, read off
+  the run directories every frame by `turns_survey`, and anything that asks
+  whether a card or a thread is busy asks it as well as `app.turns`.
 
 ### When a cache is allowed
 

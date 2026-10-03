@@ -305,8 +305,8 @@ shot_build :: proc(app: ^App, scene: Scene) {
 	// Why the two that need a reason have one. A headless turn has nowhere
 	// else to put it, and a card that says `failed` and nothing more is the
 	// thing this was added for.
-	app.notes[failed] = "keymap-wtype.txt has no level 3, so the lookup fell through"
-	app.notes[asked] = "worktree or in place? both were asked for above"
+	todo_set_note(&app.todos, failed, "keymap-wtype.txt has no level 3, so the lookup fell through")
+	todo_set_note(&app.todos, asked, "worktree or in place? both were asked for above")
 
 	// The running card, read off a turn rather than written on the card: see
 	// todo_display_state. No process behind it — nothing here starts one.

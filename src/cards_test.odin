@@ -4,7 +4,9 @@ import "core:fmt"
 import "core:os"
 import "core:slice"
 import "core:strings"
+import "core:sys/linux"
 import "core:testing"
+import "core:thread"
 import "core:time"
 
 // The card flow, pinned. Every one of these is here because the behaviour it
@@ -77,10 +79,11 @@ scratch_free :: proc(app: ^App) {
 	delete(app.status)
 	delete(app.history_draft)
 	turns_destroy(app)
+	elsewhere_clear(app)
+	delete(app.elsewhere)
 	load_destroy(&app.load)
 	chat_destroy(&app.chat)
 	delete(app.cwd)
-	app_notes_destroy(app)
 	archive_destroy(&app.archive)
 	groups_destroy(&app.groups)
 	canvas_destroy(&app.canvas)
@@ -128,13 +131,13 @@ dismissals_persist :: proc(t: ^testing.T) {
 	// Its own file, named here: these tests run alongside each other and a
 	// shared one would be read back with somebody else's list in it.
 	path := "/tmp/aithing-test-dismissals"
+	os.remove(path)
 	{
 		td: Todos
 		defer todos_destroy(&td)
+		todos_load(&td, path)
 		id := todos_add(&td, "rebake the atlas", "sess-3", "/tmp/proj")
 		todos_dismiss(&td, id)
-		td.dirty = true
-		todos_save(&td, path)
 	}
 	back: Todos
 	defer todos_destroy(&back)
@@ -182,15 +185,16 @@ x_on_a_card_survives_the_next_scan :: proc(t: ^testing.T) {
 @(test)
 cards_round_trip :: proc(t: ^testing.T) {
 	path := "/tmp/aithing-test-roundtrip"
+	os.remove(path)
 	{
 		td: Todos
 		defer todos_destroy(&td)
+		todos_load(&td, path)
 		first := todos_add(&td, "one", "", "/tmp/proj")
 		todos_add(&td, "two\twith a tab", "", "/tmp/proj")
 		todo_set_session(&td, first, "sess-r", "/tmp/proj")
 		todo_set_state(&td, first, .Done)
-		td.dirty = true
-		todos_save(&td, path)
+		todo_set_note(&td, first, "said what it did")
 	}
 	back: Todos
 	defer todos_destroy(&back)
@@ -200,6 +204,7 @@ cards_round_trip :: proc(t: ^testing.T) {
 	// A tab is what the file splits on, so an item never carries one.
 	testing.expect_value(t, back.list[1].text, "two with a tab")
 	testing.expect_value(t, back.list[0].state, Todo_State.Done)
+	testing.expect_value(t, back.list[0].note, "said what it did")
 	testing.expect(t, todos_has(&back, "sess-r"))
 }
 
@@ -739,7 +744,7 @@ a_stopped_turn_is_not_a_failure :: proc(t: ^testing.T) {
 	app_apply_event_for_test(app, 0, &ev)
 
 	testing.expect_value(t, app.todos.list[0].state, Todo_State.Open)
-	testing.expect_value(t, app.notes[id], "stopped")
+	testing.expect_value(t, app_note_of(app, id), "stopped")
 }
 
 // Reading along with a card changes nothing about what becomes of it. Opening
@@ -772,7 +777,7 @@ a_watched_turn_fails_the_same_way :: proc(t: ^testing.T) {
 	app_apply_event_for_test(app, 0, &ev)
 
 	testing.expect_value(t, app.todos.list[0].state, Todo_State.Failed)
-	testing.expect_value(t, app.notes[id], "claude exited with 1")
+	testing.expect_value(t, app_note_of(app, id), "claude exited with 1")
 }
 
 // And a turn stopped by hand is not a failure on that side either.
@@ -797,7 +802,7 @@ a_stopped_turn_being_watched_is_not_a_failure :: proc(t: ^testing.T) {
 	app_apply_event_for_test(app, 0, &ev)
 
 	testing.expect_value(t, app.todos.list[0].state, Todo_State.Open)
-	testing.expect_value(t, app.notes[id], "stopped")
+	testing.expect_value(t, app_note_of(app, id), "stopped")
 }
 
 // A card lands in the project you are working in. Opening a thread is saying
@@ -1046,7 +1051,7 @@ a_turn_that_asked_is_not_complete :: proc(t: ^testing.T) {
 	testing.expect_value(t, app.todos.list[0].state, Todo_State.Asked)
 	// And the question travels to the card: there is no transcript anyone is
 	// watching, so the grid is the only place it can be read.
-	testing.expect_value(t, app.notes[id], "msdf or sdf?")
+	testing.expect_value(t, app_note_of(app, id), "msdf or sdf?")
 }
 
 // A turn that never said anything about its work is read the same way. The
@@ -1186,7 +1191,7 @@ a_card_that_was_asked_for_never_says_waiting :: proc(t: ^testing.T) {
 	for turn in app.turns do turn.runner.running = false
 	turns_reap(app)
 	testing.expect_value(t, app.todos.list[0].state, Todo_State.Failed)
-	testing.expect_value(t, app.notes[id], "the turn ended without a word")
+	testing.expect_value(t, app_note_of(app, id), "the turn ended without a word")
 }
 
 // The handshake never reaches the screen. A thread read back off disk has
@@ -1973,11 +1978,12 @@ a_project_worked_only_on_cards_is_in_the_launcher :: proc(t: ^testing.T) {
 effort_is_medium_until_it_is_picked :: proc(t: ^testing.T) {
 	scratch_dir(t)
 	os.remove(config_path("effort"))
-	testing.expect_value(t, effort_load(), EFFORT_DEFAULT)
+	seen: File_Stamp
+	testing.expect_value(t, effort_load(&seen), EFFORT_DEFAULT)
 	testing.expect_value(t, EFFORT_DEFAULT, Effort.Medium)
 
-	effort_save(.Xhigh)
-	testing.expect_value(t, effort_load(), Effort.Xhigh)
+	effort_save(.Xhigh, &seen)
+	testing.expect_value(t, effort_load(&seen), Effort.Xhigh)
 
 	// Anything that is not one of the five is the default again, not a level
 	// the harness would reject.
@@ -2457,4 +2463,272 @@ a_subagent_is_on_the_turn_until_it_comes_back :: proc(t: ^testing.T) {
 	event_destroy(&back)
 	testing.expect_value(t, len(turn.tasks), 0)
 	testing.expect_value(t, len(turn.left), 0)
+}
+
+// Two windows open at once are two copies of the list over one file, and each
+// used to write its own copy over the other's: a card typed in one never
+// reached the other, the next save in the other took it off the disk, and
+// both handed out the same number next, which is two agents in one worktree.
+@(test)
+two_windows_keep_one_list :: proc(t: ^testing.T) {
+	path := "/tmp/aithing-test-two-windows"
+	os.remove(path)
+	a, b: Todos
+	defer todos_destroy(&a)
+	defer todos_destroy(&b)
+	todos_load(&a, path)
+	todos_load(&b, path)
+
+	// Cloned, because catching up replaces the strings the list handed back.
+	one := strings.clone(todos_add(&a, "one", "", "/tmp/proj"), context.temp_allocator)
+	two := strings.clone(todos_add(&b, "two", "", "/tmp/proj"), context.temp_allocator)
+	testing.expect(t, one != two, "two windows handed out one number")
+	testing.expect(t, todos_sync(&a))
+	testing.expect(t, todos_sync(&b))
+	testing.expect_value(t, len(a.list), 2)
+	testing.expect_value(t, len(b.list), 2)
+	testing.expect(t, !todos_sync(&a), "a file nobody has touched is read again")
+
+	// What became of a card, said in one window, is what the other says.
+	todo_set_state(&a, one, .Done)
+	todo_set_note(&a, one, "it is in")
+	todos_dismiss(&b, two)
+	todos_sync(&a)
+	todos_sync(&b)
+	for w in ([]^Todos{&a, &b}) {
+		testing.expect_value(t, len(w.list), 1)
+		if len(w.list) != 1 do continue
+		testing.expect_value(t, w.list[0].state, Todo_State.Done)
+		testing.expect_value(t, w.list[0].note, "it is in")
+		testing.expect(t, todos_dismissed(w, typed_key(two)))
+	}
+
+	// The newest card dismissed does not give its number back: the next card
+	// would find the first one's worktree still standing.
+	three := strings.clone(todos_add(&a, "three", "", "/tmp/proj"), context.temp_allocator)
+	todos_dismiss(&a, three)
+	fresh: Todos
+	defer todos_destroy(&fresh)
+	todos_load(&fresh, path)
+	four := todos_add(&fresh, "four", "", "/tmp/proj")
+	testing.expect(t, todo_seq(Todo{id = four}) > todo_seq(Todo{id = three}), "a number handed out twice")
+}
+
+// The same, with the two windows typing at once rather than taking turns: a
+// read and the write that depends on it have to be one step, or the second
+// window writes the file it read a moment before the first one's card went
+// into it.
+@(test)
+two_windows_typing_at_once_lose_nothing :: proc(t: ^testing.T) {
+	path := "/tmp/aithing-test-typing-at-once"
+	os.remove(path)
+	EACH :: 40
+	window :: proc(path: string) {
+		w: Todos
+		defer todos_destroy(&w)
+		todos_load(&w, path)
+		for i in 0 ..< EACH {
+			todos_add(&w, fmt.tprintf("card %d", i), "", "/tmp/proj")
+			// The frame between one card and the next, which is when a
+			// window catches up.
+			todos_sync(&w)
+		}
+		free_all(context.temp_allocator)
+	}
+	a := thread.create_and_start_with_poly_data(path, window)
+	b := thread.create_and_start_with_poly_data(path, window)
+	thread.join(a)
+	thread.join(b)
+	thread.destroy(a)
+	thread.destroy(b)
+
+	back: Todos
+	defer todos_destroy(&back)
+	todos_load(&back, path)
+	testing.expect_value(t, len(back.list), 2 * EACH)
+	ids := make(map[string]bool, context.temp_allocator)
+	for td in back.list do ids[td.id] = true
+	testing.expect_value(t, len(ids), 2 * EACH)
+}
+
+// What a thread runs on is one answer in every window. Each window wrote the
+// map it had read on the way up, so the chips under a thread said one model
+// in one window and another beside it, and the last window to name a thread
+// took every other window's choices off the disk.
+@(test)
+two_windows_agree_on_what_a_thread_runs_on :: proc(t: ^testing.T) {
+	scratch_dir(t)
+	a := scratch_app()
+	defer scratch_free(a)
+	b := scratch_app()
+	defer scratch_free(b)
+	thread_settings_load(a)
+	thread_settings_load(b)
+
+	// Names nothing else in the suite uses, so the shared file is no help.
+	here := fmt.tprintf("sess-here-%d", time.now()._nsec)
+	there := fmt.tprintf("sess-there-%d", time.now()._nsec)
+	thread_keep(a, here, Setting{.Opus, .Max})
+	thread_keep(b, there, Setting{.Haiku, .Low})
+	testing.expect_value(t, thread_setting(b, here), Setting{.Opus, .Max})
+	testing.expect(t, thread_settings_sync(a))
+	testing.expect_value(t, thread_setting(a, there), Setting{.Haiku, .Low})
+}
+
+// A run another window is holding is running, here as much as there: the card
+// says so, a click does not start a second agent on it, and a message typed
+// into its thread waits for it. And when that window goes, this one takes the
+// run over and sees it to the end.
+@(test)
+a_turn_another_window_holds :: proc(t: ^testing.T) {
+	scratch_dir(t)
+	app := scratch_app()
+	defer scratch_free(app)
+	app.cwd = strings.clone("/tmp")
+
+	root := "/tmp/aithing-test-survey-held"
+	os.remove_all(root)
+	// No project, so nothing asks git where the work went once it ends.
+	card := todos_add(&app.todos, "bake the atlas", "", "")
+	asked := todos_add(&app.todos, "which atlas", "sess-held", "")
+	ran := held_run(root, "1-0", fmt.tprintf(`{{"todo":"%s","cwd":"/tmp"}}`, card))
+	followed := held_run(root, "2-0", `{"session":"sess-held","cwd":"/tmp"}`)
+	// Half made, the way a run is before it has its own name.
+	os.make_directory_all(strings.concatenate({root, "/.3-0"}, context.temp_allocator))
+
+	testing.expect(t, turns_survey(app, root))
+	testing.expect_value(t, app_turns_live(app), 0)
+	testing.expect_value(t, len(app.elsewhere), 2)
+	testing.expect_value(t, todo_display_state(app, app.todos.list[todos_find(&app.todos, card)]), Todo_State.Running)
+	testing.expect_value(t, todo_display_state(app, app.todos.list[todos_find(&app.todos, asked)]), Todo_State.Running)
+	testing.expect(t, app_session_busy(app, "sess-held"), "a message typed here would go out beside it")
+	app_start_todo(app, card)
+	testing.expect_value(t, app_turns_live(app), 0)
+	testing.expect(t, !turns_survey(app, root), "nothing moved, and the survey said it had")
+
+	// The window holding the first goes; the second finishes over there.
+	write_run(ran.dir, "out", `{"type":"system","subtype":"init","session_id":"sess-taken"}` + "\n")
+	write_run(ran.dir, "exit", "0")
+	os.close(followed.lock)
+	os.remove_all(followed.dir)
+	os.close(ran.lock)
+	// Not always on the first try: see a_turn_outlives_the_window_that_started_it.
+	for _ in 0 ..< 100 {
+		if turns_survey(app, root) && app_turns_live(app) == 1 do break
+		time.sleep(5 * time.Millisecond)
+	}
+	testing.expect_value(t, app_turns_live(app), 1)
+	testing.expect_value(t, len(app.elsewhere), 0)
+	testing.expect(t, !app_session_busy(app, "sess-held"))
+
+	deadline := time.time_add(time.now(), 5 * time.Second)
+	for app_turns_live(app) > 0 && time.diff(time.now(), deadline) > 0 {
+		app_apply_events(app)
+		turns_reap(app)
+		time.sleep(5 * time.Millisecond)
+	}
+	at := todos_find(&app.todos, card)
+	testing.expect_value(t, app.todos.list[at].session, "sess-taken")
+	// No verdict was given, so the work is not called finished.
+	testing.expect_value(t, app.todos.list[at].state, Todo_State.Asked)
+}
+
+// Esc on a card stops its turn whichever window is holding it, and says so in
+// the run, so the window holding it reads `stopped` rather than a crash.
+@(test)
+esc_stops_a_turn_another_window_holds :: proc(t: ^testing.T) {
+	scratch_dir(t)
+	app := scratch_app()
+	defer scratch_free(app)
+	root := "/tmp/aithing-test-survey-stop"
+	os.remove_all(root)
+	card := todos_add(&app.todos, "bake the atlas", "", "")
+	held := held_run(root, "1-0", fmt.tprintf(`{{"todo":"%s"}}`, card))
+	defer os.close(held.lock)
+	// What the other window's harness looks like from here: a group of its
+	// own, and a shell with the run's directory on its command line. Two
+	// commands, the way RUN_SCRIPT is, or the shell execs the last one in its
+	// own place and the directory is gone from the command line.
+	process, err := os.process_start({command = {"setsid", "sh", "-c", "sleep 30; true", held.dir}})
+	if !testing.expect(t, err == nil, "could not start a stand-in") do return
+	write_run(held.dir, "pid", fmt.tprintf("%d", process.pid))
+	// Until it has exec'd, its command line is this process's, and a stop
+	// rightly takes that for some other program wearing the pid.
+	for _ in 0 ..< 500 {
+		cmd, _ := os.read_entire_file_from_path(fmt.tprintf("/proc/%d/cmdline", process.pid), context.temp_allocator)
+		if strings.contains(string(cmd), held.dir) do break
+		time.sleep(2 * time.Millisecond)
+	}
+
+	turns_survey(app, root)
+	canvas_set_sel(app, card)
+	app_interrupt(app)
+	state, _ := os.process_wait(process, 5 * time.Second)
+	testing.expect(t, state.exited, "the turn over there is still running")
+	testing.expect(t, run_stopped(held.dir), "nothing in the run says it was stopped")
+}
+
+@(private = "file")
+Held_Run :: struct {
+	dir:  string,
+	lock: ^os.File,
+}
+
+// A run directory with its lock held, which is what another window's run is.
+@(private = "file")
+held_run :: proc(root, name, note: string) -> Held_Run {
+	dir := strings.concatenate({root, "/", name}, context.temp_allocator)
+	os.make_directory_all(dir)
+	write_run(dir, "turn.json", note)
+	f, _ := os.open(run_file(dir, "lock"), {.Write, .Create})
+	_ = linux.flock(linux.Fd(os.fd(f)), {.EX, .NB})
+	return {dir, f}
+}
+
+@(private = "file")
+write_run :: proc(dir, name, text: string) {
+	_ = os.write_entire_file(run_file(dir, name), text)
+}
+
+// The survey is once a frame, so what it costs is pinned the way the grid's
+// is. A run another window holds is a lock tried and a note read, which is
+// about half a millisecond for twenty on a quiet machine. The budget is ten
+// times that, because a loaded one gets there too, and it is here to catch a
+// git call or a directory walk per run, which is ten times that again.
+@(test)
+the_runs_are_cheap_to_survey :: proc(t: ^testing.T) {
+	RUNS :: 20
+	BUDGET_MS :: f64(5)
+	app := new(App)
+	defer free(app)
+	root := "/tmp/aithing-test-survey-cost"
+	os.remove_all(root)
+	held := make([dynamic]Held_Run, context.temp_allocator)
+	for i in 0 ..< RUNS {
+		append(&held, held_run(root, fmt.tprintf("%d-0", i), fmt.tprintf(`{{"todo":"n-%d","session":"sess-%d","cwd":"/tmp"}}`, i, i)))
+	}
+	defer for h in held do os.close(h.lock)
+	defer {
+		elsewhere_clear(app)
+		delete(app.elsewhere)
+		turns_destroy(app)
+	}
+
+	turns_survey(app, root)
+	testing.expect_value(t, len(app.elsewhere), RUNS)
+	// On this thread's clock, not the wall's: the suite runs it beside a
+	// hundred other tests forking git, and the wall clock measured the
+	// scheduler — ten times over, on a bad run.
+	ROUNDS :: 20
+	start := thread_cpu_ms()
+	for _ in 0 ..< ROUNDS do turns_survey(app, root)
+	each := (thread_cpu_ms() - start) / ROUNDS
+	fmt.printfln("  survey, %d runs held elsewhere: %.3f ms", RUNS, each)
+	testing.expectf(t, each < BUDGET_MS, "a survey of %d runs took %.3fms", RUNS, each)
+}
+
+@(private = "file")
+thread_cpu_ms :: proc() -> f64 {
+	ts, _ := linux.clock_gettime(.THREAD_CPUTIME_ID)
+	return f64(ts.time_sec) * 1000 + f64(ts.time_nsec) / 1e6
 }

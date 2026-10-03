@@ -66,7 +66,8 @@ Turn :: struct {
 	verdict: Verdict,
 	say:     string,
 	// Stopped by hand, so the non-zero exit that follows is not a failure of
-	// the work and must not be reported as one.
+	// the work and must not be reported as one. Only a stop made in this
+	// window: ask turn_stopped, which hears about the others too.
 	stopped: bool,
 	// Already accounted for. The harness can say Failed and then Done for one
 	// turn, and the cards must take the first of those and not the second —
@@ -195,10 +196,15 @@ app_session_busy :: proc(app: ^App, session: string) -> bool {
 // turn has settled and not yet been reaped has two slots naming it for a
 // frame, and the finished one answered for the running one — which let a
 // second message out into a thread that was still busy.
+//
+// And another window's process, which is the same two harnesses appending to
+// one file when a message typed here goes out beside it. The message waits
+// for that run's directory to go, which is that window having read it to the
+// end — or, if that window closes first, this one taking it over.
 session_running :: proc(app: ^App, session: string) -> bool {
 	if session == "" do return false
 	for t in app.turns do if t.live && t.session == session && runner_busy(&t.runner) do return true
-	return false
+	return elsewhere_session(app, session)
 }
 
 // A turn running in the thread on screen: what the composer draws itself
@@ -360,9 +366,9 @@ turn_start :: proc(app: ^App, cwd, project, session, prompt, todo: string, chat:
 }
 
 // What a window picking this turn up needs to know that the stream will not
-// tell it: where it runs, the project and the card it is for. The thread it
-// writes to is here only for a follow-up, which knows it from the start; a new
-// thread is named by the first record in `out`, and adopting reads that again.
+// tell it: where it runs, the project and the card it is for, and the thread
+// it writes to once there is one — a follow-up knows it from the start, and a
+// new thread has it written in when the harness names it.
 Turn_Note :: struct {
 	session: string,
 	cwd:     string,
@@ -373,67 +379,200 @@ Turn_Note :: struct {
 	effort:  string,
 }
 
-@(private = "file")
+// Written when the turn starts and again once the harness has named the
+// thread, because a window beside this one reads the note to know which
+// thread the run is writing, and a note that still says "" has it sending a
+// message into a thread it thinks is free. Through a rename, because that
+// window reads it every frame.
 turn_write_note :: proc(t: ^Turn) {
 	if t.runner.dir == "" do return
 	note := Turn_Note{t.session, t.cwd, t.project, t.todo, t.again, model_short[t.setting.model], effort_flag[t.setting.effort]}
 	data, err := json.marshal(note, allocator = context.temp_allocator)
 	if err != nil do return
-	_ = os.write_entire_file(run_file(t.runner.dir, "turn.json"), data)
+	_, _ = file_replace(run_file(t.runner.dir, "turn.json"), data)
 }
 
-// Every turn a window since closed left behind, running or finished while
-// nobody was looking, taken back as if this window had started it. Headless
-// to begin with: it draws into the transcript only once its thread is opened,
-// the same as a card's turn does.
+// A turn another window is holding: what its note says it is for. This
+// window cannot read its stream — the other window holds that — but it can
+// see that it is there, and every question about a card or a thread that
+// asks whether something is working on it has to hear about it. Without this
+// a card one window was running read `waiting` in the other, and a click
+// there started a second agent on it in the same tree.
+Elsewhere :: struct {
+	todo:    string,
+	session: string,
+	cwd:     string,
+	dir:     string, // the run, which is how this window stops it
+}
+
+// Every run in the cache, sorted into three: this window's own, which are in
+// app.turns already; one nobody holds, which a window since closed left
+// behind and which is taken back here as if this window had started it; and
+// one another window holds, which goes into app.elsewhere. Once a frame and
+// on the way up, so a window closed while this one stays open hands its turns
+// over, and a turn started in the other window shows here a frame later.
 //
-// A directory another window is holding is that window's, and one with no
-// note in it — a window that died in the instant between starting a turn and
-// writing down what it was for — is still read, for the thread it names.
-turns_adopt :: proc(app: ^App) {
-	root := cache_path("runs")
+// Taken back headless: it draws into the transcript only once its thread is
+// open, the same as a card's turn does. A directory with no note in it — a
+// window that died in the instant between starting a turn and writing down
+// what it was for — is still read, for the thread it names.
+//
+// What it costs is a lock tried and a note read per run some other window is
+// holding, which is a handful: see the_runs_are_cheap_to_survey.
+// `root` is for the tests, which keep their runs out of the cache the rest of
+// the suite clears.
+turns_survey :: proc(app: ^App, root := "") -> bool {
+	seen := make([dynamic]Elsewhere, context.temp_allocator)
+	took := false
+	if entries, ok := run_dirs(root != "" ? root : cache_path("runs")); ok {
+		for e in entries {
+			if turn_holding(app, e.fullpath) do continue
+			note := run_note(e.fullpath)
+			if turn_take(app, e.fullpath, note) {
+				took = true
+				continue
+			}
+			append(&seen, Elsewhere{note.todo, note.session, note.cwd, e.fullpath})
+		}
+	}
+	if took do turns_rebind(app)
+	if !took && elsewhere_same(app.elsewhere[:], seen[:]) do return false
+	// The thread on screen was being written over there and is not any more.
+	// What this window has of it is the file as it stood when it was opened —
+	// nothing streams here from a run another window holds — so it is read
+	// again now that it is whole, or it sits half written until it is opened
+	// again.
+	open := app.chat.session_id
+	if elsewhere_session(app, open) && turn_for_session(app, open) < 0 {
+		over := true
+		for e in seen do if e.session == open do over = false
+		if over && load_again(&app.load, open) do app_status(app, "loading...")
+	}
+	elsewhere_clear(app)
+	for e in seen do append(&app.elsewhere, Elsewhere{strings.clone(e.todo), strings.clone(e.session), strings.clone(e.cwd), strings.clone(e.dir)})
+	return true
+}
+
+// The run directories, without the ones on their way in or out: a run is
+// made under a hidden name and renamed into place once it is locked, and
+// renamed out of the way again before it is removed (see runner.odin), so a
+// directory under its own name is always a whole one.
+@(private = "file")
+run_dirs :: proc(root: string) -> (out: []os.File_Info, ok: bool) {
 	dir, err := os.open(root)
 	if err != nil do return
 	defer os.close(dir)
 	entries, read_err := os.read_directory(dir, -1, context.temp_allocator)
 	if read_err != nil do return
-	for e in entries {
-		if e.type != .Directory do continue
-		note: Turn_Note
-		if data, ok := os.read_entire_file_from_path(run_file(e.fullpath, "turn.json"), context.temp_allocator); ok == nil {
-			_ = json.unmarshal(data, &note, allocator = context.temp_allocator)
-		}
-		pid := 0
-		if data, ok := os.read_entire_file_from_path(run_file(e.fullpath, "pid"), context.temp_allocator); ok == nil {
-			pid, _ = strconv.parse_int(strings.trim_space(string(data)))
-		}
-		// The slot first and the index after: `app.turns[turn_slot(app)]`
-		// reads the array before the call grows it, so the first turn adopted
-		// into an empty window indexed past the end and nothing started.
-		at := turn_slot(app)
-		t := app.turns[at]
-		// Nothing to give back when this says no: it takes nothing until it
-		// has the lock, and the slot stays empty for the next turn.
-		if !runner_adopt(&t.runner, e.fullpath, pid) do continue
-		t.live = true
-		t.session = strings.clone(note.session)
-		t.cwd = strings.clone(note.cwd)
-		t.project = strings.clone(note.project)
-		t.todo = strings.clone(note.todo)
-		t.again = note.again
-		// A note from before it said is a turn started on the window's.
-		t.setting = Setting{app.model, app.effort}
-		if m, ok := model_parse(note.model); ok do t.setting.model = m
-		if e, ok := effort_parse(note.effort); ok do t.setting.effort = e
-	}
+	list := make([dynamic]os.File_Info, context.temp_allocator)
+	for e in entries do if e.type == .Directory && !strings.has_prefix(e.name, ".") do append(&list, e)
+	return list[:], true
 }
 
-// Where every adopted turn is working, which the startup sweep of finished
-// cards' trees must leave alone: a follow-up to a card that is done runs in
-// that card's tree.
+@(private = "file")
+run_note :: proc(dir: string) -> (note: Turn_Note) {
+	if data, err := os.read_entire_file_from_path(run_file(dir, "turn.json"), context.temp_allocator); err == nil {
+		_ = json.unmarshal(data, &note, allocator = context.temp_allocator)
+	}
+	return
+}
+
+// Whether this window is already reading a run.
+@(private = "file")
+turn_holding :: proc(app: ^App, dir: string) -> bool {
+	for t in app.turns do if t.live && t.runner.dir == dir do return true
+	return false
+}
+
+// A run nobody holds, taken into a slot. False when another window holds it,
+// and then nothing is taken: the slot stays empty for the next turn.
+@(private = "file")
+turn_take :: proc(app: ^App, dir: string, note: Turn_Note) -> bool {
+	// The slot first and the index after: `app.turns[turn_slot(app)]` reads
+	// the array before the call grows it, so the first turn adopted into an
+	// empty window indexed past the end and nothing started.
+	at := turn_slot(app)
+	t := app.turns[at]
+	if !runner_adopt(&t.runner, dir) do return false
+	t.live = true
+	t.session = strings.clone(note.session)
+	t.cwd = strings.clone(note.cwd)
+	t.project = strings.clone(note.project)
+	t.todo = strings.clone(note.todo)
+	t.again = note.again
+	// A note from before it said is a turn started on the window's.
+	t.setting = Setting{app.model, app.effort}
+	if m, ok := model_parse(note.model); ok do t.setting.model = m
+	if e, ok := effort_parse(note.effort); ok do t.setting.effort = e
+	return true
+}
+
+@(private = "file")
+elsewhere_same :: proc(a, b: []Elsewhere) -> bool {
+	if len(a) != len(b) do return false
+	for x, i in a do if x != b[i] do return false
+	return true
+}
+
+elsewhere_clear :: proc(app: ^App) {
+	for e in app.elsewhere {
+		delete(e.todo)
+		delete(e.session)
+		delete(e.cwd)
+		delete(e.dir)
+	}
+	clear(&app.elsewhere)
+}
+
+// Another window is working on this card: its own turn, or one in its thread.
+elsewhere_card :: proc(app: ^App, td: Todo) -> bool {
+	for e in app.elsewhere {
+		if e.todo == td.id do return true
+		if td.session != "" && e.session == td.session do return true
+	}
+	return false
+}
+
+// Stops whatever another window is running on a card or in a thread. A card
+// says `processing` in every window, so Esc and the x mean the same in every
+// window: they used to stop only what the window they were pressed in was
+// holding, and a card running beside it went on running under a press that
+// had plainly been meant for it.
+elsewhere_stop :: proc(app: ^App, todo, session: string) -> bool {
+	stopped := false
+	for e in app.elsewhere {
+		if (todo != "" && e.todo == todo) || (session != "" && e.session == session) {
+			run_stop(e.dir)
+			stopped = true
+		}
+	}
+	return stopped
+}
+
+// Another window has a process writing this thread.
+elsewhere_session :: proc(app: ^App, session: string) -> bool {
+	if session == "" do return false
+	for e in app.elsewhere do if e.session == session do return true
+	return false
+}
+
+// Something is working in this directory, in this window or another: the
+// question every landing has to ask before it takes a tree away from under
+// whatever is in it.
+tree_busy :: proc(app: ^App, cwd: string, except: ^Turn = nil) -> bool {
+	if cwd == "" do return false
+	for t in app.turns do if t != except && t.live && t.cwd == cwd do return true
+	for e in app.elsewhere do if e.cwd == cwd do return true
+	return false
+}
+
+// Where every turn is working, this window's and the other windows', which
+// the startup sweep of finished cards' trees must leave alone: a follow-up to
+// a card that is done runs in that card's tree.
 turns_cwds :: proc(app: ^App, allocator := context.temp_allocator) -> []string {
 	out := make([dynamic]string, allocator)
 	for t in app.turns do if t.live && t.cwd != "" do append(&out, t.cwd)
+	for e in app.elsewhere do if e.cwd != "" do append(&out, e.cwd)
 	return out[:]
 }
 
@@ -485,6 +624,11 @@ turns_rebind :: proc(app: ^App) {
 	for t in app.turns {
 		t.chat = t.live && t.session != "" && t.session == app.chat.session_id
 	}
+}
+
+// Stopped by hand, here or in any other window.
+turn_stopped :: proc(t: ^Turn) -> bool {
+	return t.stopped || run_stopped(t.runner.dir)
 }
 
 // Stops one turn, on purpose. The kill makes the process exit non-zero, which
@@ -627,7 +771,7 @@ AGAIN_PROMPT :: "Your last turn ended while work you had started in the backgrou
 // `processing` from the moment it is decided: the work is not done, and the
 // card says so.
 turn_send_back :: proc(app: ^App, t: ^Turn) -> bool {
-	if len(t.left) == 0 || t.again || t.stopped || t.session == "" do return false
+	if len(t.left) == 0 || t.again || turn_stopped(t) || t.session == "" do return false
 	prompt := strings.concatenate({AGAIN_PROMPT, strings.join(t.left[:], "; ", context.temp_allocator)}, context.temp_allocator)
 	// A card's turn is headless and is asked for a verdict like the one it
 	// is finishing; a thread a person typed into is read by that person.

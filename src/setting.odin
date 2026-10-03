@@ -1,7 +1,6 @@
 package aithing
 
 import "core:fmt"
-import "core:os"
 import "core:strings"
 
 // What a turn runs on: which model answers and how hard it thinks.
@@ -56,8 +55,8 @@ app_setting :: proc(app: ^App) -> Setting {
 app_choose :: proc(app: ^App, s: Setting) {
 	session := app_setting_thread(app)
 	if session == "" {
-		if s.model != app.model do model_save(s.model)
-		if s.effort != app.effort do effort_save(s.effort)
+		if s.model != app.model do model_save(s.model, &app.model_seen)
+		if s.effort != app.effort do effort_save(s.effort, &app.effort_seen)
 		app.model, app.effort = s.model, s.effort
 		return
 	}
@@ -80,21 +79,34 @@ thread_keep :: proc(app: ^App, session: string, s: Setting) {
 	thread_set(app, session, s)
 }
 
+// Written through, under the lock, onto whatever the other windows have
+// written since: the whole map goes back out, and a window writing the map it
+// read on the way up put every other window's threads back the way they were.
 @(private = "file")
 thread_set :: proc(app: ^App, session: string, s: Setting) {
+	path := config_path("threads")
+	lock := file_lock(path)
+	defer file_unlock(lock)
+	thread_settings_sync(app)
 	if _, has := app.per_thread[session]; !has {
 		app.per_thread[strings.clone(session)] = s
 	} else {
 		app.per_thread[session] = s
 	}
-	thread_settings_save(app)
+	b := strings.builder_make(context.temp_allocator)
+	for id, s in app.per_thread {
+		fmt.sbprintfln(&b, "%s %s %s", id, model_short[s.model], effort_flag[s.effort])
+	}
+	app.threads_seen, _ = file_replace(path, transmute([]byte)strings.to_string(b))
 }
 
 // One line a thread, `<id> <model> <effort>`, in the words the command line
 // takes, beside the window's own choice.
 thread_settings_load :: proc(app: ^App) {
-	data, err := os.read_entire_file_from_path(config_path("threads"), context.temp_allocator)
-	if err != nil do return
+	thread_settings_clear(app)
+	data, stamp, ok := file_read(config_path("threads"))
+	app.threads_seen = stamp
+	if !ok do return
 	it := each_line(string(data))
 	for line in iter_next(&it) {
 		f := strings.fields(line, context.temp_allocator)
@@ -102,20 +114,27 @@ thread_settings_load :: proc(app: ^App) {
 		m, mok := model_parse(f[1])
 		e, eok := effort_parse(f[2])
 		if !mok || !eok do continue
+		if f[0] in app.per_thread do continue
 		app.per_thread[strings.clone(f[0])] = Setting{m, e}
 	}
 }
 
+// Read again when another window has written it, so a thread changed over
+// there runs on the same thing here — its chips said one model in each window,
+// and the next message went out on whichever window it was typed into.
+thread_settings_sync :: proc(app: ^App) -> bool {
+	if file_stamp(config_path("threads")) == app.threads_seen do return false
+	thread_settings_load(app)
+	return true
+}
+
 @(private = "file")
-thread_settings_save :: proc(app: ^App) {
-	b := strings.builder_make(context.temp_allocator)
-	for id, s in app.per_thread {
-		fmt.sbprintfln(&b, "%s %s %s", id, model_short[s.model], effort_flag[s.effort])
-	}
-	_ = os.write_entire_file(config_path("threads"), transmute([]byte)strings.to_string(b))
+thread_settings_clear :: proc(app: ^App) {
+	for id in app.per_thread do delete(id)
+	clear(&app.per_thread)
 }
 
 thread_settings_destroy :: proc(app: ^App) {
-	for id in app.per_thread do delete(id)
+	thread_settings_clear(app)
 	delete(app.per_thread)
 }

@@ -156,12 +156,13 @@ effort_parse :: proc(name: string) -> (e: Effort, ok: bool) {
 // process this window is no longer the parent of. The whole lot runs under
 // `setsid`, out of this window's session and process group, so neither a
 // terminal closing nor a Ctrl-C reaches it. The reader tails `out`, and the
-// window that opens next finds the directory still there and tails it again
-// from the top (see turns_adopt).
+// window that opens next — or one already open beside it — finds the
+// directory still there and tails it again from the top (see turns_survey).
 //
 // The window holding a run holds an flock on `lock`, which is how a second
 // window open at the same time knows not to adopt it too and land the same
-// card twice. The kernel lets go of it when the window dies, however it dies.
+// card twice, and how it knows the run is somebody's and is running. The
+// kernel lets go of it when the window dies, however it dies.
 RUN_SCRIPT :: `"$@"; echo $? >"$0/exit.tmp" && mv "$0/exit.tmp" "$0/exit"`
 
 // How long the reader waits at the end of `out` before looking again. A pipe
@@ -244,16 +245,33 @@ runner_start_in :: proc(r: ^Runner, dir, cwd, session_id, prompt, model, effort:
 	runner_detach(r)
 	runner_unlock(r)
 
-	if err := os.make_directory_all(dir); err != nil {
-		runner_fail(r, fmt.tprintf("cannot make %s: %v", dir, err))
-		return false
-	}
 	lock: ^os.File
-	if !probe {
-		lock = run_lock(dir)
+	if probe {
+		if err := os.make_directory_all(dir); err != nil {
+			runner_fail(r, fmt.tprintf("cannot make %s: %v", dir, err))
+			return false
+		}
+	} else {
+		// Made beside its own name, locked, and only then renamed into it. A
+		// window open beside this one surveys the runs every frame, and one
+		// that came across the directory in the instant before the lock was
+		// taken found a run nobody held, and took it.
+		stage := run_aside(dir)
+		_ = os.remove_all(stage)
+		if err := os.make_directory_all(stage); err != nil {
+			runner_fail(r, fmt.tprintf("cannot make %s: %v", stage, err))
+			return false
+		}
+		lock = run_lock(stage)
 		if lock == nil {
-			runner_fail(r, fmt.tprintf("cannot lock %s", dir))
-			_ = os.remove_all(dir)
+			runner_fail(r, fmt.tprintf("cannot lock %s", stage))
+			_ = os.remove_all(stage)
+			return false
+		}
+		if err := os.rename(stage, dir); err != nil {
+			os.close(lock)
+			_ = os.remove_all(stage)
+			runner_fail(r, fmt.tprintf("cannot make %s: %v", dir, err))
 			return false
 		}
 	}
@@ -293,8 +311,8 @@ runner_start_in :: proc(r: ^Runner, dir, cwd, session_id, prompt, model, effort:
 	if err_file != nil do os.close(err_file)
 
 	if start_err != nil {
+		if !probe do run_remove(dir)
 		if lock != nil do os.close(lock)
-		if !probe do _ = os.remove_all(dir)
 		runner_fail(r, fmt.tprintf("cannot run claude: %v", start_err))
 		return false
 	}
@@ -324,10 +342,13 @@ runner_start_in :: proc(r: ^Runner, dir, cwd, session_id, prompt, model, effort:
 }
 
 // Picks up a run a window since closed left going, or left finished and not
-// yet read. False when another window already holds it.
-runner_adopt :: proc(r: ^Runner, dir: string, pid: int) -> bool {
+// yet read. False when another window already holds it — which is what nearly
+// every call finds, once a frame, so nothing else is read until the lock says
+// the run is free.
+runner_adopt :: proc(r: ^Runner, dir: string) -> bool {
 	lock := run_lock(dir)
 	if lock == nil do return false
+	pid := run_pid(dir)
 	size: i64
 	if info, err := os.stat(run_file(dir, "out"), context.temp_allocator); err == nil do size = info.size
 
@@ -348,6 +369,26 @@ runner_adopt :: proc(r: ^Runner, dir: string, pid: int) -> bool {
 // The directory's name for one of the files in it.
 run_file :: proc(dir, name: string) -> string {
 	return strings.concatenate({dir, "/", name}, context.temp_allocator)
+}
+
+// Where a run's directory is while it is being made or taken away: beside its
+// own name, under one the survey passes over.
+@(private = "file")
+run_aside :: proc(dir: string) -> string {
+	cut := strings.last_index_byte(dir, '/')
+	return strings.concatenate({dir[:cut + 1], ".", dir[cut + 1:]}, context.temp_allocator)
+}
+
+// Renamed out of the way and then removed, and only by the window holding its
+// lock. Removed where it stands it goes a file at a time, and a window
+// surveying the runs in between found a directory whose lock file had already
+// gone — made a new one, took that, and adopted what was left of a run that
+// was over.
+@(private = "file")
+run_remove :: proc(dir: string) {
+	gone := run_aside(dir)
+	if os.rename(dir, gone) != nil do gone = dir
+	_ = os.remove_all(gone)
 }
 
 // Close-on-exec, as everything os.open makes is: a lock the harness inherited
@@ -407,10 +448,42 @@ runner_stop :: proc(r: ^Runner) {
 	// the pid it carries is 0, and killing 0 is killing this whole process
 	// group — the window, and every turn in it.
 	if !run_alive(pid, dir, owned) do return
+	run_kill(dir, pid)
+}
+
+// Stops a run another window is holding: Esc, or the x, on a card whose turn
+// is over there. Asked of the command line the same as any run this window
+// did not start, so a pid left over from before a reboot is not killed.
+run_stop :: proc(dir: string) {
+	pid := run_pid(dir)
+	if !run_alive(pid, dir, false) do return
+	run_kill(dir, pid)
+}
+
+// Whether a run was stopped by hand, by whichever window. The kill ends the
+// harness exactly the way a crash does, and the window reading the run is not
+// always the one that stopped it — another window can, and a window that
+// closes straight after a stop hands the run to the next one — so it is
+// written into the run, where every window reading it can see.
+run_stopped :: proc(dir: string) -> bool {
+	return dir != "" && os.exists(run_file(dir, "stopped"))
+}
+
+@(private = "file")
+run_kill :: proc(dir: string, pid: int) {
+	_ = os.write_entire_file(run_file(dir, "stopped"), "")
 	_ = linux.kill(linux.Pid(-pid), .SIGKILL)
 	// And the pid on its own, for a child stopped before `setsid` has made
 	// it a group: there is no group -pid yet.
 	_ = linux.kill(linux.Pid(pid), .SIGKILL)
+}
+
+@(private = "file")
+run_pid :: proc(dir: string) -> int {
+	data, err := os.read_entire_file_from_path(run_file(dir, "pid"), context.temp_allocator)
+	if err != nil do return 0
+	pid, _ := strconv.parse_int(strings.trim_space(string(data)))
+	return pid
 }
 
 // Lets go of the run without stopping it: the reader goes, the process stays.
@@ -822,7 +895,7 @@ event_destroy :: proc(e: ^Event) {
 // of how the turn ended.
 runner_destroy :: proc(r: ^Runner) {
 	runner_detach(r)
-	if r.dir != "" && !r.running && len(r.events) == 0 do _ = os.remove_all(r.dir)
+	if r.dir != "" && !r.running && len(r.events) == 0 do run_remove(r.dir)
 	runner_unlock(r)
 	for &e in r.events do event_destroy(&e)
 	delete(r.events)

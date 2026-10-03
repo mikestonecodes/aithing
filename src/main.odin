@@ -270,6 +270,10 @@ main :: proc() {
 			wake_at = nil
 			needs_draw = true
 		}
+		// What a window open beside this one did since the last frame, before
+		// anything in this one reads it: see share.odin.
+		watch(.Jobs)
+		if app_catch_up(app) do needs_draw = true
 		watch(.Events)
 		if app_apply_events(app) do needs_draw = true
 		watch(.Jobs)
@@ -787,6 +791,9 @@ app_interrupt :: proc(app: ^App) {
 		// stopped is replaced by the next one a frame later.
 		dropped := turn_unqueue(app, app.chat.session_id, at >= 0 ? app.turns[at] : nil)
 		if at < 0 {
+			// The turn in this thread may be another window's, which is still
+			// the turn in front of you.
+			if elsewhere_stop(app, "", app.chat.session_id) do dropped = true
 			if dropped do app_status(app, "stopped")
 			return
 		}
@@ -800,6 +807,7 @@ app_interrupt :: proc(app: ^App) {
 	dropped := turn_unqueue(app, td.session)
 	turn := turn_for_card(app, td)
 	if turn < 0 {
+		if elsewhere_stop(app, td.id, td.session) do dropped = true
 		if dropped do app_status(app, "stopped")
 		return
 	}

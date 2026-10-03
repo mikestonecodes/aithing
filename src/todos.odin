@@ -18,9 +18,10 @@ import "core:time"
 // stopped without the four beside it coming along.
 //
 // Every item says where its work stands, which is the other half of what a
-// grid is for: waiting, running, done, failed. A thread running in
-// another window moves its items on the next scan, so the grid is current
-// whether the work was started here or not.
+// grid is for: waiting, running, done, failed. The list is a file, and a card
+// changed in another window is changed in this one on the next frame (see
+// share.odin), so the grid is current whether the work was started here or
+// not.
 //
 // A card can only leave the grid one way, and that is by being dismissed. The
 // dismissal is written down (see `hidden`), because the two things that make
@@ -70,6 +71,13 @@ Todo :: struct {
 	text:    string,
 	state:   Todo_State,
 	at:      time.Time, // when it was last touched: the grid is newest first
+	// Why it failed, or what it stopped to ask: the one sentence a headless
+	// turn has to say for itself, kept until the card is asked to run again.
+	// It is written down with the card because a card that says `needs you`
+	// in one window says the question beside it in the other — it used to be
+	// held by the window whose turn it was, so the window next to it had a
+	// card asking for you and nothing on it saying what about.
+	note:    string,
 }
 
 Todos :: struct {
@@ -83,8 +91,12 @@ Todos :: struct {
 	// per scan — and walking a few hundred items to answer it a few hundred
 	// times is a tenth of a second the window does not have.
 	per_session: map[string]int,
-	dirty:   bool,
 	next_id: int,
+	// The file this list is, and what it was when this window last read or
+	// wrote it: see share.odin. Empty for a list that lives only in memory,
+	// which is what a test's is.
+	path:    string,
+	seen:    File_Stamp,
 }
 
 // Bumped when the shape of a row changes. A file the version does not match
@@ -98,14 +110,23 @@ Todos :: struct {
 @(private = "file")
 TODOS_VERSION :: "5"
 
-// A version line, then one line per item, tab separated, and one `-` line per
-// card dismissed by hand — which is shorter, and that is how it tells itself
-// apart.
+// The list a window works from, bound to the file it is: everything changed
+// from here on is written through to it (see todos_begin).
 todos_load :: proc(t: ^Todos, path := "") {
-	from := path != "" ? path : config_path("todos")
-	data, err := os.read_entire_file_from_path(from, context.temp_allocator)
-	if err != nil do return
-	it := each_line(string(data))
+	t.path = strings.clone(path != "" ? path : config_path("todos"))
+	data, stamp, ok := file_read(t.path)
+	if !ok do return
+	t.seen = stamp
+	todos_parse(t, string(data))
+}
+
+// A version line, then one line per item, tab separated, one `-` line per
+// card dismissed by hand, and a `next` line. The note is a seventh column, so
+// a build from before notes were written down reads the first six and passes
+// over it, and the `next` line is too short to be a card to the same build.
+@(private = "file")
+todos_parse :: proc(t: ^Todos, data: string) {
+	it := each_line(data)
 	first, _ := iter_next(&it)
 	version := strings.trim_space(first)
 	if version != TODOS_VERSION && version != "4" do return
@@ -114,7 +135,11 @@ todos_load :: proc(t: ^Todos, path := "") {
 		if row == "" do continue
 		f := strings.split(row, "\t", context.temp_allocator)
 		if len(f) >= 2 && f[0] == "-" {
-			t.hidden[strings.clone(f[1])] = true
+			if f[1] not_in t.hidden do t.hidden[strings.clone(f[1])] = true
+			continue
+		}
+		if len(f) >= 2 && f[0] == "next" {
+			if n, ok := strconv.parse_int(f[1]); ok do t.next_id = max(t.next_id, n)
 			continue
 		}
 		if len(f) < 6 do continue
@@ -126,32 +151,28 @@ todos_load :: proc(t: ^Todos, path := "") {
 		td := Todo {
 			state   = Todo_State(clamp(state, 0, len(Todo_State) - 1)),
 			at      = time.unix(unix, 0),
-			id      = strings.clone(f[2]),
-			session = strings.clone(f[3]),
-			cwd     = strings.clone(f[4]),
-			text    = unescape_line(f[5]),
+			id      = f[2],
+			session = f[3],
+			cwd     = f[4],
+			text    = unescape_line(f[5], context.temp_allocator),
+			note    = len(f) >= 7 ? unescape_line(f[6], context.temp_allocator) : "",
 		}
-		session_claim(t, td.session)
 		// Files written before it became derived still have the number in
 		// them, as do the ones written while there was a queue — and neither
 		// means anything without the process that was running at the time.
 		if td.state == .Running do td.state = .Open
-		append(&t.list, td)
-		// Ids are `n-<number>`; the counter has to clear everything on disk.
-		if n, ok := strconv.parse_int(strings.trim_prefix(td.id, "n-")); ok && n >= t.next_id {
-			t.next_id = n + 1
-		}
+		todo_put(t, td)
 	}
 }
 
-todos_save :: proc(t: ^Todos, path := "") {
-	if !t.dirty do return
-	t.dirty = false
+// The whole file, as text.
+@(private = "file")
+todos_text :: proc(t: ^Todos) -> []byte {
 	b := strings.builder_make(context.temp_allocator)
 	strings.write_string(&b, TODOS_VERSION)
 	strings.write_byte(&b, '\n')
 	for td in t.list {
-		fmt.sbprintfln(
+		fmt.sbprintf(
 			&b,
 			"%d\t%d\t%s\t%s\t%s\t%s",
 			int(td.state),
@@ -161,10 +182,81 @@ todos_save :: proc(t: ^Todos, path := "") {
 			td.cwd,
 			escape_line(one_word_line(td.text)),
 		)
+		if td.note != "" do fmt.sbprintf(&b, "\t%s", escape_line(one_word_line(td.note)))
+		strings.write_byte(&b, '\n')
 	}
 	for key in t.hidden do fmt.sbprintfln(&b, "-\t%s", key)
-	to := path != "" ? path : config_path("todos")
-	_ = os.write_entire_file(to, transmute([]byte)strings.to_string(b))
+	// The counter, and not only the cards it numbered. Read back off the cards
+	// alone, the newest card dismissed was a number free to hand out again —
+	// and with two windows open, one that had just been dismissed in the other
+	// went straight back out to a card that found the first one's worktree
+	// still standing and started work in it.
+	fmt.sbprintfln(&b, "next\t%d", t.next_id)
+	return transmute([]byte)strings.to_string(b)
+}
+
+// This window's copy, caught up with the file when another window has written
+// it since this one last looked. Once a frame and before anything walks the
+// list: replacing it frees every string a caller could be holding, so it is
+// done where nobody is holding one. A stat when nothing has moved.
+todos_sync :: proc(t: ^Todos) -> bool {
+	if t.path == "" || file_stamp(t.path) == t.seen do return false
+	fresh: Todos
+	data, stamp, ok := file_read(t.path)
+	if ok do todos_parse(&fresh, string(data))
+	fresh.seen = stamp
+	fresh.next_id = max(fresh.next_id, t.next_id)
+	fresh.path, t.path = t.path, ""
+	todos_destroy(t)
+	t^ = fresh
+	return true
+}
+
+// What a change is made against: this window's copy, and — when another
+// window has written the file since this one last read it — the file as that
+// window left it. Every change is made to both, under the lock, so neither
+// window's change can write over the other's.
+//
+// This window's copy is not swapped for the file's here, though it is the
+// file's that is right. The callers are walking the list as they change it —
+// landing every finished card, settling every card of a thread — and swapping
+// it would free what they are halfway along. todos_sync swaps it at the top of
+// the next frame, which leaves one frame short of the other window's change
+// and nothing else.
+@(private = "file")
+Todos_Edit :: struct {
+	lock:   ^os.File,
+	behind: bool,
+	disk:   Todos,
+}
+
+@(private = "file")
+todos_begin :: proc(t: ^Todos) -> (e: Todos_Edit) {
+	if t.path == "" do return
+	e.lock = file_lock(t.path)
+	if file_stamp(t.path) == t.seen do return
+	e.behind = true
+	if data, _, ok := file_read(t.path); ok do todos_parse(&e.disk, string(data))
+	// A number the other window has handed out is not this one's to hand out
+	// again: two cards with one number are two agents in one worktree.
+	t.next_id = max(t.next_id, e.disk.next_id)
+	return
+}
+
+// `mine` and `theirs` are whether the change did anything to this window's
+// copy and to the file's. The stamp is only taken when what was written is
+// this window's copy: after writing the file's, this window is still behind,
+// and todos_sync has to know that.
+@(private = "file")
+todos_commit :: proc(t: ^Todos, e: ^Todos_Edit, mine, theirs: bool) {
+	defer file_unlock(e.lock)
+	defer todos_destroy(&e.disk)
+	if t.path == "" do return
+	if !e.behind {
+		if mine do t.seen, _ = file_replace(t.path, todos_text(t))
+		return
+	}
+	if theirs do _, _ = file_replace(t.path, todos_text(&e.disk))
 }
 
 // A tab is what the file splits on, so an item never carries one.
@@ -211,6 +303,7 @@ todos_destroy :: proc(t: ^Todos) {
 	delete(t.hidden)
 	for id in t.per_session do delete(id)
 	delete(t.per_session)
+	delete(t.path)
 }
 
 @(private = "file")
@@ -219,6 +312,7 @@ todo_free :: proc(td: ^Todo) {
 	delete(td.session)
 	delete(td.cwd)
 	delete(td.text)
+	delete(td.note)
 }
 
 todos_find :: proc(t: ^Todos, id: string) -> int {
@@ -230,22 +324,39 @@ todos_find :: proc(t: ^Todos, id: string) -> int {
 // the list is re-sorted and rebuilt underneath, so an index is only good for
 // the frame it was taken in.
 todos_add :: proc(t: ^Todos, text, session, cwd: string, state := Todo_State.Open) -> string {
-	id := fmt.aprintf("n-%d", t.next_id)
-	t.next_id += 1
+	e := todos_begin(t)
+	td := Todo {
+		id      = fmt.tprintf("n-%d", t.next_id),
+		session = session,
+		cwd     = cwd,
+		text    = strings.trim_space(text),
+		state   = state,
+		at      = time.now(),
+	}
+	todo_put(t, td)
+	if e.behind do todo_put(&e.disk, td)
+	todos_commit(t, &e, true, e.behind)
+	return t.list[len(t.list) - 1].id
+}
+
+// One card into a list, copied, and the counter moved past its number. Ids
+// are `n-<number>`, and the counter has to clear every one of them.
+@(private = "file")
+todo_put :: proc(t: ^Todos, td: Todo) {
 	append(
 		&t.list,
 		Todo {
-			id = id,
-			session = strings.clone(session),
-			cwd = strings.clone(cwd),
-			text = strings.clone(strings.trim_space(text)),
-			state = state,
-			at = time.now(),
+			id = strings.clone(td.id),
+			session = strings.clone(td.session),
+			cwd = strings.clone(td.cwd),
+			text = strings.clone(td.text),
+			note = strings.clone(td.note),
+			state = td.state,
+			at = td.at,
 		},
 	)
-	session_claim(t, session)
-	t.dirty = true
-	return id
+	session_claim(t, td.session)
+	t.next_id = max(t.next_id, todo_seq(td) + 1)
 }
 
 // --- dismissing ---------------------------------------------------------------
@@ -254,21 +365,40 @@ todos_add :: proc(t: ^Todos, text, session, cwd: string, state := Todo_State.Ope
 // on disk: it did not go because anyone said so, and it must not be recorded
 // as dismissed — the same thread turning up again should get its cards back.
 todos_remove :: proc(t: ^Todos, id: string) {
-	at := todos_find(t, id)
-	if at < 0 do return
-	todo_drop(t, at)
-	t.dirty = true
+	// The caller's id is often the card's own, which the drop frees.
+	id := strings.clone(id, context.temp_allocator)
+	e := todos_begin(t)
+	theirs := e.behind && todo_take(&e.disk, id, "")
+	mine := todo_take(t, id, "")
+	todos_commit(t, &e, mine, theirs)
 }
 
 // The x on a card. The card goes and stays gone: the key it would come back
 // under is written down, and anything that makes cards reads that first.
 todos_dismiss :: proc(t: ^Todos, id: string) {
+	id := strings.clone(id, context.temp_allocator)
 	at := todos_find(t, id)
 	if at < 0 do return
 	key := todo_key(t.list[at])
-	if key not_in t.hidden do t.hidden[strings.clone(key)] = true
-	todo_drop(t, at)
-	t.dirty = true
+	e := todos_begin(t)
+	theirs := e.behind && todo_take(&e.disk, id, key)
+	mine := todo_take(t, id, key)
+	todos_commit(t, &e, mine, theirs)
+}
+
+// A card out of a list, and the key that keeps it out when there is one.
+@(private = "file")
+todo_take :: proc(t: ^Todos, id, hide: string) -> bool {
+	changed := false
+	if hide != "" && hide not_in t.hidden {
+		t.hidden[strings.clone(hide)] = true
+		changed = true
+	}
+	if at := todos_find(t, id); at >= 0 {
+		todo_drop(t, at)
+		changed = true
+	}
+	return changed
 }
 
 todos_dismissed :: proc(t: ^Todos, key: string) -> bool {
@@ -333,31 +463,69 @@ todo_seq :: proc(td: Todo) -> int {
 // The card got its thread. A card is one conversation, so this is one card,
 // and it is written down the moment the harness names the session.
 todo_set_session :: proc(t: ^Todos, id, session, cwd: string) {
+	if session == "" do return
+	e := todos_begin(t)
+	theirs := e.behind && todo_name(&e.disk, id, session, cwd)
+	mine := todo_name(t, id, session, cwd)
+	todos_commit(t, &e, mine, theirs)
+}
+
+@(private = "file")
+todo_name :: proc(t: ^Todos, id, session, cwd: string) -> bool {
 	at := todos_find(t, id)
-	if at < 0 || session == "" do return
+	if at < 0 do return false
 	td := &t.list[at]
+	changed := false
 	if td.session != session {
 		session_release(t, td.session)
 		delete(td.session)
 		td.session = strings.clone(session)
 		session_claim(t, session)
+		changed = true
 	}
-	if td.cwd == "" {
+	if td.cwd == "" && cwd != "" {
 		delete(td.cwd)
 		td.cwd = strings.clone(cwd)
+		changed = true
 	}
-	t.dirty = true
+	return changed
 }
 
 // Marks what became of a card. Only the settled states go through here:
 // running is read off the process that is doing the work.
 todo_set_state :: proc(t: ^Todos, id: string, state: Todo_State) {
 	assert(state != .Running)
+	now := time.now()
+	e := todos_begin(t)
+	theirs := e.behind && todo_mark(&e.disk, id, state, now)
+	mine := todo_mark(t, id, state, now)
+	todos_commit(t, &e, mine, theirs)
+}
+
+@(private = "file")
+todo_mark :: proc(t: ^Todos, id: string, state: Todo_State, now: time.Time) -> bool {
 	at := todos_find(t, id)
-	if at < 0 || t.list[at].state == state do return
+	if at < 0 || t.list[at].state == state do return false
 	t.list[at].state = state
-	t.list[at].at = time.now()
-	t.dirty = true
+	t.list[at].at = now
+	return true
+}
+
+// Says why, on the card, or "" to take what it said away.
+todo_set_note :: proc(t: ^Todos, id, note: string) {
+	e := todos_begin(t)
+	theirs := e.behind && todo_annotate(&e.disk, id, note)
+	mine := todo_annotate(t, id, note)
+	todos_commit(t, &e, mine, theirs)
+}
+
+@(private = "file")
+todo_annotate :: proc(t: ^Todos, id, note: string) -> bool {
+	at := todos_find(t, id)
+	if at < 0 || t.list[at].note == note do return false
+	delete(t.list[at].note)
+	t.list[at].note = strings.clone(note)
+	return true
 }
 
 // Everything an item can be found by.
