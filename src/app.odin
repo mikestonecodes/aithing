@@ -23,13 +23,15 @@ import "core:time"
 // second warm colour beside it.
 //
 // The neutrals are taken from the terminal that sits beside this window:
-// alacritty's background is #111416 at 0.85 opacity, and the base here is the
-// same colour at the same alpha, so the two read as one surface over the
-// wallpaper instead of a grey slab next to a near-black one. Everything else
-// steps up from that base with the same faint lean toward blue it has. The
-// byte order is ABGR, so #111416 is written 0x..161411 — reading the hex as
-// RGB once turned a warm base blue on screen.
-BG :: Color(0xd9161411)
+// alacritty's background is #111416, and the base here is the same colour, so
+// the two read as one surface over the wallpaper instead of a grey slab next
+// to a near-black one. Everything else steps up from that base with the same
+// faint lean toward blue it has. The byte order is ABGR, so #111416 is
+// written 0x..161411 — reading the hex as RGB once turned a warm base blue on
+// screen. The alpha is 0.92, not alacritty's 0.85: at that the compositor's
+// blur came through as frost over a whole window of text, where a terminal
+// only has its own glyphs on it.
+BG :: Color(0xeb161411)
 PANEL :: Color(0xff23201c)
 PANEL_HI :: Color(0xff2d2925)
 BORDER :: Color(0xff312e29)
