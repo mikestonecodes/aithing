@@ -16,7 +16,7 @@ import "core:unicode/utf8"
 PAD :: f32(16)
 // The composer's own ground: dark enough to read white text on, thin enough
 // that the desktop behind the window still shows through it.
-COMPOSER_BG :: Color(0x66202224)
+COMPOSER_BG :: Color(0x6613110e)
 BLINK :: f32(0.55) // caret on/off, in seconds
 // How wide the block caret is where there is no character under it to take
 // its width from, as a fraction of the type size.

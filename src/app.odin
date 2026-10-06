@@ -22,21 +22,24 @@ import "core:time"
 // here". The gold that marks the answer stone is the same accent, not a
 // second warm colour beside it.
 //
-// The neutrals are grey and nothing else. For one commit they were pushed
-// toward blue to read as slate under the gold, and the whole window went
-// cold; the byte order here is ABGR, so a base that looks warm in the source
-// is a blue one on screen, which is how it happened.
-BG :: Color(0xc8242626)
-PANEL :: Color(0xff2c2f30)
-PANEL_HI :: Color(0xff34383a)
-BORDER :: Color(0xff373b3d)
-TEXT :: Color(0xffe9f0f2)
+// The neutrals are taken from the terminal that sits beside this window:
+// alacritty's background is #111416 at 0.85 opacity, and the base here is the
+// same colour at the same alpha, so the two read as one surface over the
+// wallpaper instead of a grey slab next to a near-black one. Everything else
+// steps up from that base with the same faint lean toward blue it has. The
+// byte order is ABGR, so #111416 is written 0x..161411 — reading the hex as
+// RGB once turned a warm base blue on screen.
+BG :: Color(0xd9161411)
+PANEL :: Color(0xff23201c)
+PANEL_HI :: Color(0xff2d2925)
+BORDER :: Color(0xff312e29)
+TEXT :: Color(0xffd8d8d8)
 MUTED :: Color(0xff8c959a)
 FAINT :: Color(0xff62686d)
 ACCENT :: Color(0xff40acec)
 ACCENT_DIM :: Color(0x8040acec)
-USER_BG :: Color(0xff303436)
-CODE_BG :: Color(0xff18191a)
+USER_BG :: Color(0xff282521)
+CODE_BG :: Color(0xff0d0c0a)
 CODE_TEXT :: Color(0xffa0c4e8)
 GREEN :: Color(0xff7cb074)
 RED :: Color(0xff5c60e0)
