@@ -258,8 +258,8 @@ a_thread_keeps_its_own_model :: proc(t: ^testing.T) {
 	thread_keep(app, "s-1", turn.setting)
 	thread_keep(app, "s-other", Setting{.Haiku, .Low})
 
-	// Picked mid-turn: the thread's, not the window's, and it says the
-	// running turn is not the one it applies to.
+	// Picked mid-turn: the thread's, not the window's, and the chip is all
+	// that changes — no second line naming a model beside it.
 	app.overlay = .Model
 	app_picker_step(app, -1)
 	app.overlay = .Effort
@@ -268,7 +268,7 @@ a_thread_keeps_its_own_model :: proc(t: ^testing.T) {
 	testing.expect_value(t, app.model, Model.Fable)
 	testing.expect_value(t, app.effort, Effort.Medium)
 	testing.expect_value(t, thread_setting(app, "s-other"), Setting{.Haiku, .Low})
-	testing.expect(t, strings.contains(app.status, "next message"), "nothing said the change waits for the next turn")
+	testing.expect(t, !strings.contains(app.status, "next message"), "a model was named outside the chip")
 
 	// The message typed while it ran goes out on what the thread says now.
 	editor_set_text(&app.editor, "the follow-up")

@@ -60,14 +60,12 @@ app_choose :: proc(app: ^App, s: Setting) {
 		app.model, app.effort = s.model, s.effort
 		return
 	}
-	thread_set(app, session, s)
 	// A turn already running keeps what it was started on — the process was
-	// handed a model on its command line and has no way to be handed another
-	// — so say when the change is for the message after it, or the chip
-	// reads as if the answer arriving now came from it.
-	if app_session_busy(app, session) {
-		app_status(app, fmt.tprintf("the next message runs on %s · %s", model_label[s.model], effort_label[s.effort]))
-	}
+	// handed a model on its command line and has no way to be handed another.
+	// Picking one mid-turn used to put up a line saying "the next message
+	// runs on …", which left two models on screen at once and no way to tell
+	// which was answering. The chip is the choice and says nothing else.
+	thread_set(app, session, s)
 }
 
 // The first time a thread is named, it keeps what its turn was started on.
