@@ -28,10 +28,11 @@ import "core:time"
 // to a near-black one. Everything else steps up from that base with the same
 // faint lean toward blue it has. The byte order is ABGR, so #111416 is
 // written 0x..161411 — reading the hex as RGB once turned a warm base blue on
-// screen. The alpha is 0.75, below alacritty's 0.85: the frost is the point
-// of the window, and at the terminal's alpha the blurred desktop barely came
-// through. A try at 0.92 to calm it was the wrong way round.
-BG :: Color(0xbf161411)
+// screen. The alpha is 0.6, well below alacritty's 0.85: the frost is the
+// point of the window, and at the terminal's alpha, or even 0.75, the blurred
+// desktop barely came through. A try at 0.92 to calm it was the wrong way
+// round.
+BG :: Color(0x99161411)
 PANEL :: Color(0xff23201c)
 PANEL_HI :: Color(0xff2d2925)
 BORDER :: Color(0xff312e29)
